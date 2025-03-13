@@ -1,0 +1,71 @@
+glue app {
+    name = "Research Assistant"
+    config {
+        development = true
+        sticky = true  // Enable persistence
+    }
+}
+
+// Define tools
+tool web_search {
+    provider = serp  // Will use SERP_API_KEY from environment
+}
+
+tool file_handler {
+    config {
+        base_path = "./workspace"  // Set the base path for file operations
+    }
+}
+
+tool code_interpreter {}
+
+// Models define their tool relationships
+model researcher {
+    provider = openrouter
+    role = "Research different topics and subjects online."
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-3.1-405b-instruct:free"
+        temperature = 0.7
+    }
+}
+
+model assistant {
+    provider = openrouter
+    role = "Help the researcher in any way you can, for example, with any research tasks, such as verifying the information, or perhaps by coding simple tools to help parse research results."
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+        temperature = 0.5
+    }
+}
+
+model writer {
+    provider = openrouter
+    role = "Write documentation files that summarize the researcher team findings."
+    adhesives = [tape]
+    config {
+        model = "meta-llama/llama-3-8b-instruct:free"
+        temperature = 0.3
+    }
+}
+
+// Workflow defines model interactions and memory
+magnetize {
+    researchers {
+        lead = researcher
+        members = [assistant]
+        tools = [web_search, code_interpreter]
+    }
+
+    docs {
+        lead = writer
+        tools = [web_search, file_handler]
+    }
+
+    researchers -> docs
+
+    docs <- pull  // Docs team can pull from researchers when needed
+}
+
+apply glue

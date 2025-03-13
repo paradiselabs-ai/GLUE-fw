@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*.code-workspace
+*.code-project
+
+# Logs and databases
+*.log
+*.sqlite
+*.sqlite3
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+tests/
+
+# Project specific
+setup.py
+requirements.txt
+progressFiles/
+.clinerules
+.claudeai
+CLAUDE.md
+.blackboxairules
+old_cli.md
+*.md
+.sh
+mcp-llms-full.txt
+.envrc
+
+.env
+activate_venv.sh
