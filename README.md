@@ -164,13 +164,6 @@ magnetize {
 - Built-in debugging and optimization tools
 - Comprehensive documentation and examples
 
-## Documentation
-
-- [Core Concepts](docs/framework/01_core_concepts.md)
-- [Expression Language](docs/framework/02_expression_language.md)
-- [Tool System](docs/framework/03_tool_system.md)
-- [Example Applications](docs/framework/04_examples.md)
-- [Best Practices](docs/framework/05_best_practices.md)
 
 ## Contributing
 
