@@ -57,9 +57,9 @@ CLAUDE.md
 .blackboxairules
 old_cli.md
 *.md
-.sh
+*.sh
 mcp-llms-full.txt
-.envrc
+*.envrc
 
 .env
 activate_venv.sh
