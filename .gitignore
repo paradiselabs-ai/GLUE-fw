@@ -56,7 +56,7 @@ progressFiles/
 CLAUDE.md
 .blackboxairules
 old_cli.md
-*.md
+
 *.sh
 mcp-llms-full.txt
 *.envrc
