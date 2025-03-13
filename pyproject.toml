@@ -27,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-glue = "glue_fw.cli:main"
+glue = "glue.cli:main"
 
 [tool.black]
 line-length = 88
