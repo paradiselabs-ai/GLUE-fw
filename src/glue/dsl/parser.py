@@ -150,9 +150,20 @@ class GlueLexer:
         self.pos += 1  # Skip opening quote
         start = self.pos
         
-        while self.pos < len(self.source) and self.source[self.pos] != delimiter:
+        # Handle escaped characters and quotes
+        escape_mode = False
+        while self.pos < len(self.source):
+            if escape_mode:
+                # Skip the escaped character
+                escape_mode = False
+            elif self.source[self.pos] == '\\':
+                escape_mode = True
+            elif self.source[self.pos] == delimiter and not escape_mode:
+                break
+            
             if self.source[self.pos] == '\n':
                 self.line += 1
+            
             self.pos += 1
             
         if self.pos >= len(self.source):
@@ -213,103 +224,221 @@ class GlueParser:
     def parse(self) -> Dict[str, Any]:
         """Parse tokens into AST"""
         while not self._is_at_end():
-            if self._match(TokenType.IDENTIFIER, "glue"):
-                self._parse_app()
-            elif self._match(TokenType.IDENTIFIER, "model"):
-                self._parse_model()
-            elif self._match(TokenType.IDENTIFIER, "tool"):
-                self._parse_tool()
-            elif self._match(TokenType.IDENTIFIER, "magnetize"):
-                self._parse_magnetize()
-            else:
+            token = self._peek()
+            
+            if token.type == TokenType.IDENTIFIER:
+                if token.value == "glue":
+                    self._parse_app()
+                elif token.value == "model":
+                    self._parse_model()
+                elif token.value == "tool":
+                    self._parse_tool()
+                elif token.value == "magnetize":
+                    self._parse_magnetize()
+                else:
+                    raise SyntaxError(f"Unexpected identifier at line {token.line}: {token.value}")
+            elif token.type == TokenType.COMMENT:
+                # Skip comments
                 self._advance()
+            else:
+                raise SyntaxError(f"Unexpected token at line {token.line}: {token.type}")
                 
         return self.ast
         
     def _parse_app(self):
         """Parse app configuration"""
-        # Expect: glue app { ... }
-        if not self._match(TokenType.IDENTIFIER, "app"):
-            self._error("Expected 'app' after 'glue'")
+        # Expect 'glue' identifier
+        self._consume(TokenType.IDENTIFIER, "Expected 'glue' keyword")
+        
+        # Expect 'app' identifier
+        app_token = self._consume(TokenType.IDENTIFIER, "Expected 'app' keyword")
+        if app_token.value != "app":
+            raise SyntaxError(f"Expected 'app' keyword at line {app_token.line}, got '{app_token.value}'")
             
-        if not self._match(TokenType.LBRACE):
-            self._error("Expected '{' after 'app'")
-            
-        app_config = self._parse_block()
-        self.ast["app"] = app_config
+        # Expect opening brace
+        self._consume(TokenType.LBRACE, "Expected '{' after 'app'")
+        
+        # Parse app properties
+        self._parse_properties(self.ast["app"])
+        
+        # Expect closing brace
+        self._consume(TokenType.RBRACE, "Expected '}' after app properties")
         
     def _parse_model(self):
         """Parse model definition"""
-        name = self._consume(TokenType.IDENTIFIER, "Expected model name")
-        if not self._match(TokenType.LBRACE):
-            self._error("Expected '{' after model name")
-            
-        config = self._parse_block()
-        model = {
-            "name": name.value,
-            "config": ModelConfig(
-                provider=config.get("provider", ""),
-                model_id=config.get("model", ""),
-                temperature=float(config.get("temperature", 0.7)),
-                max_tokens=int(config.get("max_tokens", 2048))
-            )
-        }
+        # Expect 'model' identifier
+        self._consume(TokenType.IDENTIFIER, "Expected 'model' keyword")
+        
+        # Expect model name
+        name_token = self._consume(TokenType.IDENTIFIER, "Expected model name")
+        model = {"name": name_token.value}
+        
+        # Expect opening brace
+        self._consume(TokenType.LBRACE, "Expected '{' after model name")
+        
+        # Parse model properties
+        self._parse_properties(model)
+        
+        # Expect closing brace
+        self._consume(TokenType.RBRACE, "Expected '}' after model properties")
+        
+        # Add model to AST
         self.ast["models"].append(model)
         
     def _parse_tool(self):
         """Parse tool definition"""
-        name = self._consume(TokenType.IDENTIFIER, "Expected tool name")
-        if not self._match(TokenType.LBRACE):
-            self._error("Expected '{' after tool name")
-            
-        config = self._parse_block()
-        tool = {
-            "name": name.value,
-            "config": ToolConfig(
-                name=name.value,
-                description=config.get("description", ""),
-                provider=config.get("provider"),
-                config=config.get("config", {})
-            )
-        }
+        # Expect 'tool' identifier
+        self._consume(TokenType.IDENTIFIER, "Expected 'tool' keyword")
+        
+        # Expect tool name
+        name_token = self._consume(TokenType.IDENTIFIER, "Expected tool name")
+        tool = {"name": name_token.value}
+        
+        # Expect opening brace
+        self._consume(TokenType.LBRACE, "Expected '{' after tool name")
+        
+        # Parse tool properties
+        self._parse_properties(tool)
+        
+        # Expect closing brace
+        self._consume(TokenType.RBRACE, "Expected '}' after tool properties")
+        
+        # Add tool to AST
         self.ast["tools"].append(tool)
         
     def _parse_magnetize(self):
         """Parse magnetic field configuration"""
-        if not self._match(TokenType.LBRACE):
-            self._error("Expected '{' after 'magnetize'")
-            
+        # Expect 'magnetize' identifier
+        self._consume(TokenType.IDENTIFIER, "Expected 'magnetize' keyword")
+        
+        # Expect opening brace
+        self._consume(TokenType.LBRACE, "Expected '{' after 'magnetize'")
+        
+        # Parse teams
         while not self._check(TokenType.RBRACE) and not self._is_at_end():
-            name = self._consume(TokenType.IDENTIFIER, "Expected team name")
+            self._parse_team()
             
-            if self._match(TokenType.LBRACE):
-                # Team definition
-                team_config = self._parse_block()
-                team = {
-                    "name": name.value,
-                    "config": TeamConfig(
-                        name=name.value,
-                        lead=team_config.get("lead", ""),
-                        members=team_config.get("members", []),
-                        tools=team_config.get("tools", [])
-                    )
-                }
-                self.ast["teams"].append(team)
-            elif self._match(TokenType.ARROW):
-                # Magnetic flow definition
-                operator = self._previous().value
-                target = self._consume(TokenType.IDENTIFIER, "Expected target team")
-                
-                flow = {
-                    "source": name.value,
-                    "target": target.value,
-                    "type": FlowType(operator)
-                }
-                self.ast["flows"].append(flow)
-                
+        # Expect closing brace
         self._consume(TokenType.RBRACE, "Expected '}' after magnetize block")
-
-    # ... [Helper methods like _parse_block, _match, _advance, etc. continue] ...
+        
+    def _parse_team(self):
+        """Parse team definition within magnetize block"""
+        # Expect team name
+        name_token = self._consume(TokenType.IDENTIFIER, "Expected team name")
+        team = {"name": name_token.value}
+        
+        # Expect opening brace
+        self._consume(TokenType.LBRACE, "Expected '{' after team name")
+        
+        # Parse team properties
+        self._parse_properties(team)
+        
+        # Expect closing brace
+        self._consume(TokenType.RBRACE, "Expected '}' after team properties")
+        
+        # Add team to AST
+        self.ast["teams"].append(team)
+        
+    def _parse_properties(self, target: Dict[str, Any]):
+        """Parse properties into the target dictionary"""
+        while not self._check(TokenType.RBRACE) and not self._is_at_end():
+            if self._check(TokenType.COMMENT):
+                # Skip comments
+                self._advance()
+                continue
+                
+            # Expect property name
+            name_token = self._consume(TokenType.IDENTIFIER, "Expected property name")
+            property_name = name_token.value
+            
+            # Check for nested object
+            if self._check(TokenType.LBRACE):
+                # Parse nested object
+                self._advance()  # Consume '{'
+                
+                if property_name not in target:
+                    target[property_name] = {}
+                    
+                self._parse_properties(target[property_name])
+                
+                self._consume(TokenType.RBRACE, f"Expected '}}' after {property_name} properties")
+            else:
+                # Expect equals sign
+                self._consume(TokenType.EQUALS, f"Expected '=' after {property_name}")
+                
+                # Parse property value
+                value = self._parse_value()
+                target[property_name] = value
+                
+    def _parse_value(self) -> Any:
+        """Parse a value (string, number, boolean, identifier, or array)"""
+        token = self._advance()
+        
+        if token.type == TokenType.STRING:
+            return token.value
+        elif token.type == TokenType.NUMBER:
+            # Convert to float or int
+            if '.' in token.value:
+                return float(token.value)
+            else:
+                return int(token.value)
+        elif token.type == TokenType.BOOLEAN:
+            return token.value.lower() == 'true'
+        elif token.type == TokenType.IDENTIFIER:
+            return token.value
+        elif token.type == TokenType.LBRACKET:
+            # Parse array
+            array = []
+            
+            # Empty array
+            if self._check(TokenType.RBRACKET):
+                self._advance()
+                return array
+                
+            # Parse array elements
+            while True:
+                value = self._parse_value()
+                array.append(value)
+                
+                if self._check(TokenType.RBRACKET):
+                    break
+                    
+                self._consume(TokenType.COMMA, "Expected ',' between array elements")
+                
+            self._consume(TokenType.RBRACKET, "Expected ']' after array")
+            return array
+        else:
+            raise SyntaxError(f"Unexpected token at line {token.line}: {token.type}")
+            
+    def _advance(self) -> Token:
+        """Advance to the next token and return the current one"""
+        if not self._is_at_end():
+            self.pos += 1
+        return self.tokens[self.pos - 1]
+        
+    def _peek(self) -> Token:
+        """Return the current token without advancing"""
+        if self._is_at_end():
+            return self.tokens[-1]  # Return EOF token
+        return self.tokens[self.pos]
+        
+    def _is_at_end(self) -> bool:
+        """Check if we've reached the end of the token stream"""
+        return self.pos >= len(self.tokens) or self.tokens[self.pos].type == TokenType.EOF
+        
+    def _check(self, type_: TokenType) -> bool:
+        """Check if the current token is of the given type"""
+        if self._is_at_end():
+            return False
+        return self.tokens[self.pos].type == type_
+        
+    def _consume(self, type_: TokenType, error_message: str) -> Token:
+        """Consume a token of the expected type or raise an error"""
+        if self._check(type_):
+            return self._advance()
+        
+        current = self._peek()
+        raise SyntaxError(f"{error_message} at line {current.line}, got {current.type}")
 
 class GlueDSL:
     """Main interface for GLUE DSL"""

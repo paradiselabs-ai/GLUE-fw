@@ -1,0 +1,13 @@
+{
+  "server": {
+    "port": 3000,
+    "logLevel": "info"
+  },
+  "agents": {
+    "defaultAgents": ["CASCADE", "Cline", "Blackbox-ai"]
+  },
+  "approval": {
+    "timeout": 300000,
+    "maxPendingActions": 10
+  }
+}

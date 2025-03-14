@@ -1,0 +1,33 @@
+This is a multi-agentic autonomous AI development framework we are building in python and writing a DSL for as well. 
+
+Most information can be found in progressFiles/ and the README.md in the root directory. 
+
+Make sure that you continously follow the Test-Driven Development (TDD) process and write tests for each new feature before implementing it. More about this can 
+be read in CLAUDE.md in the root directory. 
+
+While following TDD, and keeping the tests passing, there is a 'pass list.md' in progressFiles/ and contains a list of current tests, and if they are 
+passing or not. If a new test is ever created you must add it to the pass list and once its passing, you must mark its status in the pass list as passing. 
+
+Follow the progressFiles/ projectOverview.md -> currentPhase.md -> currentStage.md -> currentTask.md -> taskList.md as the overview is broken down through each file. 
+
+when the current task is complete, you changet the currentTask file to the next task, which is in currentStage. 
+
+when all the currentStage tasks have been completed, you mark that stage off in currentPhase, and you change currentStage and currentTask to the next Stage and Task in currentPhase. 
+
+When the entire Phase is complete, you mark it off the projectOverview, and then update the other files as it trickles down, the next Phase -> Stage -> Task
+and you do this continously unless there is a change of plans. 
+
+Keep in mind the goals of the project: 
+
+The vision behind GLUE is to create a framework that can be used to create a wide variety of autonomous AI systems, not only this, but streamline the creation of these systems, and also provide a final, streamlined, standardized solution for agentic systems that standardizes agents, API integrations, MCP servers, and allowing for extremely easy customization and connectivity and communication with other tools, data, agents, and APIs, by including a pre-built GLUE Agent (which is in reality, a GLUE application that is simply pre-built into the GLUE cli and is ran with a different command than the standard "glue run app.glue"). 
+Users can run this pre-built agent in the cli with "glue forge" - and specifically glue forge tool, glue forge mcp, glue forge api, etc for different types of custom additions. 
+GLUE also is versatile in that StickyScript, the DSL that GLUE is wrapped in, is pythonically interpreted,
+allowing advanced users to create their own python components that can be used in combination with the extremely easy DSL, StickyScript. 
+
+(Because of these things, we should probably add an option in the GLUE cli to quickly create a pull request to the main GLUE repo on github that features their new creations)
+
+- Another important thing we will need to remember is the scalibility of GLUE, how large it can be and remain effective, how many teams of how many agents starts to bog it down, and how can we prevent that? How can we allow for large enterprise scaling?
+
+---One idea for scaling:
+        So if a glue app requires massive amounts of agents and teams, maybe a solution would be to, at a certain point in the number of teams per app, when hitting that number, they are grouped together into a meta-team, and each meta-team is given the same task/user prompt/instructions at the same time. This allows parallel processing of tasks per meta-team, each meta-team acting like one, semi large glue app in itself, however each meta-team will need to eventually combine, compare, and critique each others results. Just like teams have a lead that acts as the communication manager to prevent bottlenecks and frozen API calls where agents were trying to talk at the same time,
+
