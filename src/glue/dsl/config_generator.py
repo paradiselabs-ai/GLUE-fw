@@ -1,6 +1,7 @@
 from typing import Dict, Any, List, Set, Optional
 from dataclasses import dataclass
 from enum import Enum
+from ..core.config_validation import config_to_pydantic
 
 # Default values for configuration
 DEFAULT_APP_DESCRIPTION = ""
@@ -80,6 +81,9 @@ class ConfigGenerator:
         self._validate_tools()
         self._validate_teams()
         self._validate_cross_references()
+        
+        # Validate using Pydantic models
+        self._validate_with_pydantic()
         
         return [str(e) for e in self.errors]
 
@@ -349,3 +353,34 @@ class ConfigGenerator:
             return best_match
             
         return None
+
+    def _validate_with_pydantic(self):
+        """Validate the configuration using Pydantic models"""
+        try:
+            # Convert the configuration to Pydantic models
+            config_to_pydantic(self.config)
+        except Exception as e:
+            # Add any validation errors to the errors list
+            error_message = str(e)
+            context = "configuration validation"
+            suggestion = "Check the configuration structure and types"
+            
+            # Try to extract more specific error information
+            if "validation error" in error_message.lower():
+                lines = error_message.split('\n')
+                for line in lines:
+                    if line.strip() and "validation error" not in line.lower():
+                        # This is likely a specific error message
+                        specific_error = line.strip()
+                        self.errors.append(ConfigError(
+                            specific_error,
+                            context,
+                            suggestion
+                        ))
+            else:
+                # Generic error message
+                self.errors.append(ConfigError(
+                    error_message,
+                    context,
+                    suggestion
+                ))

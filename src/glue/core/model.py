@@ -1,185 +1,185 @@
-# glue/core/model.py
-# ==================== Imports ====================
-import os
-from typing import Dict, Any, Optional, List, Set, Type
-from abc import ABC, abstractmethod
+"""
+Base model implementation for the GLUE framework.
+
+This module contains the base model class that provides abstraction
+over different AI model providers and handles tool usage capabilities.
+"""
+import importlib
 import logging
+from abc import ABC, abstractmethod
+from enum import Enum, auto
+from typing import Dict, List, Any, Optional, Callable, Union, Type, AsyncIterable
 
-# Temporarily define these types here until we create the types module
-class AdhesiveType:
-    """Enumeration of adhesive types for tool binding."""
-    STRONG = "strong"  # Tool is always used
-    WEAK = "weak"      # Tool is suggested but optional
-    STICKY = "sticky"  # Tool persists across multiple steps
+from glue.core.schemas import Message, ToolCall, ToolResult, ModelConfig
 
-class Message:
-    """Message in a conversation."""
-    def __init__(self, role: str, content: str):
-        self.role = role
-        self.content = content
-
-class ModelConfig:
-    """Configuration for a model."""
-    def __init__(self, provider: str, model_id: str):
-        self.provider = provider
-        self.model_id = model_id
-
-class ToolResult:
-    """Result from a tool execution."""
-    def __init__(self, success: bool, data: Any, error: Optional[str] = None):
-        self.success = success
-        self.data = data
-        self.error = error
-
-# ==================== Constants ====================
+# Set up logging
 logger = logging.getLogger("glue.model")
 
-# ==================== Class Definition ====================
-class Model(ABC):
-    """Base class for all model implementations"""
-    def __init__(
-        self,
-        name: str,
-        provider: str,
-        team: str,
-        available_adhesives: Set[AdhesiveType],
-        api_key: Optional[str] = None,
-        config: Optional[ModelConfig] = None
-    ):
-        self.name = name
-        self.provider = provider
-        self.team = team
-        self.available_adhesives = available_adhesives
-        self.api_key = api_key
-        self.config = config or ModelConfig(provider=provider, model_id="default")
-        
-        # Internal state
-        self._tools: Dict[str, Any] = {}
-        self._conversation_history: List[Message] = []
-        self._session_results: Dict[str, ToolResult] = {}
 
-    # ==================== Core Methods ====================
-    @abstractmethod
-    async def generate(self, prompt: str) -> str:
-        """Generate a response from the model"""
-        pass
-
-    async def use_tool(
-        self,
-        tool_name: str,
-        adhesive: AdhesiveType,
-        input_data: Any
-    ) -> ToolResult:
-        """Use a tool with specified adhesive binding"""
-        if tool_name not in self._tools:
-            raise ValueError(f"Tool {tool_name} not available")
-            
-        # Rest of implementation would go here
-        return ToolResult(success=True, data={"result": "Tool execution simulated"})
+class ModelProvider(str, Enum):
+    """Enumeration of supported model providers."""
+    OPENROUTER = "openrouter"
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    CUSTOM = "custom"
 
 
-class ModelConnector:
-    """Connector for managing models and their interactions.
+class BaseModel:
+    """Base class for all models in the GLUE framework."""
     
-    The ModelConnector is responsible for loading, configuring, and managing
-    models in the GLUE framework. It handles model registration, selection,
-    and provides a unified interface for model operations.
-    """
-    
-    def __init__(self):
-        """Initialize a new ModelConnector."""
-        self.models: Dict[str, Model] = {}
-        self.default_model: Optional[str] = None
-        self.logger = logging.getLogger("glue.model.connector")
-    
-    def register_model(self, model: Model) -> None:
-        """Register a model with the connector.
+    def __init__(self, config: ModelConfig):
+        """Initialize a new model.
         
         Args:
-            model: The model to register
+            config: Model configuration
         """
-        self.models[model.name] = model
-        self.logger.info(f"Registered model: {model.name} ({model.provider})")
-        
-        # Set as default if it's the first model
-        if not self.default_model:
-            self.default_model = model.name
+        self.name = config.name
+        self.provider = config.provider
+        self.model = config.model
+        self.temperature = config.temperature
+        self.max_tokens = config.max_tokens
+        self.description = config.description
+        self.api_key = config.api_key
+        self.api_params = config.api_params
+        self.provider_class = config.provider_class
+        self.client = None
+        self.provider_instance = None
+        self._initialize_client()
     
-    def get_model(self, name: Optional[str] = None) -> Model:
-        """Get a model by name, or the default model if no name is provided.
+    def _initialize_client(self):
+        """Initialize the provider-specific client."""
+        provider_class = self.get_provider_class()
+        self.provider_instance = provider_class(self)
+        self.client = self.provider_instance.client
+    
+    def get_provider_class(self) -> Type:
+        """Get the provider class for this model.
         
-        Args:
-            name: Optional name of the model to get
-            
         Returns:
-            The requested model
+            The provider class
             
         Raises:
-            ValueError: If the model is not found
+            ImportError: If the provider class cannot be imported
+            ValueError: If the provider is not supported
         """
-        if not name:
-            if not self.default_model:
-                raise ValueError("No default model available")
-            name = self.default_model
-            
-        if name not in self.models:
-            raise ValueError(f"Model '{name}' not found")
-            
-        return self.models[name]
+        if self.provider == ModelProvider.OPENAI:
+            from glue.core.providers.openai import OpenAIProvider
+            return OpenAIProvider
+        elif self.provider == ModelProvider.ANTHROPIC:
+            from glue.core.providers.anthropic import AnthropicProvider
+            return AnthropicProvider
+        elif self.provider == ModelProvider.OPENROUTER:
+            from glue.core.providers.openrouter import OpenRouterProvider
+            return OpenRouterProvider
+        elif self.provider == ModelProvider.CUSTOM:
+            # Import custom provider class
+            if not self.provider_class:
+                raise ValueError("Custom provider requires provider_class to be set")
+                
+            module_path, class_name = self.provider_class.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            return getattr(module, class_name)
+        else:
+            raise ValueError(f"Unsupported provider: {self.provider}")
     
-    def list_models(self) -> List[str]:
-        """List all registered models.
-        
-        Returns:
-            List of model names
-        """
-        return list(self.models.keys())
-    
-    async def generate(self, prompt: str, model_name: Optional[str] = None) -> str:
-        """Generate a response using the specified model.
+    async def generate_response(
+        self, 
+        messages: List[Message], 
+        tools: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """Generate a response from the model.
         
         Args:
-            prompt: The prompt to send to the model
-            model_name: Optional name of the model to use
+            messages: List of messages in the conversation
+            tools: Optional list of tools available to the model
             
         Returns:
             The generated response
         """
-        model = self.get_model(model_name)
-        return await model.generate(prompt)
-            
-        if adhesive not in self.available_adhesives:
-            raise ValueError(f"Adhesive {adhesive} not available")
-            
-        tool = self._tools[tool_name]
-        result = await tool.execute(input_data)
+        return await self._generate_response(messages, tools)
+    
+    async def _generate_response(
+        self, 
+        messages: List[Message], 
+        tools: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """Generate a response from the model (provider-specific implementation).
         
-        tool_result = ToolResult(
-            tool_name=tool_name,
-            result=result,
-            adhesive=adhesive
-        )
-        
-        # Handle result based on adhesive type
-        if adhesive == AdhesiveType.GLUE and hasattr(self, "team"):
-            await self.team.share_result(tool_name, tool_result)
-        elif adhesive == AdhesiveType.VELCRO:
-            self._session_results[tool_name] = tool_result
+        Args:
+            messages: List of messages in the conversation
+            tools: Optional list of tools available to the model
             
-        return tool_result
-
-    # ==================== Helper Methods ====================
+        Returns:
+            The generated response
         
-    def add_message(self, message: Message) -> None:
-        """Add a message to conversation history"""
-        self._conversation_history.append(message)
+        Raises:
+            NotImplementedError: This method must be implemented by provider-specific classes
+        """
+        raise NotImplementedError("This method must be implemented by provider-specific classes")
+    
+    async def process_tool_calls(
+        self, 
+        tool_calls: List[ToolCall], 
+        tool_executor: Callable[[ToolCall], AsyncIterable[ToolResult]]
+    ) -> List[ToolResult]:
+        """Process tool calls from the model.
+        
+        Args:
+            tool_calls: List of tool calls to process
+            tool_executor: Function to execute a tool call
+            
+        Returns:
+            List of tool results
+        """
+        results = []
+        for tool_call in tool_calls:
+            result = await tool_executor(tool_call)
+            results.append(result)
+        return results
 
-    # ==================== Error Handling ====================
-    def _validate_api_key(self) -> bool:
-        """Validate API key"""
-        return bool(self.api_key and isinstance(self.api_key, str))
 
-    async def _handle_error(self, error: Exception) -> None:
-        """Handle model errors"""
-        logger.error(f"Model error: {str(error)}")
-        raise
+# Provider-specific implementations will be in separate modules
+class ProviderBase(ABC):
+    """Base class for provider-specific implementations."""
+    
+    def __init__(self, model: BaseModel):
+        """Initialize a new provider.
+        
+        Args:
+            model: The model using this provider
+        """
+        self.model = model
+    
+    @abstractmethod
+    async def generate_response(
+        self, 
+        messages: List[Message], 
+        tools: Optional[List[Dict[str, Any]]] = None
+    ) -> str:
+        """Generate a response from the model.
+        
+        Args:
+            messages: List of messages in the conversation
+            tools: Optional list of tools available to the model
+            
+        Returns:
+            The generated response
+        """
+        pass
+    
+    @abstractmethod
+    async def process_tool_calls(
+        self, 
+        tool_calls: List[ToolCall], 
+        tool_executor: Callable[[ToolCall], AsyncIterable[ToolResult]]
+    ) -> List[ToolResult]:
+        """Process tool calls from the model.
+        
+        Args:
+            tool_calls: List of tool calls to process
+            tool_executor: Function to execute a tool call
+            
+        Returns:
+            List of tool results
+        """
+        pass

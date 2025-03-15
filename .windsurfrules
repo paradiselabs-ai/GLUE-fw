@@ -1,7 +1,7 @@
 This is a multi-agentic autonomous AI development framework we are building in python and writing a DSL for as well. 
 
 Most information can be found in progressFiles/ and the README.md in the root directory. 
-
+!ALWAYS FOLLOW Test-Driven Development (TDD)!
 Make sure that you continously follow the Test-Driven Development (TDD) process and write tests for each new feature before implementing it. More about this can 
 be read in CLAUDE.md in the root directory. 
 

@@ -6,7 +6,7 @@ including application management, model connectors, and adhesive types.
 """
 
 from .app import GlueApp
-from .model import ModelConnector
+from .model import BaseModel, ModelProvider
 
 # Adhesive types for tool binding
 class AdhesiveType:
