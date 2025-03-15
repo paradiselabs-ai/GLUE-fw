@@ -49,14 +49,13 @@ tests/
 
 # Project specific
 setup.py
-requirements.txt
 progressFiles/
 .clinerules
 .claudeai
 CLAUDE.md
 .blackboxairules
 old_cli.md
-
+.windsurfrules
 *.sh
 mcp-llms-full.txt
 *.envrc
