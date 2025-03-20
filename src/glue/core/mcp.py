@@ -5,7 +5,7 @@ import json
 from typing import Dict, Any, Optional
 import logging
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from ..core.types import ToolResult, AdhesiveType
 from ..tools.base import Tool, ToolConfig
@@ -15,6 +15,8 @@ logger = logging.getLogger("glue.mcp")
 
 class MCPConfig(BaseModel):
     """Configuration for MCP client"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     endpoint: str
     api_key: Optional[str] = None
     timeout: float = Field(default=60.0, gt=0)

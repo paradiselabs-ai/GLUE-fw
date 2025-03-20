@@ -12,6 +12,12 @@ import inspect
 _tool_registry = {}
 logger = logging.getLogger("glue.tools")
 
+# Import tool implementations
+# We need to be careful with the import order to avoid circular imports
+from .tool_base import Tool, ToolConfig, ToolPermission
+from .file_handler_tool import FileHandlerTool, FileOperation
+from .code_interpreter_tool import CodeInterpreterTool, CodeLanguage
+
 class SimpleBaseTool:
     """Base class for simple tools that can be used in GLUE applications.
     

@@ -4,7 +4,7 @@ from typing import Dict, Set, Any, Optional, List, Tuple
 from datetime import datetime
 import logging
 import asyncio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 
 from ..core.team import Team
@@ -21,6 +21,8 @@ class FlowType(str, Enum):
 
 class FlowMetrics(BaseModel):
     """Metrics for flow health monitoring"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     latency: float = 0.0        # Time for information transfer
     congestion: float = 0.0     # Flow congestion level (0-1)
     throughput: float = 0.0     # Successful transfers per minute
@@ -30,6 +32,8 @@ class FlowMetrics(BaseModel):
 # ==================== Class Definitions ====================
 class FlowState(BaseModel):
     """State of a magnetic flow between teams"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     source_team: str
     target_team: str
     flow_type: FlowType

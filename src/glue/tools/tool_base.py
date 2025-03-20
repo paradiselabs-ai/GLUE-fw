@@ -6,7 +6,7 @@ from enum import Enum
 import inspect
 import asyncio
 import logging
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from ..core.types import AdhesiveType
 
@@ -26,6 +26,8 @@ class ToolPermission(Enum):
 
 class ToolConfig(BaseModel):
     """Tool configuration with Pydantic validation"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     timeout: float = Field(default=DEFAULT_TIMEOUT, gt=0)
     max_retries: int = Field(default=MAX_RETRIES, ge=0)
     required_permissions: Set[ToolPermission] = Field(default_factory=set)

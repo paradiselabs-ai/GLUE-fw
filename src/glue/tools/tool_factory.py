@@ -2,9 +2,9 @@
 # ==================== Imports ====================
 import inspect
 import asyncio
-from typing import Dict, Any, Optional, Type, Union, Callable
+from typing import Dict, Any, Optional, Type, Union, Callable, Set
 import logging
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from .base import Tool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
@@ -15,6 +15,8 @@ logger = logging.getLogger("glue.tools.factory")
 # ==================== Class Definitions ====================
 class ToolSpec(BaseModel):
     """Specification for dynamic tool creation"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    
     name: str
     description: str
     function: Union[str, Callable]
