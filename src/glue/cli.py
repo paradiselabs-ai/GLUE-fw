@@ -18,7 +18,7 @@ from typing import List, Dict, Any, Optional, Union
 
 # Import framework modules
 # Use direct imports to avoid circular imports
-from glue.core import GlueApp, AdhesiveType, ModelConnector
+from glue.core import GlueApp, AdhesiveType
 from glue.dsl import GlueDSLParser, GlueLexer
 from glue.tools import SimpleBaseTool, register_tool
 

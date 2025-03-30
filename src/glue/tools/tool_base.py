@@ -69,16 +69,20 @@ class Tool(ABC):
             await self.initialize()
             
         tries = 0
-        while tries < self.config.max_retries:
+        max_tries = self.config.max_retries + 1  # Include the initial attempt
+        
+        while tries < max_tries:
             try:
                 async with asyncio.timeout(self.config.timeout):
+                    # Execute the tool
                     return await self._execute(input_data)
             except asyncio.TimeoutError:
                 tries += 1
-                if tries == self.config.max_retries:
+                if tries >= max_tries:
                     raise
                 logger.warning(f"Tool {self.name} timed out, attempt {tries}")
             except Exception as e:
+                # Log and re-raise any other exceptions
                 logger.error(f"Tool {self.name} execution failed: {str(e)}")
                 raise
 
@@ -140,7 +144,8 @@ class Tool(ABC):
         # Override for custom cleanup
 
 class DynamicTool(Tool):
-    """Base class for dynamically created tools"""
+    """Tool that executes a dynamic function"""
+    
     def __init__(
         self,
         name: str,
@@ -153,6 +158,11 @@ class DynamicTool(Tool):
         
     async def _execute(self, input_data: Any) -> Any:
         """Execute the dynamic function"""
-        if asyncio.iscoroutinefunction(self.function):
-            return await self.function(input_data)
-        return self.function(input_data)
+        try:
+            if asyncio.iscoroutinefunction(self.function):
+                return await self.function(input_data)
+            else:
+                return self.function(input_data)
+        except Exception as e:
+            logger.debug(f"Error in dynamic function: {type(e).__name__}: {str(e)}")
+            raise  # Re-raise to ensure proper error propagation

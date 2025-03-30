@@ -21,7 +21,10 @@ class Team:
     def __init__(
         self,
         name: str,
-        config: Optional[TeamConfig] = None
+        config: Optional[TeamConfig] = None,
+        # For backward compatibility with tests
+        lead: Optional[Model] = None,
+        members: Optional[List[Model]] = None
     ):
         self.name = name
         self.config = config or TeamConfig(name=name, lead="", members=[], tools=[])
@@ -40,6 +43,14 @@ class Team:
         # Metadata
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
+        
+        # Handle backward compatibility with tests
+        if lead is not None:
+            self.add_member_sync(lead, role="lead")
+            
+        if members is not None:
+            for member in members:
+                self.add_member_sync(member)
 
     # ==================== Core Methods ====================
     async def add_member(
@@ -148,6 +159,27 @@ class Team:
         self.conversation_history.append(response_message)
         
         return response
+
+    def add_member_sync(
+        self,
+        model: Model,
+        role: str = "member",
+        tools: Optional[Set[str]] = None
+    ) -> None:
+        """Synchronous version of add_member for use in tests"""
+        # Register the model with this team
+        model.set_team(self)
+        
+        # Add to models dictionary
+        self.models[model.name] = model
+        
+        # Assign tools if specified
+        if tools:
+            for tool_name in tools:
+                if tool_name in self.tools:
+                    model.add_tool(tool_name, self.tools[tool_name])
+        
+        logger.info(f"Added model {model.name} to team {self.name} with role {role}")
 
     # ==================== Magnetic Field Methods ====================
     def set_relationship(self, team_name: str, relationship: str) -> None:

@@ -16,6 +16,13 @@ class AdhesiveType(str, Enum):
     VELCRO = "velcro" # Session-based persistence
     TAPE = "tape"    # One-time use, no persistence
 
+class FlowType(str, Enum):
+    """Types of magnetic flows between teams"""
+    BIDIRECTIONAL = "><"  # Free flowing both ways
+    PUSH = "->"          # Source pushes to target
+    PULL = "<-"          # Target pulls from source
+    REPEL = "<>"         # No interaction allowed
+
 # ==================== Class Definitions ====================
 @dataclass
 class ToolResult:

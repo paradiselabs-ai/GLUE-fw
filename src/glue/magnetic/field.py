@@ -7,17 +7,11 @@ import asyncio
 from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 
-from ..core.team import Team
+from ..core.teams import Team
+from ..core.types import FlowType
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.magnetic")
-
-class FlowType(str, Enum):
-    """Types of magnetic flows between teams"""
-    BIDIRECTIONAL = "><"  # Free flowing both ways
-    PUSH = "->"          # Source pushes to target
-    PULL = "<-"          # Target pulls from source
-    REPEL = "<>"         # No interaction allowed
 
 class FlowMetrics(BaseModel):
     """Metrics for flow health monitoring"""

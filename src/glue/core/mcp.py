@@ -7,8 +7,8 @@ import logging
 import httpx
 from pydantic import BaseModel, Field, ConfigDict
 
-from ..core.types import ToolResult, AdhesiveType
-from ..tools.base import Tool, ToolConfig
+from glue.core.types import ToolResult, AdhesiveType
+from glue.tools.tool_base import Tool, ToolConfig
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.mcp")

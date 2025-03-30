@@ -63,3 +63,4 @@ mcp-llms-full.txt
 .env
 activate_venv.sh
 auto_activate.sh
+.qodo

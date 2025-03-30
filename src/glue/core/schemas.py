@@ -32,14 +32,14 @@ class ToolCall(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "id": "call_1",
+                "tool_id": "call_1",
                 "name": "web_search",
                 "arguments": {"query": "GLUE framework for AI", "max_results": 5}
             }
         }
     )
     
-    id: str = Field(..., description="Unique identifier for the tool call")
+    tool_id: str = Field(..., description="Unique identifier for the tool call")
     name: str = Field(..., description="Name of the tool being called")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Arguments for the tool call")
 
@@ -57,6 +57,22 @@ class ToolResult(BaseModel):
     
     tool_call_id: str = Field(..., description="ID of the tool call that was executed")
     content: Any = Field(..., description="Result content from the tool execution")
+    # For backward compatibility with tests
+    tool_name: Optional[str] = Field(None, description="Name of the tool (backward compatibility)")
+    result: Optional[Any] = Field(None, description="Result data (backward compatibility)")
+    adhesive: Optional[AdhesiveType] = Field(None, description="Adhesive type (backward compatibility)")
+    
+    @model_validator(mode='before')
+    def handle_backward_compatibility(cls, data):
+        """Handle backward compatibility with old field names"""
+        if isinstance(data, dict):
+            # If using old format (tool_name, result) but missing new fields
+            if 'tool_name' in data and 'result' in data:
+                if 'tool_call_id' not in data:
+                    data['tool_call_id'] = f"call_{data['tool_name']}"
+                if 'content' not in data:
+                    data['content'] = data['result']
+        return data
 
 
 # ==================== Message Models ====================

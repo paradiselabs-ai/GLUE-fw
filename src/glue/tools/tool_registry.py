@@ -11,6 +11,37 @@ from glue.tools.tool_base import Tool, ToolPermission
 
 logger = logging.getLogger(__name__)
 
+# Tool class registry
+_tool_classes = {}
+
+def register_tool_class(name: str, tool_class: Any) -> None:
+    """
+    Register a tool class with the registry.
+    
+    Args:
+        name: The name of the tool class
+        tool_class: The tool class to register
+    """
+    _tool_classes[name] = tool_class
+    logger.info(f"Registered tool class: {name}")
+
+def get_tool_class(name: str) -> Any:
+    """
+    Get a tool class by name.
+    
+    Args:
+        name: The name of the tool class to get
+        
+    Returns:
+        The tool class
+        
+    Raises:
+        ValueError: If the tool class is not found
+    """
+    if name not in _tool_classes:
+        raise ValueError(f"Tool class '{name}' not found")
+    
+    return _tool_classes[name]
 
 class ToolRegistry:
     """
