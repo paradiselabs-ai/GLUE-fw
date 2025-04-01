@@ -314,9 +314,19 @@ class GlueParser:
         # Expect opening brace
         self._consume(TokenType.LBRACE, "Expected '{' after 'magnetize'")
         
-        # Parse teams
+        # Parse teams and flow section
         while not self._check(TokenType.RBRACE) and not self._is_at_end():
-            self._parse_team()
+            if self._check(TokenType.IDENTIFIER):
+                if self._peek().value == "flow":
+                    self._parse_flow()
+                else:
+                    self._parse_team()
+            elif self._check(TokenType.COMMENT):
+                # Skip comments
+                self._advance()
+            else:
+                token = self._peek()
+                raise SyntaxError(f"Unexpected token at line {token.line}: {token.type}")
             
         # Expect closing brace
         self._consume(TokenType.RBRACE, "Expected '}' after magnetize block")
@@ -338,6 +348,66 @@ class GlueParser:
         
         # Add team to AST
         self.ast["teams"].append(team)
+        
+    def _parse_flow(self):
+        """Parse flow section within magnetize block"""
+        # Expect 'flow' identifier
+        self._consume(TokenType.IDENTIFIER, "Expected 'flow' keyword")
+        
+        # Expect opening brace
+        self._consume(TokenType.LBRACE, "Expected '{' after 'flow'")
+        
+        # Parse flow definitions
+        while not self._check(TokenType.RBRACE) and not self._is_at_end():
+            if self._check(TokenType.COMMENT):
+                # Skip comments
+                self._advance()
+                continue
+                
+            # Expect source team identifier
+            source_token = self._consume(TokenType.IDENTIFIER, "Expected source team identifier")
+            source_team = source_token.value
+            
+            # Expect flow operator
+            flow_type = None
+            if self._check(TokenType.ARROW):
+                arrow_token = self._advance()
+                if arrow_token.value == "->":
+                    flow_type = "PUSH"
+                elif arrow_token.value == "><":
+                    flow_type = "BIDIRECTIONAL"
+                elif arrow_token.value == "<>":
+                    flow_type = "REPEL"
+                elif arrow_token.value == "<-":
+                    flow_type = "PULL"
+                else:
+                    raise SyntaxError(f"Unknown flow operator at line {arrow_token.line}: {arrow_token.value}")
+            else:
+                token = self._peek()
+                raise SyntaxError(f"Expected flow operator at line {token.line}, got {token.type}")
+                
+            # Expect target team identifier
+            target_token = self._consume(TokenType.IDENTIFIER, "Expected target team identifier")
+            target_team = target_token.value
+            
+            # Create flow definition
+            flow = {
+                "source": source_team,
+                "target": target_team,
+                "type": flow_type
+            }
+            
+            # Add flow to AST
+            self.ast["flows"].append(flow)
+            
+            # Check for semicolon or comment
+            if self._check(TokenType.SEMICOLON):
+                self._advance()
+            elif self._check(TokenType.COMMENT):
+                self._advance()
+                
+        # Expect closing brace
+        self._consume(TokenType.RBRACE, "Expected '}' after flow definitions")
         
     def _parse_properties(self, target: Dict[str, Any]):
         """Parse properties into the target dictionary"""

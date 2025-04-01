@@ -58,6 +58,13 @@ class WebSearchTool(Tool):
         else:
             self.provider_type = provider_type
             
+        # Extract API key from config for test compatibility
+        self.api_key = None
+        if provider_config and "api_key" in provider_config:
+            self.api_key = provider_config.get("api_key")
+        elif config and isinstance(config, dict) and "metadata" in config:
+            self.api_key = config.get("metadata", {}).get("api_key")
+        
         self.provider_config = provider_config or {}
         self.provider: Optional[SearchProvider] = None
     

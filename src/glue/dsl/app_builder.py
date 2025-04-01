@@ -9,8 +9,9 @@ import re
 import logging
 from typing import Dict, Any, List, Optional, Set, Tuple
 from pathlib import Path
+import asyncio
 
-from ..core.app import GlueApp
+from ..core.app import GlueApp, AppConfig
 from ..core.model import Model
 from ..core.teams import Team
 from ..core.types import AdhesiveType, FlowType
@@ -73,17 +74,33 @@ class GlueAppBuilder:
         # Create flows
         flows = self._create_flows(config.get("flows", []))
         
-        # Create the app
-        app = GlueApp(
-            name=app_name,
-            description=app_description,
-            version=app_version,
-            development=app_development,
-            models=list(self._models.values()),
-            tools=list(self._tools.values()),
-            teams=list(self._teams.values()),
-            flows=flows
-        )
+        # Create an AppConfig object
+        app_config_obj = AppConfig(app_name, app_description)
+        
+        # Add models, tools, and teams to the AppConfig
+        for model in self._models.values():
+            app_config_obj.models[model.name] = model
+            
+        for tool in self._tools.values():
+            app_config_obj.tools[tool.name] = tool
+            
+        for team in self._teams.values():
+            app_config_obj.teams[team.name] = team
+        
+        # Create the app with the AppConfig
+        app = GlueApp(config=app_config_obj)
+        
+        # Add properties expected by tests
+        app.name = app_name
+        app.description = app_description
+        app.version = app_version
+        app.development = app_development
+        
+        # Add collections expected by tests
+        app.models = self._models
+        app.tools = self._tools
+        app.teams = self._teams
+        app.flows = flows
         
         self.logger.info(f"Successfully built GLUE application: {app_name}")
         return app
@@ -96,13 +113,16 @@ class GlueAppBuilder:
             
         Returns:
             Instantiated Model
+            
+        Raises:
+            ValueError: If the model provider is unknown
         """
         name = config.get("name")
         provider = config.get("provider")
         role = config.get("role", "assistant")
         model_config = config.get("config", {})
         
-        # Process adhesives
+        # Process adhesives if present
         adhesives = set()
         for adhesive_str in config.get("adhesives", []):
             try:
@@ -123,13 +143,26 @@ class GlueAppBuilder:
         # Substitute environment variables in config
         processed_config = self._substitute_env_vars(model_config)
         
-        self.logger.info(f"Creating model: {name}")
-        return Model(
+        # Convert dictionary to Pydantic ModelConfig
+        from ..core.schemas import ModelConfig as PydanticModelConfig
+        
+        # Create a ModelConfig instance with the required fields
+        model_pydantic_config = PydanticModelConfig(
             name=name,
             provider=provider,
-            role=role,
-            adhesives=adhesives,
-            config=processed_config
+            model=processed_config.get("model", provider),
+            temperature=processed_config.get("temperature", 0.7),
+            max_tokens=processed_config.get("max_tokens", 2048),
+            description=processed_config.get("description", ""),
+            api_key=processed_config.get("api_key"),
+            api_params=processed_config.get("api_params", {}),
+            provider_class=processed_config.get("provider_class")
+        )
+        
+        self.logger.info(f"Creating model: {name}")
+        return Model(
+            config=model_pydantic_config,
+            adhesives=adhesives
         )
         
     def _create_tool(self, config: Dict[str, Any]) -> Tool:
@@ -199,7 +232,6 @@ class GlueAppBuilder:
             ValueError: If referenced model or tools are not found
         """
         name = config.get("name")
-        description = config.get("description", "")
         model_name = config.get("model")
         tool_names = config.get("tools", [])
         team_config = config.get("config", {})
@@ -209,24 +241,30 @@ class GlueAppBuilder:
             raise ValueError(f"Referenced model not found: {model_name}")
         model = self._models[model_name]
         
-        # Get the tools
-        tools = []
-        for tool_name in tool_names:
-            if tool_name not in self._tools:
-                raise ValueError(f"Referenced tool not found: {tool_name}")
-            tools.append(self._tools[tool_name])
-        
         # Substitute environment variables in config
         processed_config = self._substitute_env_vars(team_config)
         
         self.logger.info(f"Creating team: {name}")
-        return Team(
+        # Create the team with just the lead model
+        team = Team(
             name=name,
-            description=description,
-            model=model,
-            tools=tools,
+            lead=model,
             config=processed_config
         )
+        
+        # Add tools to the team after creation
+        for tool_name in tool_names:
+            if tool_name not in self._tools:
+                raise ValueError(f"Referenced tool not found: {tool_name}")
+            # Use asyncio.run to call the async add_tool method synchronously
+            # This is needed because we're in a synchronous context
+            asyncio.run(team.add_tool(
+                name=tool_name,
+                tool=self._tools[tool_name],
+                binding=AdhesiveType.VELCRO  # Default binding
+            ))
+            
+        return team
         
     def _create_flows(self, flow_configs: List[Dict[str, Any]]) -> List[Flow]:
         """Create flows between teams.

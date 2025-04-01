@@ -51,6 +51,13 @@ class Flow:
         self.source_to_target_task = None
         self.target_to_source_task = None
         
+    async def setup(self) -> None:
+        """Set up the flow by establishing connections.
+        
+        This is an alias for establish() to maintain compatibility with the app setup process.
+        """
+        await self.establish()
+        
     async def establish(self) -> None:
         """Establish the flow between teams."""
         if self.active:
@@ -84,26 +91,41 @@ class Flow:
             
         self.logger.info(f"Terminating flow between {self.source.name} and {self.target.name}")
         
+        # Mark flow as inactive first to prevent new messages from being processed
+        self.active = False
+        
+        tasks_to_cancel = []
+        
         # Cancel message processing tasks
         if self.source_to_target_task:
             self.source_to_target_task.cancel()
-            try:
-                await self.source_to_target_task
-            except asyncio.CancelledError:
-                pass
+            tasks_to_cancel.append(self.source_to_target_task)
                 
         if self.target_to_source_task:
             self.target_to_source_task.cancel()
+            tasks_to_cancel.append(self.target_to_source_task)
+            
+        # Wait for all tasks to complete cancellation
+        if tasks_to_cancel:
             try:
-                await self.target_to_source_task
-            except asyncio.CancelledError:
-                pass
+                # Use wait_for with a timeout to avoid hanging
+                await asyncio.wait_for(
+                    asyncio.gather(*tasks_to_cancel, return_exceptions=True),
+                    timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                # Tasks didn't complete in time, log but continue
+                self.logger.warning("Some flow tasks didn't complete cancellation in time")
+            except Exception as e:
+                self.logger.error(f"Error cancelling flow tasks: {e}")
                 
+        # Clear task references
+        self.source_to_target_task = None
+        self.target_to_source_task = None
+        
         # Unregister flow with teams
         self.source.unregister_outgoing_flow(self)
         self.target.unregister_incoming_flow(self)
-        
-        self.active = False
         
     async def send_from_source(self, message: Dict[str, Any]) -> None:
         """Send a message from the source team to the target team.
@@ -147,25 +169,50 @@ class Flow:
             sender: Sending team
             receiver: Receiving team
         """
-        while True:
-            message = await queue.get()
-            
+        # Flag to track if we should continue processing
+        running = True
+        
+        while running:
             try:
-                self.logger.debug(f"Processing message from {sender.name} to {receiver.name}")
-                
-                # Add metadata to the message
-                if "metadata" not in message:
-                    message["metadata"] = {}
+                # Check for cancellation before waiting for queue
+                if asyncio.current_task().cancelled():
+                    break
+ 
+                # Use wait_for with a timeout to allow periodic cancellation checks
+                try:
+                    message = await asyncio.wait_for(queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    # No message yet, just loop and check for cancellation again
+                    continue
+                 
+                try:
+                    self.logger.debug(f"Processing message from {sender.name} to {receiver.name}: {message}")
                     
-                message["metadata"]["source_team"] = sender.name
-                message["metadata"]["target_team"] = receiver.name
-                message["metadata"]["timestamp"] = asyncio.get_event_loop().time()
-                
-                # Deliver the message to the receiver
-                await receiver.receive_message(message, sender)
-                
+                    # Add metadata to the message
+                    if "metadata" not in message:
+                        message["metadata"] = {}
+                        
+                    message["metadata"]["source_team"] = sender.name
+                    message["metadata"]["target_team"] = receiver.name
+                    message["metadata"]["timestamp"] = asyncio.get_event_loop().time()
+                    
+                    # Deliver the message to the receiver
+                    await receiver.receive_message(message, sender)
+                    
+                except Exception as e:
+                    self.logger.error(f"Error processing message from {sender.name} to {receiver.name}: {e}")
+                    
+                finally:
+                    queue.task_done()
+            except asyncio.CancelledError:
+                # Handle task cancellation gracefully
+                self.logger.debug(f"Message processing task cancelled for {sender.name} to {receiver.name}")
+                # Make sure to break out of the loop when cancelled
+                break
+            except RuntimeError as e:
+                # Handle event loop closed or other runtime errors
+                self.logger.debug(f"Runtime error in message processing for {sender.name} to {receiver.name}: {e}")
+                running = False  # Exit the loop
             except Exception as e:
+                # Log any errors but keep processing
                 self.logger.error(f"Error processing message from {sender.name} to {receiver.name}: {e}")
-                
-            finally:
-                queue.task_done()

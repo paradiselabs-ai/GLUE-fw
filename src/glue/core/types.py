@@ -51,6 +51,7 @@ class ModelConfig:
     max_tokens: int = 2048
     api_key: Optional[str] = None
     api_params: Dict[str, Any] = field(default_factory=dict)
+    supported_adhesives: List[str] = field(default_factory=list)
 
 @dataclass
 class ToolConfig:

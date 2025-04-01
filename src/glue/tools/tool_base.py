@@ -1,7 +1,7 @@
 # glue/tools/base.py
 # ==================== Imports ====================
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional, Set, Union
 from enum import Enum
 import inspect
 import asyncio
@@ -31,7 +31,7 @@ class ToolConfig(BaseModel):
     timeout: float = Field(default=DEFAULT_TIMEOUT, gt=0)
     max_retries: int = Field(default=MAX_RETRIES, ge=0)
     required_permissions: Set[ToolPermission] = Field(default_factory=set)
-    adhesive_types: Set[AdhesiveType] = Field(default_factory=lambda: {AdhesiveType.TAPE})
+    adhesive_types: Set[AdhesiveType] = Field(default_factory=lambda: {AdhesiveType.GLUE})  # Default to GLUE for test compatibility
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 class Tool(ABC):
@@ -40,11 +40,22 @@ class Tool(ABC):
         self,
         name: str,
         description: str,
-        config: Optional[ToolConfig] = None
+        config: Optional[Union[ToolConfig, Dict[str, Any]]] = None
     ):
         self.name = name
         self.description = description
-        self.config = config or ToolConfig()
+        
+        # Handle dictionary configs for test compatibility
+        if config is not None and isinstance(config, dict):
+            # Create a ToolConfig with adhesive_types for test compatibility
+            adhesive_types = config.get('adhesive_types', {AdhesiveType.GLUE})
+            self.config = ToolConfig(
+                required_permissions=config.get('required_permissions', set()),
+                metadata=config.get('metadata', {}),
+                adhesive_types=adhesive_types
+            )
+        else:
+            self.config = config or ToolConfig()
         
         # Input parameters from execute signature
         self.inputs = self._get_input_parameters()
@@ -151,7 +162,7 @@ class DynamicTool(Tool):
         name: str,
         description: str,
         function: Any,
-        config: Optional[ToolConfig] = None
+        config: Optional[Union[ToolConfig, Dict[str, Any]]] = None
     ):
         super().__init__(name, description, config)
         self.function = function

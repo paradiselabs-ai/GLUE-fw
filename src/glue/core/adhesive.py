@@ -349,12 +349,17 @@ def check_adhesive_compatibility(model: Any, adhesive_type: AdhesiveType) -> boo
         True if the model supports the adhesive type, False otherwise
     """
     # For backward compatibility with tests
-    if hasattr(model, 'adhesives') and isinstance(model.adhesives, set):
+    if hasattr(model, 'adhesives') and isinstance(model.adhesives, (set, list)):
         return adhesive_type in model.adhesives
+    
+    # For models with supported_adhesives attribute
+    if hasattr(model, 'supported_adhesives') and isinstance(model.supported_adhesives, (set, list)):
+        # Check if the adhesive type is in the list (could be string or enum)
+        return adhesive_type in model.supported_adhesives or adhesive_type.value in model.supported_adhesives
     
     # For models with has_adhesive method
     if hasattr(model, 'has_adhesive') and callable(model.has_adhesive):
         return model.has_adhesive(adhesive_type)
     
-    # Default to True for tests
+    # Default to False for safety
     return False

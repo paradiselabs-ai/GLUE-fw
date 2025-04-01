@@ -55,12 +55,16 @@ class ToolResult(BaseModel):
         }
     )
     
-    tool_call_id: str = Field(..., description="ID of the tool call that was executed")
-    content: Any = Field(..., description="Result content from the tool execution")
     # For backward compatibility with tests
     tool_name: Optional[str] = Field(None, description="Name of the tool (backward compatibility)")
     result: Optional[Any] = Field(None, description="Result data (backward compatibility)")
     adhesive: Optional[AdhesiveType] = Field(None, description="Adhesive type (backward compatibility)")
+    
+    # New fields
+    tool_call_id: Optional[str] = Field(None, description="ID of the tool call that was executed")
+    content: Optional[Any] = Field(None, description="Result content from the tool execution")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata about the result")
+    timestamp: datetime = Field(default_factory=datetime.now, description="Time when the result was created")
     
     @model_validator(mode='before')
     def handle_backward_compatibility(cls, data):
@@ -72,7 +76,29 @@ class ToolResult(BaseModel):
                     data['tool_call_id'] = f"call_{data['tool_name']}"
                 if 'content' not in data:
                     data['content'] = data['result']
+                if 'metadata' not in data:
+                    data['metadata'] = {}
+            # If using new format but missing old fields
+            elif 'tool_call_id' in data and 'content' in data:
+                if 'tool_name' not in data:
+                    data['tool_name'] = data['tool_call_id'].replace('call_', '', 1)
+                if 'result' not in data:
+                    data['result'] = data['content']
+                if 'adhesive' not in data:
+                    data['adhesive'] = AdhesiveType.GLUE
         return data
+    
+    @model_validator(mode='after')
+    def validate_required_fields(cls, model):
+        """Ensure that either old or new format fields are present and adhesive is provided"""
+        if (model.tool_name is None or model.result is None) and (model.tool_call_id is None or model.content is None):
+            raise ValueError("Either (tool_name, result) or (tool_call_id, content) must be provided")
+        
+        # Ensure adhesive is provided when using the old format
+        if model.tool_name is not None and model.result is not None and model.adhesive is None:
+            raise ValueError("Adhesive type must be provided when using tool_name and result")
+            
+        return model
 
 
 # ==================== Message Models ====================

@@ -128,7 +128,7 @@ def get_config_schema() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: JSON schema
     """
-    return AppConfig.schema()
+    return AppConfig.model_json_schema()
 
 
 def get_model_schema() -> Dict[str, Any]:
@@ -138,7 +138,7 @@ def get_model_schema() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: JSON schema
     """
-    return ModelConfig.schema()
+    return ModelConfig.model_json_schema()
 
 
 def get_tool_schema() -> Dict[str, Any]:
@@ -148,7 +148,7 @@ def get_tool_schema() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: JSON schema
     """
-    return ToolConfig.schema()
+    return ToolConfig.model_json_schema()
 
 
 def get_team_schema() -> Dict[str, Any]:
@@ -158,7 +158,7 @@ def get_team_schema() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: JSON schema
     """
-    return TeamConfig.schema()
+    return TeamConfig.model_json_schema()
 
 
 def get_magnet_schema() -> Dict[str, Any]:
@@ -168,4 +168,4 @@ def get_magnet_schema() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: JSON schema
     """
-    return MagnetConfig.schema()
+    return MagnetConfig.model_json_schema()
