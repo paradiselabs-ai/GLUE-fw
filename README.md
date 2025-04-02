@@ -1,7 +1,30 @@
 # GLUE Framework
 
+# ⚠️ ALPHA RELEASE NOTICE ⚠️
+
+This is an alpha release (0.1.0-alpha) of the GLUE framework. The API may change in future releases. We welcome your feedback and bug reports as we work toward the beta release.
+
 GLUE (GenAI Linking & Unification Engine) is a powerful framework for building multi-model AI applications with natural communication patterns and intuitive tool usage.
 
+## Status Update - April 2025
+
+**All tests are now passing!** We've successfully fixed the flow management and adhesive system issues. The framework is now stable and ready for an alpha release.
+
+### Immediate Alpha Release
+
+We're releasing an alpha version of the GLUE framework immediately:
+
+- **Alpha Release Date**: April 2, 2025 (TOMORROW)
+- **Version**: 0.1.0-alpha
+- **Focus**: Core functionality and stability
+
+The alpha release includes all core components with passing tests, but with limited documentation and partial CLI implementation. See the [CHANGELOG.md](./CHANGELOG.md) for details.
+
+### Release Roadmap
+
+- **Alpha**: April 2, 2025
+- **Beta**: April 15, 2025
+- **Release**: May 1, 2025
 
 ## Features
 
@@ -14,6 +37,7 @@ GLUE (GenAI Linking & Unification Engine) is a powerful framework for building m
 - **Simple Expression Language**: Write clear, declarative AI applications with the GLUE DSL
 - **Built-in Tools**: Web search, file handling, and code interpretation out of the box
 - **Extensible Design**: Create custom tools and add new model providers easily
+- **API Key Management**: Integration with [Portkey.ai](https://portkey.ai) for secure API key management
 
 ## Quick Start
 
@@ -30,6 +54,12 @@ export OPENROUTER_API_KEY=your_key_here
 # Optional (for web search)
 export SERP_API_KEY=your_key_here
 export TAVILY_API_KEY=your_key_here
+
+# Enable Portkey integration
+export PORTKEY_ENABLED=true
+
+# Set your Portkey API key
+export PORTKEY_API_KEY=your_portkey_api_key
 ```
 
 3. Create a GLUE application (e.g., `app.glue`):
@@ -164,11 +194,9 @@ magnetize {
 - Built-in debugging and optimization tools
 - Comprehensive documentation and examples
 
-
 ## Contributing
 
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-

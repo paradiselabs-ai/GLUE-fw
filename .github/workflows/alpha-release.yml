@@ -1,0 +1,101 @@
+name: Alpha Release
+
+on:
+  push:
+    tags:
+      - 'v*-alpha*'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11"]
+
+    env:
+      PORTKEY_ENABLED: true
+      PORTKEY_API_KEY: ${{ secrets.PORTKEY_API_KEY }}
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install pytest pytest-asyncio
+        if [ -f pyproject.toml ]; then pip install -e .; else pip install -e .; fi
+    - name: Test with pytest
+      run: |
+        pytest
+
+  build-and-publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install build wheel
+    - name: Extract version from tag
+      id: get_version
+      run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+    - name: Build package
+      run: |
+        python -m build
+    - name: Publish to PyPI
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        password: ${{ secrets.PYPI_API_TOKEN }}
+    - name: Create GitHub Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: GLUE Framework ${{ steps.get_version.outputs.VERSION }}
+        draft: false
+        prerelease: true
+        body: |
+          # GLUE Framework Alpha Release ${{ steps.get_version.outputs.VERSION }}
+          
+          This is an alpha release of the GLUE Framework. Please refer to the [CHANGELOG.md](https://github.com/paradiselabs-ai/GLUE-fw/blob/main/CHANGELOG.md) for details on what's included in this release.
+          
+          ## Installation
+          
+          ```bash
+          pip install glue-framework==${{ steps.get_version.outputs.VERSION }}
+          ```
+          
+          ## Usage Tracking
+          
+          This release includes integration with [Portkey.ai](https://portkey.ai) for API key management and usage tracking. To enable Portkey integration:
+          
+          ```bash
+          export PORTKEY_ENABLED=true
+          export PORTKEY_API_KEY=your_portkey_api_key
+          ```
+          
+          See the [Portkey Integration Documentation](https://github.com/paradiselabs-ai/GLUE-fw/blob/main/docs/portkey_integration.md) for more details.
+          
+          ## Known Limitations
+          
+          This is an alpha release and some features may be incomplete or subject to change. Please report any issues on GitHub.
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./dist/glue_framework-${{ steps.get_version.outputs.VERSION }}.tar.gz
+        asset_name: glue_framework-${{ steps.get_version.outputs.VERSION }}.tar.gz
+        asset_content_type: application/gzip

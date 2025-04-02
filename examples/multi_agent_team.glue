@@ -1,0 +1,99 @@
+glue app {
+    name = "Multi-Agent Development Team"
+    config {
+        development = true
+        sticky = true  // Enable persistence
+        portkey = true  // Enable Portkey integration
+    }
+}
+
+// Define tools
+tool web_search {
+    provider = serp  // Will use SERP_API_KEY from environment
+}
+
+tool file_handler {
+    config {
+        base_path = "./workspace"  // Set the base path for file operations
+    }
+}
+
+tool code_interpreter {}
+
+// Models define their tool relationships
+model architect {
+    provider = openrouter
+    role = "You are a software architect responsible for designing high-level system architecture and making key technical decisions. You focus on scalability, maintainability, and best practices."
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-3.1-405b-instruct:free"
+        temperature = 0.4
+    }
+}
+
+model developer {
+    provider = openrouter
+    role = "You are a senior developer responsible for implementing the architecture designed by the architect. You write clean, efficient code and follow best practices."
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+        temperature = 0.6
+    }
+}
+
+model tester {
+    provider = openrouter
+    role = "You are a QA engineer responsible for testing the code written by the developer. You create comprehensive test cases and ensure the code meets requirements."
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+        temperature = 0.5
+    }
+}
+
+model documenter {
+    provider = openrouter
+    role = "You are a technical writer responsible for creating clear, concise documentation for the codebase. You make complex concepts accessible to users of all levels."
+    adhesives = [tape]
+    config {
+        model = "meta-llama/llama-3-8b-instruct:free"
+        temperature = 0.3
+    }
+}
+
+// Workflow defines model interactions and memory
+magnetize {
+    design_team {
+        lead = architect
+        members = [developer]
+        tools = [web_search, code_interpreter]
+    }
+
+    implementation_team {
+        lead = developer
+        tools = [code_interpreter, file_handler]
+    }
+
+    qa_team {
+        lead = tester
+        tools = [code_interpreter]
+    }
+
+    docs_team {
+        lead = documenter
+        tools = [file_handler]
+    }
+
+    // Define information flow between teams
+    design_team -> implementation_team  // Design flows to implementation
+    implementation_team -> qa_team      // Implementation flows to QA
+    qa_team -> implementation_team      // QA feedback flows back to implementation
+    
+    implementation_team -> docs_team    // Implementation details flow to documentation
+    design_team -> docs_team            // Architecture details flow to documentation
+
+    // Allow QA to pull information from design when needed
+    qa_team <- design_team pull
+}
+
+apply glue

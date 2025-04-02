@@ -6,6 +6,8 @@ over different AI model providers and handles tool usage capabilities.
 """
 import importlib
 import logging
+import os
+import uuid
 from abc import ABC, abstractmethod
 from enum import Enum, auto
 from typing import Dict, List, Any, Optional, Callable, Union, Type, AsyncIterable, Set
@@ -207,6 +209,9 @@ class Model(BaseModel):
         # Flag to track if this is a test instance
         self._is_test_instance = False
         
+        # Generate a trace ID for Portkey tracking
+        self._trace_id = str(uuid.uuid4())
+        
         # Handle backward compatibility with tests that pass arguments directly
         if config is None and kwargs:
             self._is_test_instance = True
@@ -216,8 +221,8 @@ class Model(BaseModel):
             provider = kwargs.get('provider', 'custom')
             model_name = kwargs.get('model', provider)  # Use provider as model name if not specified
             
-            # Create a minimal config
-            mock_config = type('MockConfig', (), {
+            # Create a config attribute for test compatibility
+            self.config = {
                 'name': name,
                 'provider': provider,
                 'model': model_name,
@@ -228,8 +233,10 @@ class Model(BaseModel):
                 'api_params': {},
                 'provider_class': 'glue.core.providers.mock.MockProvider',
                 'role': kwargs.get('role', 'assistant')
-            })()
+            }
             
+            # Create a minimal config for BaseModel initialization
+            mock_config = type('MockConfig', (), self.config)()
             config = mock_config
             
             # Extract adhesives separately as they're handled differently
@@ -302,11 +309,11 @@ class Model(BaseModel):
         self.role = kwargs.get('role', self.config.get('role', 'assistant'))
         self.tools = {}
     
-    def _load_provider(self, provider_name: str, config: dict) -> Any:
+    def _load_provider(self, provider_name: str, config: dict):
         """Load a provider based on name and configuration.
         
-        This is a simplified implementation for test compatibility.
-        In a real implementation, this would dynamically load provider classes.
+        This method dynamically loads provider classes and optionally
+        wraps them with Portkey for API key management and tracking.
         
         Args:
             provider_name: Name of the provider to load
@@ -315,17 +322,60 @@ class Model(BaseModel):
         Returns:
             Provider instance
         """
-        # For test compatibility, just return a simple object with the provider name
-        provider = type('Provider', (), {
-            'name': provider_name,
-            'config': config,
-            'setup': lambda: None,
-            'cleanup': lambda: None,
-            'generate': lambda prompt, **kwargs: "Response from provider"
-        })()
+        # Map provider names to module paths
+        provider_modules = {
+            'openai': 'glue.core.providers.openai',
+            'anthropic': 'glue.core.providers.anthropic',
+            'openrouter': 'glue.core.providers.openrouter',
+            'test': 'glue.core.providers.test',
+            'mock': 'glue.core.providers.mock',
+            'custom': config.get('provider_class', 'glue.core.providers.mock')
+        }
         
-        return provider
-    
+        # Get the module path for the provider
+        module_path = provider_modules.get(provider_name.lower())
+        if not module_path:
+            logger.warning(f"Unknown provider: {provider_name}. Using mock provider.")
+            module_path = provider_modules['mock']
+        
+        try:
+            # Import the provider module
+            module = importlib.import_module(module_path)
+            
+            # Get the provider class
+            if provider_name.lower() == 'custom':
+                # For custom providers, the class name is in the path
+                class_name = module_path.split('.')[-1]
+            else:
+                # For built-in providers, use the capitalized name + "Provider"
+                class_name = f"{provider_name.capitalize()}Provider"
+            
+            provider_class = getattr(module, class_name)
+            
+            # Create an instance of the provider
+            provider_instance = provider_class(self)
+            
+            # Check if Portkey integration is enabled
+            portkey_enabled = os.environ.get("PORTKEY_ENABLED", "").lower() in ("true", "1", "yes")
+            
+            if portkey_enabled and not self._is_test_instance:
+                # Import the Portkey wrapper
+                from glue.core.providers.portkey_wrapper import wrap_provider
+                
+                # Wrap the provider with Portkey
+                model_name = config.get('model', 'unknown')
+                provider_instance = wrap_provider(provider_instance, model_name, self._trace_id)
+                logger.info(f"Provider {provider_name} wrapped with Portkey (trace_id: {self._trace_id})")
+            
+            return provider_instance
+        
+        except (ImportError, AttributeError) as e:
+            logger.error(f"Error loading provider {provider_name}: {str(e)}")
+            
+            # Fall back to mock provider
+            from glue.core.providers.mock import MockProvider
+            return MockProvider(self)
+
     def set_team(self, team):
         """Set the team this model belongs to."""
         self.team = team
