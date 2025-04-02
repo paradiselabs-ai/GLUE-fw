@@ -1,0 +1,74 @@
+// Multi-team GLUE application example
+glue app {
+    name = "Research Assistant"
+    config {
+        development = true
+        sticky = true  // Enable persistence
+    }
+}
+
+// Define tools
+tool web_search {
+    provider = serp
+}
+
+tool file_handler {}
+
+tool code_interpreter {
+    config {
+        languages = ["python", "javascript"]
+        sandbox = true
+    }
+}
+
+// Define models with Gemini as the primary provider
+model researcher {
+    provider = gemini
+    role = "Research different topics and subjects online."
+    adhesives = [glue, velcro]
+    config {
+        model = "gemini-1.5-pro"
+        temperature = 0.7
+    }
+}
+
+model assistant {
+    provider = gemini
+    role = "Help with research and coding tasks."
+    adhesives = [glue, velcro]
+    config {
+        model = "gemini-1.5-pro"
+        temperature = 0.5
+    }
+}
+
+model writer {
+    provider = gemini
+    role = "Write documentation summarizing findings."
+    adhesives = [tape]
+    config {
+        model = "gemini-1.5-pro"
+        temperature = 0.3
+    }
+}
+
+// Define workflow
+magnetize {
+    research {
+        lead = researcher
+        members = [assistant]
+        tools = [web_search, code_interpreter]
+    }
+
+    docs {
+        lead = writer
+        tools = [file_handler]
+    }
+
+    flow {
+        research -> docs  // Push results to docs
+        docs <- pull      // Docs can pull from research
+    }
+}
+
+apply glue

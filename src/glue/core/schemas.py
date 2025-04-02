@@ -159,7 +159,7 @@ class ModelConfig(BaseModel):
     
     @field_validator('provider')
     def validate_provider(cls, v):
-        supported_providers = {'openai', 'anthropic', 'openrouter', 'custom'}
+        supported_providers = {'openai', 'anthropic', 'openrouter', 'gemini', 'custom'}
         if v not in supported_providers:
             raise ValueError(f"Provider must be one of {supported_providers}")
         return v

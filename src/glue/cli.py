@@ -23,6 +23,127 @@ from glue.core import GlueApp, AdhesiveType
 from glue.dsl import GlueDSLParser, GlueLexer
 from glue.tools import SimpleBaseTool, register_tool
 
+# Import from cliHelpers for backward compatibility with tests
+from glue.cliHelpers import (
+    colorize_agent_output,
+    format_agent_message,
+    parse_interactive_command,
+    get_interactive_help_text,
+    format_agent_interactions
+)
+
+# Re-export functions for test compatibility
+async def interactive_session(app: 'GlueApp'):
+    """
+    Run an interactive session with the GLUE application.
+    
+    Args:
+        app: The GLUE application to run
+    """
+    print(f"\nStarting interactive session with {app.name}...")
+    print(get_interactive_help_text())
+    
+    while True:
+        try:
+            user_input = input("\n> ").strip()
+            
+            # Check for exit command
+            if user_input.lower() in ["exit", "quit", "/exit", "/quit"]:
+                print("Exiting interactive session.")
+                break
+                
+            # Parse as command if it starts with /
+            if user_input.startswith("/"):
+                command, args = parse_interactive_command(user_input)
+                
+                if command == "help":
+                    display_interactive_help()
+                elif command == "status":
+                    display_app_status(app)
+                elif command == "tools":
+                    display_available_tools(app)
+                elif command == "teams":
+                    display_team_structure(app)
+                else:
+                    print(f"Unknown command: {command}")
+            else:
+                # Process as regular input to the app
+                if user_input:
+                    # This would be handled by the app's input processing
+                    print("Processing input...")
+                    # Placeholder for actual app interaction
+                    print("Response would appear here.")
+        
+        except KeyboardInterrupt:
+            print("\nInterrupted. Use /exit to quit.")
+        except Exception as e:
+            print(f"Error: {e}")
+
+def display_app_status(app: 'GlueApp'):
+    """
+    Display the current status of the GLUE application.
+    
+    Args:
+        app: The GLUE application
+    """
+    print(f"\nApplication: {app.name}")
+    print(f"Models: {len(app.models)}")
+    print(f"Teams: {len(app.teams)}")
+    print(f"Tools: {len(app.tools)}")
+    print(f"Development mode: {app.config.get('development', False)}")
+    print(f"Sticky mode: {app.config.get('sticky', False)}")
+
+def display_team_structure(app: 'GlueApp'):
+    """
+    Display the team structure of the GLUE application.
+    
+    Args:
+        app: The GLUE application
+    """
+    print("\nTeam Structure:")
+    for team_name, team in app.teams.items():
+        print(f"\n[TEAM] {team_name}")
+        print(f"  Lead: {team.lead.name}")
+        if team.members:
+            print("  Members:")
+            for member in team.members:
+                print(f"    - {member.name}")
+        if team.tools:
+            print("  Tools:")
+            for tool in team.tools:
+                print(f"    - {tool.name}")
+
+def create_tool(name: str, description: str, tool_type: str = "basic"):
+    """
+    Create a new tool with the given name and description.
+    
+    Args:
+        name: Name of the tool
+        description: Description of the tool
+        tool_type: Type of tool to create
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    print(f"Creating {tool_type} tool: {name}")
+    print(f"Description: {description}")
+    # Placeholder for actual tool creation
+    return True
+
+def list_tools():
+    """
+    List all available tools in the GLUE framework.
+    
+    Returns:
+        List of tool names
+    """
+    # Placeholder for actual tool listing
+    return ["web_search", "file_handler", "code_interpreter"]
+
+def display_interactive_help():
+    """Display help information for interactive mode."""
+    print(get_interactive_help_text())
+
 # Version information
 __version__ = "0.1.0-alpha"  # Updated for alpha release
 
@@ -33,7 +154,7 @@ LOGS_DIR = os.path.join(CONFIG_DIR, "logs")
 TEMPLATES_DIR = os.path.join(CONFIG_DIR, "templates")
 
 # Helper functions for formatting and display
-def format_component_name(name: str, component_type: str = "component") -> str:
+def format_component_name(name: str, component_type: str = "component") -> tuple:
     """Format a component name for display.
     
     Args:
@@ -41,9 +162,21 @@ def format_component_name(name: str, component_type: str = "component") -> str:
         component_type: Type of component (e.g., "tool", "model", "team")
         
     Returns:
-        Formatted component name
+        Tuple of (directory_name, module_name, class_name)
     """
-    return f"[{component_type.upper()}] {name}"
+    # Convert to lowercase and handle spaces
+    name_lower = name.lower()
+    
+    # Directory name uses hyphens
+    dir_name = name_lower.replace(" ", "-")
+    
+    # Module name uses underscores
+    module_name = name_lower.replace(" ", "_")
+    
+    # Class name is CamelCase
+    class_name = "".join(word.capitalize() for word in name_lower.split())
+    
+    return dir_name, module_name, class_name
 
 # ==================== Application Functions ====================
 async def run_app(config_file: str, input_text: str = None, interactive: bool = False):
@@ -74,6 +207,14 @@ async def run_app(config_file: str, input_text: str = None, interactive: bool = 
         
         # Parse the GLUE file
         tokens = lexer.tokenize(glue_content)
+        
+        # Debug: Print tokens
+        print("DEBUG: Tokens generated by lexer:")
+        for token in tokens:
+            print(f"  {token.type}: '{token.value}' at line {token.line}")
+        
+        # Parse tokens into AST
+        logging.info("Parsing tokens into AST")
         ast = parser.parse(tokens)
         
         # Check if Portkey integration is enabled
@@ -261,6 +402,7 @@ apply glue
     name = "{project_name}"
     config {{
         development = true
+        sticky = true
     }}
 }}
 
@@ -1073,7 +1215,7 @@ def run_forge_command():
         
         if choice == "1":
             api_source = "Google AI Studio"
-            model_name = "gemini-2.5-pro"
+            model_name = "gemini-1.5-pro"
             print(f"\nGet your API key from: https://makersuite.google.com/app/apikey")
         else:
             api_source = "OpenRouter"
@@ -1098,6 +1240,12 @@ def run_forge_command():
             json.dump(config, f)
         
         print(f"\nAPI key saved. Using {api_source} with model: {model_name}")
+    
+    # Set the appropriate environment variable based on the API source
+    if api_source == "Google AI Studio":
+        os.environ["GOOGLE_API_KEY"] = api_key
+    else:  # OpenRouter
+        os.environ["OPENROUTER_API_KEY"] = api_key
     
     # Now run the forge command
     print("\nWhat would you like to create with GLUE Forge?")

@@ -1,0 +1,26 @@
+glue app {
+    name = "existing_project"
+    config {
+        development = true
+    }
+}
+
+// Define models
+model assistant {
+    provider = openrouter
+    role = "Help the user with their tasks"
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+        temperature = 0.7
+    }
+}
+
+// Define teams
+magnetize {
+    main {
+        lead = assistant
+    }
+}
+
+apply glue

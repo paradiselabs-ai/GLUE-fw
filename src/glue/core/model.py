@@ -24,6 +24,7 @@ class ModelProvider(str, Enum):
     OPENROUTER = "openrouter"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    GEMINI = "gemini"
     CUSTOM = "custom"
     TEST = "test"
     MOCK = "mock"
@@ -49,7 +50,11 @@ class BaseModel:
         self.provider_class = config.provider_class
         self.client = None
         self.provider_instance = None
-        self._initialize_client()
+        self.development = getattr(config, 'development', False)
+        
+        # Initialize the client if not in development mode
+        if not self.development:
+            self._initialize_client()
     
     def _initialize_client(self):
         """Initialize the provider-specific client."""
@@ -76,6 +81,9 @@ class BaseModel:
         elif self.provider == ModelProvider.OPENROUTER:
             from glue.core.providers.openrouter import OpenRouterProvider
             return OpenRouterProvider
+        elif self.provider == ModelProvider.GEMINI:
+            from glue.core.providers.gemini import GeminiProvider
+            return GeminiProvider
         elif self.provider == ModelProvider.TEST:
             from glue.core.providers.test import TestProvider
             return TestProvider
