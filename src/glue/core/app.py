@@ -108,14 +108,16 @@ class GlueApp:
         
         # Handle configuration sources with priority: config_file > config > defaults
         if config_file is not None:
-            # Parse config file using GlueDSL
+            # Parse config file using GLUE parser
             try:
-                from ..dsl.parser import GlueDSL
-                parsed_config = GlueDSL.parse_file(config_file)
-                self._setup_from_parsed_config(parsed_config)
+                from ..dsl.parser import GlueParser
+                parser = GlueParser()
+                parsed_config = parser.parse_file(config_file)
             except ImportError:
-                # If GlueDSL is not available, use empty config
-                logger.warning("GlueDSL not available, using default configuration")
+                # If parser is not available, use empty config
+                logger.warning("GLUE parser not available, using default configuration")
+                parsed_config = {}
+            self._setup_from_parsed_config(parsed_config)
         elif config is not None:
             if isinstance(config, dict):
                 self._setup_from_parsed_config(config)
@@ -154,10 +156,10 @@ class GlueApp:
         self._setup_from_dict(config)
     
     def _setup_from_dict(self, config: Dict[str, Any]) -> None:
-        """Set up the application from a configuration dictionary.
+        """Set up the application from a dictionary configuration.
         
         Args:
-            config: Configuration dictionary
+            config: Dictionary configuration
         """
         # Set basic properties
         app_config = config.get("app", {})
@@ -167,52 +169,56 @@ class GlueApp:
         self.development = app_config.get("development", self.development)
         
         # Set up models
-        for model_config in config.get("models", []):
-            # Ensure model_config has a name attribute
-            model_name = model_config.get("name", f"model_{len(self.models)}")
-            
-            # Create model with proper name parameter
-            model = Model(config=model_config, name=model_name)
-            
-            # Set name attribute explicitly if it doesn't exist
-            if not hasattr(model, "name"):
-                model.name = model_name
+        models_dict = config.get("models", {})
+        if isinstance(models_dict, dict):
+            for model_name, model_config in models_dict.items():
+                # Add the name to the model config if not present
+                if isinstance(model_config, dict) and "name" not in model_config:
+                    model_config["name"] = model_name
                 
-            self.models[model.name] = model
+                # Create model with proper name parameter
+                model = Model(config=model_config, name=model_name)
+                
+                # Set name attribute explicitly if it doesn't exist
+                if not hasattr(model, "name"):
+                    model.name = model_name
+                    
+                self.models[model.name] = model
         
         # Set up tools
-        for tool_config in config.get("tools", []):
-            tool_name = tool_config.get("name")
-            # Store the tool configuration for now
-            # We'll handle actual tool creation later or in a real implementation
-            self.tools[tool_name] = tool_config
+        tools_dict = config.get("tools", {})
+        if isinstance(tools_dict, dict):
+            for tool_name, tool_config in tools_dict.items():
+                # Add the name to the tool config if not present
+                if isinstance(tool_config, dict) and "name" not in tool_config:
+                    tool_config["name"] = tool_name
+                
+                # Store the tool configuration for now
+                # We'll handle actual tool creation later or in a real implementation
+                self.tools[tool_name] = tool_config
         
         # Set up teams
-        for team_config in config.get("teams", []):
-            # Get team name from the config
-            team_name = team_config.get("name", "")
-            
-            # Handle different ways team config might be structured
-            if "config" in team_config and hasattr(team_config["config"], "lead"):
-                # Handle case where config is a TeamConfig object with lead attribute
-                lead_model_name = team_config["config"].lead
-            elif "config" in team_config and isinstance(team_config["config"], dict) and "lead" in team_config["config"]:
-                # Handle case where config is a dict with lead key
-                lead_model_name = team_config["config"]["lead"]
-            else:
-                # Fallback to model key for backward compatibility
-                lead_model_name = team_config.get("model", "")
-            
-            # Get the lead model
-            model = self.models.get(lead_model_name)
-            if model:
-                # Get the team config object if it exists
-                team_config_obj = team_config.get("config") if "config" in team_config else None
+        magnetize_dict = config.get("magnetize", {})
+        if isinstance(magnetize_dict, dict):
+            for team_name, team_config in magnetize_dict.items():
+                # Get the lead model name
+                lead_model_name = team_config.get("lead", "")
                 
-                # Create the team with the lead model and config
-                team = Team(name=team_name, config=team_config_obj, lead=model)
-                
-                self.teams[team_name] = team
+                # Get the lead model
+                model = self.models.get(lead_model_name)
+                if model:
+                    # Create the team with the lead model
+                    team = Team(name=team_name, lead=model)
+                    
+                    # Add tools to the team
+                    tools_list = team_config.get("tools", [])
+                    for tool_name in tools_list:
+                        if tool_name in self.tools:
+                            # In a real implementation, we would create and add the actual tool
+                            # For now, just store the tool name
+                            team.tools.append(tool_name)
+                    
+                    self.teams[team_name] = team
         
         # Set up flows
         for flow_config in config.get("flows", []):

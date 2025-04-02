@@ -48,6 +48,12 @@ class GeminiProvider(ProviderBase):
         api_key = os.environ.get("GOOGLE_API_KEY")
         if api_key:
             return api_key
+            
+        # Check for GEMINI_API_KEY as a fallback
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if api_key:
+            logger.info("Using GEMINI_API_KEY environment variable (consider renaming to GOOGLE_API_KEY)")
+            return api_key
         
         # Try to load from .env file
         try:
@@ -56,6 +62,12 @@ class GeminiProvider(ProviderBase):
                 load_dotenv()
                 api_key = os.environ.get("GOOGLE_API_KEY")
                 if api_key:
+                    return api_key
+                    
+                # Check for GEMINI_API_KEY in .env as a fallback
+                api_key = os.environ.get("GEMINI_API_KEY")
+                if api_key:
+                    logger.info("Using GEMINI_API_KEY from .env file (consider renaming to GOOGLE_API_KEY)")
                     return api_key
         except ImportError:
             logger.warning("dotenv package not installed, skipping .env loading")
