@@ -11,9 +11,9 @@ from typing import Dict, Any, List, Optional, Union, Set, Tuple
 from .adhesive import AdhesiveSystem
 from .model import Model
 from .teams import Team
-from .types import AdhesiveType, FlowType
+from .types import AdhesiveType, FlowType, TeamConfig
 from .flow import Flow
-from .schemas import ModelConfig, ToolConfig, TeamConfig, MagnetConfig
+from .schemas import ModelConfig, ToolConfig, MagnetConfig
 from ..magnetic.field import MagneticField
 
 
@@ -208,15 +208,18 @@ class GlueApp:
                 model = self.models.get(lead_model_name)
                 if model:
                     # Create the team with the lead model
-                    team = Team(name=team_name, lead=model)
+                    team_config_obj = TeamConfig(name=team_name, lead=lead_model_name, members=[], tools=[])
+                    team = Team(name=team_name, config=team_config_obj, lead=model)
+                    logger.info(f"Added model {lead_model_name} to team {team_name} with role lead")
                     
                     # Add tools to the team
                     tools_list = team_config.get("tools", [])
                     for tool_name in tools_list:
                         if tool_name in self.tools:
-                            # In a real implementation, we would create and add the actual tool
-                            # For now, just store the tool name
-                            team.tools.append(tool_name)
+                            # Add the tool to the team with VELCRO binding
+                            team.tool_bindings[tool_name] = AdhesiveType.VELCRO
+                            team._tools[tool_name] = self.tools[tool_name]
+                            logger.info(f"Added tool {tool_name} to team {team_name} with binding VELCRO")
                     
                     self.teams[team_name] = team
         
@@ -371,7 +374,14 @@ class GlueApp:
                         
                         # Use magnetic field to transfer information between teams if available
                         if self.field and hasattr(self.field, "transfer_information"):
-                            await self.field.transfer_information(team_name)
+                            # Find another team to transfer to, if available
+                            for target_team_name in self.teams:
+                                if target_team_name != team_name:
+                                    try:
+                                        await self.field.transfer_information(team_name, target_team_name, input_text)
+                                    except Exception as e:
+                                        self.logger.warning(f"Error transferring information from {team_name} to {target_team_name}: {e}")
+                                    break
                         
                         return response
                 except (TypeError, AttributeError, Exception) as e:
