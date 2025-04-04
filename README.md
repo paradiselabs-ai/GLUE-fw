@@ -14,7 +14,7 @@ GLUE (GenAI Linking & Unification Engine) is a powerful framework for building m
 
 We're releasing an alpha version of the GLUE framework immediately:
 
-- **Alpha Release Date**: April 2, 2025 (TOMORROW)
+- **Alpha Release Date**: April 5th, 2025
 - **Version**: 0.1.0-alpha
 - **Focus**: Core functionality and stability
 
@@ -22,9 +22,9 @@ The alpha release includes all core components with passing tests, but with limi
 
 ### Release Roadmap
 
-- **Alpha**: April 2, 2025
-- **Beta**: April 15, 2025
-- **Release**: May 1, 2025
+- **Alpha**: April 5th, 2025
+- **Beta**: April 15th, 2025
+- **Release**: May 1st, 2025
 
 ## Features
 
@@ -153,6 +153,7 @@ magnetize {
     }
 }
 ```
+## Read the full docs [here](https://applyglue.com)
 
 ## Example Applications
 
