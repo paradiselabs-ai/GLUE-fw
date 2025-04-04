@@ -210,7 +210,6 @@ class GlueApp:
                     # Create the team with the lead model
                     team_config_obj = TeamConfig(name=team_name, lead=lead_model_name, members=[], tools=[])
                     team = Team(name=team_name, config=team_config_obj, lead=model)
-                    logger.info(f"Added model {lead_model_name} to team {team_name} with role lead")
                     
                     # Add tools to the team
                     tools_list = team_config.get("tools", [])
@@ -387,9 +386,10 @@ class GlueApp:
                 except (TypeError, AttributeError, Exception) as e:
                     # Log the error and continue
                     self.logger.error(f"Error processing message with team {team_name}: {e}")
+                    self.logger.exception("Exception details:")
         
-        # Default response for test compatibility
-        return "Test response"
+        # If we get here, no team could process the message
+        return "I'm sorry, I couldn't process your message. Please try again."
     
     async def cleanup(self) -> None:
         """Clean up the application."""
