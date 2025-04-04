@@ -7,217 +7,16 @@ from dataclasses import dataclass
 from pathlib import Path
 import logging
 
+# Import the lexer and token types from their respective modules
+from .tokens import TokenType, Token
+from .lexer import GlueLexer
+
 # Temporarily comment out imports that might not exist yet
 # from ..core.types import ModelConfig, TeamConfig, ToolConfig
 # from ..magnetic.field import FlowType
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.dsl")
-
-class TokenType(Enum):
-    """Token types for DSL parsing"""
-    IDENTIFIER = "IDENTIFIER"
-    STRING = "STRING"
-    NUMBER = "NUMBER"
-    BOOLEAN = "BOOLEAN"
-    EQUALS = "EQUALS"
-    LBRACE = "LBRACE"
-    RBRACE = "RBRACE"
-    LBRACKET = "LBRACKET"
-    RBRACKET = "RBRACKET"
-    COMMA = "COMMA"
-    ARROW = "ARROW"      # For magnetic operators
-    SEMICOLON = "SEMICOLON"
-    COMMENT = "COMMENT"
-    EOF = "EOF"
-    KEYWORD = "KEYWORD"
-    APPLY_GLUE = "APPLY_GLUE"
-
-# ==================== Class Definitions ====================
-@dataclass
-class Token:
-    """Token representation"""
-    type: TokenType
-    value: str
-    line: int
-
-class GlueLexer:
-    """Lexical analyzer for GLUE DSL"""
-    
-    def __init__(self, source: str):
-        self.source = source
-        self.pos = 0
-        self.line = 1
-        self.tokens = []
-        
-    def tokenize(self) -> List[Token]:
-        """Convert source into tokens"""
-        while self.pos < len(self.source):
-            char = self.source[self.pos]
-            
-            # Skip whitespace
-            if char.isspace():
-                if char == '\n':
-                    self.line += 1
-                self.pos += 1
-                continue
-                
-            # Handle comments
-            if char == '/' and self.pos + 1 < len(self.source) and self.source[self.pos + 1] == '/':
-                self._tokenize_comment()
-                continue
-                
-            # Handle identifiers
-            if char.isalpha() or char == '_':
-                self._tokenize_identifier()
-                continue
-                
-            # Handle strings
-            if char in ('"', "'"):
-                self._tokenize_string()
-                continue
-                
-            # Handle numbers
-            if char.isdigit():
-                self._tokenize_number()
-                continue
-                
-            # Handle operators and delimiters
-            if char == '=':
-                self.tokens.append(Token(TokenType.EQUALS, '=', self.line))
-                self.pos += 1
-                continue
-                
-            if char == '{':
-                self.tokens.append(Token(TokenType.LBRACE, '{', self.line))
-                self.pos += 1
-                continue
-                
-            if char == '}':
-                self.tokens.append(Token(TokenType.RBRACE, '}', self.line))
-                self.pos += 1
-                continue
-                
-            if char == '[':
-                self.tokens.append(Token(TokenType.LBRACKET, '[', self.line))
-                self.pos += 1
-                continue
-                
-            if char == ']':
-                self.tokens.append(Token(TokenType.RBRACKET, ']', self.line))
-                self.pos += 1
-                continue
-                
-            if char == ',':
-                self.tokens.append(Token(TokenType.COMMA, ',', self.line))
-                self.pos += 1
-                continue
-                
-            if char == ';':
-                self.tokens.append(Token(TokenType.SEMICOLON, ';', self.line))
-                self.pos += 1
-                continue
-                
-            # Handle magnetic operators
-            if char in ('<', '>', '-'):
-                self._tokenize_magnetic_operator()
-                continue
-                
-            # Handle 'apply glue' token
-            if char == 'a' and self.pos + 9 < len(self.source) and self.source[self.pos:self.pos+10] == "apply glue":
-                self.tokens.append(Token(TokenType.APPLY_GLUE, "apply glue", self.line))
-                self.pos += 10
-                continue
-                
-            # Unrecognized character
-            self.pos += 1
-            
-        # Add EOF token
-        self.tokens.append(Token(TokenType.EOF, '', self.line))
-        return self.tokens
-        
-    def _tokenize_identifier(self):
-        """Tokenize an identifier"""
-        start = self.pos
-        while self.pos < len(self.source) and (self.source[self.pos].isalnum() or self.source[self.pos] == '_'):
-            self.pos += 1
-            
-        value = self.source[start:self.pos]
-        
-        # Check for boolean values
-        if value.lower() == 'true':
-            self.tokens.append(Token(TokenType.BOOLEAN, 'true', self.line))
-        elif value.lower() == 'false':
-            self.tokens.append(Token(TokenType.BOOLEAN, 'false', self.line))
-        # Check if we're in a test file
-        elif value in ["app", "model", "tool", "apply", "tools", "glue", "config", "magnetize", "team", "provider", "role", "adhesives", "lead"] and "test_" not in self.source and not self.source.strip().startswith("model") and "[search, code]" not in self.source and len(self.source) > 50:
-            # Only treat as keywords in real GLUE files, not in test cases
-            self.tokens.append(Token(TokenType.KEYWORD, value, self.line))
-        else:
-            self.tokens.append(Token(TokenType.IDENTIFIER, value, self.line))
-            
-    def _tokenize_string(self):
-        """Tokenize a string literal"""
-        delimiter = self.source[self.pos]
-        self.pos += 1  # Skip opening quote
-        start = self.pos
-        
-        # Handle escaped characters and quotes
-        escape_mode = False
-        while self.pos < len(self.source):
-            if escape_mode:
-                # Skip the escaped character
-                escape_mode = False
-            elif self.source[self.pos] == '\\':
-                escape_mode = True
-            elif self.source[self.pos] == delimiter and not escape_mode:
-                break
-            
-            if self.source[self.pos] == '\n':
-                self.line += 1
-            
-            self.pos += 1
-            
-        if self.pos >= len(self.source):
-            raise ValueError(f"Unterminated string at line {self.line}")
-            
-        value = self.source[start:self.pos]
-        self.tokens.append(Token(TokenType.STRING, value, self.line))
-        self.pos += 1  # Skip closing quote
-        
-    def _tokenize_number(self):
-        """Tokenize a number literal"""
-        start = self.pos
-        while self.pos < len(self.source) and (self.source[self.pos].isdigit() or self.source[self.pos] == '.'):
-            self.pos += 1
-            
-        value = self.source[start:self.pos]
-        self.tokens.append(Token(TokenType.NUMBER, value, self.line))
-        
-    def _tokenize_magnetic_operator(self):
-        """Tokenize magnetic field operators"""
-        start = self.pos
-        # Look ahead for full operator
-        while self.pos < len(self.source) and self.source[self.pos] in ('<', '>', '-'):
-            self.pos += 1
-            
-        operator = self.source[start:self.pos]
-        
-        # Validate operator
-        if operator in ("->", "<-", "><", "<>"):
-            self.tokens.append(Token(TokenType.ARROW, operator, self.line))
-        else:
-            raise ValueError(f"Invalid magnetic operator at line {self.line}: {operator}")
-            
-    def _tokenize_comment(self):
-        """Skip comment lines"""
-        self.pos += 2  # Skip //
-        while self.pos < len(self.source) and self.source[self.pos] != '\n':
-            self.pos += 1
-            
-        if self.pos < len(self.source) and self.source[self.pos] == '\n':
-            self.line += 1
-            self.pos += 1
 
 class GlueParser:
     """Parser for the GLUE Domain Specific Language.
@@ -363,12 +162,14 @@ class GlueParser:
         # Parse teams and flow section
         while not self._check(TokenType.RBRACE) and not self._is_at_end():
             if self._check(TokenType.KEYWORD):
-                if self._peek().value == "team":
+                keyword = self._peek().value
+                if keyword == "team":
                     self._parse_team()
-                elif self._peek().value == "flow":
+                elif keyword == "flow":
+                    # Handle flow section inside magnetize block
                     self._parse_flow()
                 else:
-                    raise SyntaxError(f"Unexpected keyword at line {self._peek().line}: {self._peek().value}")
+                    raise SyntaxError(f"Unexpected keyword at line {self._peek().line}: {keyword}")
             elif self._check(TokenType.IDENTIFIER):
                 # Parse team defined by identifier
                 team_name = self._advance().value
@@ -432,29 +233,37 @@ class GlueParser:
                 continue
                 
             # Expect source team identifier
-            source_token = self._consume(TokenType.IDENTIFIER, "Expected source team identifier")
+            if not self._check(TokenType.IDENTIFIER):
+                token = self._peek()
+                raise SyntaxError(f"Expected source team identifier at line {token.line}, got {token.type}")
+                
+            source_token = self._advance()
             source_team = source_token.value
             
             # Expect flow operator
             flow_type = None
-            if self._check(TokenType.ARROW):
-                arrow_token = self._advance()
-                if arrow_token.value == "->":
-                    flow_type = "PUSH"
-                elif arrow_token.value == "><":
-                    flow_type = "BIDIRECTIONAL"
-                elif arrow_token.value == "<>":
-                    flow_type = "REPEL"
-                elif arrow_token.value == "<-":
-                    flow_type = "PULL"
-                else:
-                    raise SyntaxError(f"Unknown flow operator at line {arrow_token.line}: {arrow_token.value}")
-            else:
+            if not self._check(TokenType.ARROW):
                 token = self._peek()
                 raise SyntaxError(f"Expected flow operator at line {token.line}, got {token.type}")
                 
+            arrow_token = self._advance()
+            if arrow_token.value == "->":
+                flow_type = "PUSH"
+            elif arrow_token.value == "><":
+                flow_type = "BIDIRECTIONAL"
+            elif arrow_token.value == "<>":
+                flow_type = "REPEL"
+            elif arrow_token.value == "<-":
+                flow_type = "PULL"
+            else:
+                raise SyntaxError(f"Unknown flow operator at line {arrow_token.line}: {arrow_token.value}")
+                
             # Expect target team identifier
-            target_token = self._consume(TokenType.IDENTIFIER, "Expected target team identifier")
+            if not self._check(TokenType.IDENTIFIER):
+                token = self._peek()
+                raise SyntaxError(f"Expected target team identifier at line {token.line}, got {token.type}")
+                
+            target_token = self._advance()
             target_team = target_token.value
             
             # Create flow definition
@@ -743,8 +552,8 @@ class GlueParser:
         self.logger.info("Parsing GLUE content from string")
         
         # Tokenize
-        lexer = GlueLexer(content)
-        tokens = lexer.tokenize()
+        lexer = GlueLexer()
+        tokens = lexer.tokenize(content)
         
         # Parse
         return self.parse(tokens)

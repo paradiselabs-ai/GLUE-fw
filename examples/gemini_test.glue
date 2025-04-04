@@ -1,4 +1,4 @@
-// Simple GLUE app to test Gemini provider integration
+// Enhanced GLUE app to test Gemini provider with prompt engineering
 glue app {
     name = "Gemini Test"
     config {
@@ -6,11 +6,11 @@ glue app {
     }
 }
 
-// Define a Gemini model
-model gemini_model {
+// Define a researcher model using Gemini
+model researcher {
     provider = gemini
-    role = "Answer questions and provide assistance"
-    adhesives = [glue, velcro]
+    role = "Research different topics and subjects online. Find accurate and relevant information."
+    adhesives = [glue, velcro]  // Can use persistent and session tools
     config {
         model = "gemini-1.5-pro"
         temperature = 0.7
@@ -18,16 +18,41 @@ model gemini_model {
     }
 }
 
-// Define a simple web search tool
-tool web_search {
-    provider = serp
+// Define a writer model also using Gemini
+model writer {
+    provider = gemini
+    role = "Write documentation files that summarize findings in a clear, concise manner."
+    adhesives = [tape]  // Only needs quick tool access
+    config {
+        model = "gemini-1.5-pro"
+        temperature = 0.5  // Lower temperature for more focused writing
+        max_tokens = 2048  // More tokens for longer content generation
+    }
 }
 
-// Define workflow
+// Define tools
+tool web_search {
+    provider = serp  // Uses SERP_API_KEY from environment
+}
+
+tool file_handler {
+    // Simple file handling tool
+}
+
+// Define team structure and magnetic flow
 magnetize {
     research_team {
-        lead = gemini_model
+        lead = researcher
         tools = [web_search]
+    }
+    
+    docs_team {
+        lead = writer
+        tools = [file_handler]
+    }
+    
+    flow {
+        research_team -> docs_team  // Research flows to documentation
     }
 }
 

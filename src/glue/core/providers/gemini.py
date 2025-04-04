@@ -8,6 +8,7 @@ import os
 import logging
 import json
 from typing import Dict, List, Any, Optional, Callable, AsyncIterable, Union
+import uuid
 
 from ..base_model import BaseModel
 from ..types import Message, ToolResult
@@ -84,12 +85,6 @@ class GeminiProvider:
         api_key = os.environ.get("GOOGLE_API_KEY")
         if api_key:
             return api_key
-            
-        # Check for GEMINI_API_KEY as a fallback
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if api_key:
-            logger.info("Using GEMINI_API_KEY environment variable (consider renaming to GOOGLE_API_KEY)")
-            return api_key
         
         # Try to load from .env file
         try:
@@ -98,12 +93,6 @@ class GeminiProvider:
                 load_dotenv()
                 api_key = os.environ.get("GOOGLE_API_KEY")
                 if api_key:
-                    return api_key
-                    
-                # Check for GEMINI_API_KEY in .env as a fallback
-                api_key = os.environ.get("GEMINI_API_KEY")
-                if api_key:
-                    logger.info("Using GEMINI_API_KEY from .env file (consider renaming to GOOGLE_API_KEY)")
                     return api_key
         except ImportError:
             logger.warning("dotenv package not installed, skipping .env loading")
@@ -131,19 +120,27 @@ class GeminiProvider:
             model_name = None
             
             # Check direct model attribute
-            if hasattr(self.model, 'model'):
+            if hasattr(self.model, 'model_name'):
+                model_name = self.model.model_name
+            elif hasattr(self.model, 'model'):
                 model_name = self.model.model
             
             # Check config dictionary
             elif hasattr(self.model, 'config') and isinstance(self.model.config, dict):
                 model_name = self.model.config.get('model')
+                
+            # Debug log to see what we're finding
+            logger.debug(f"Model config: {getattr(self.model, 'config', {})}")
+            logger.debug(f"Found model name: {model_name}")
             
             # Default to a sensible model if none specified
             if not model_name:
-                # Use Gemini 2.5 Pro as the default model for the best performance
+                # Use Gemini 1.5 Pro as the default model for the best performance
                 # This is the recommended model for GLUE Forge
                 model_name = "gemini-1.5-pro"
                 logger.info(f"No model specified, using default model: {model_name}")
+            else:
+                logger.info(f"Using specified model: {model_name}")
             
             # Create the client
             self.client = genai.GenerativeModel(model_name=model_name)
@@ -209,6 +206,10 @@ class GeminiProvider:
             # The Google Generative AI API expects a list of dictionaries with 'role' and 'parts'
             gemini_messages = []
             
+            # Track if we've seen a system message
+            has_system_message = False
+            system_content = ""
+            
             for msg in messages:
                 # Handle different message formats
                 if isinstance(msg, dict):
@@ -222,9 +223,12 @@ class GeminiProvider:
                     role = 'user'
                     content = str(msg)
                 
-                # Map roles to Gemini's expected format
+                # Special handling for system messages with Gemini
                 if role == "system":
-                    role = "user"
+                    has_system_message = True
+                    system_content = content
+                    # Don't add system message directly, we'll prepend it to the first user message
+                    continue
                 
                 # Create a new message in the format expected by the Gemini API
                 gemini_message = {
@@ -232,7 +236,23 @@ class GeminiProvider:
                     "parts": [{"text": content}]
                 }
                 
+                # If this is the first user message and we have a system message,
+                # prepend the system content to it
+                if role == "user" and has_system_message and system_content:
+                    gemini_message["parts"] = [{"text": f"{system_content}\n\n# User Query:\n{content}"}]
+                    has_system_message = False  # Reset so we only prepend once
+                
                 gemini_messages.append(gemini_message)
+            
+            # If we still have an unprocessed system message (no user messages followed it),
+            # add it as a user message
+            if has_system_message and system_content:
+                gemini_messages.append({
+                    "role": "user",
+                    "parts": [{"text": system_content}]
+                })
+            
+            logger.debug(f"Sending {len(gemini_messages)} messages to Gemini API")
             
             # Configure tool calling if tools are provided
             if tools:
@@ -246,6 +266,11 @@ class GeminiProvider:
                         "parameters": tool.get("parameters", {})
                     }
                     function_declarations.append(function_declaration)
+                    logger.debug(f"Configured tool: {tool['name']}")
+                    logger.debug(f"Tool parameters: {json.dumps(tool.get('parameters', {}), indent=2)}")
+                
+                logger.debug(f"Configured {len(function_declarations)} tools for Gemini API")
+                logger.debug(f"Function declarations: {json.dumps(function_declarations, indent=2)}")
                 
                 # Generate response with tools
                 response = await self.client.generate_content_async(
@@ -260,27 +285,128 @@ class GeminiProvider:
                     generation_config=self.client.generation_config
                 )
             
-            # Extract the response text
+            logger.debug(f"Received response from Gemini API: {response}")
+            
+            # Extract the response text first
+            response_text = ""
             if hasattr(response, 'text'):
-                return response.text
+                response_text = response.text
             elif hasattr(response, 'parts'):
                 parts = response.parts
                 if parts and len(parts) > 0:
-                    return parts[0].text
-            
-            # Handle tool calls if present
-            if hasattr(response, 'candidates') and len(response.candidates) > 0:
+                    response_text = parts[0].text
+            # Handle candidates if present
+            elif hasattr(response, 'candidates') and len(response.candidates) > 0:
                 candidate = response.candidates[0]
                 if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
                     parts = candidate.content.parts
-                    if parts and len(parts) > 0:
-                        return parts[0].text
+                    if parts and len(parts) > 0 and hasattr(parts[0], 'text'):
+                        response_text = parts[0].text
+            
+            # Check for custom tool_code format in the response text
+            function_calls = []
+            
+            # Check for ```tool_code ... ``` blocks in the response text
+            import re
+            tool_code_pattern = r'```tool_code\s*(.*?)\s*```'
+            tool_code_matches = re.findall(tool_code_pattern, response_text, re.DOTALL)
+            
+            if tool_code_matches:
+                logger.debug(f"Found {len(tool_code_matches)} tool_code blocks in response")
+                
+                for tool_code in tool_code_matches:
+                    # Parse the tool call - expected format: tool_name(param1="value1", param2="value2")
+                    tool_pattern = r'(\w+)\s*\((.*)\)'
+                    tool_match = re.match(tool_pattern, tool_code.strip())
+                    
+                    if tool_match:
+                        tool_name = tool_match.group(1)
+                        args_str = tool_match.group(2)
+                        
+                        # Parse arguments
+                        args_dict = {}
+                        try:
+                            # Try to evaluate the arguments as a Python dict
+                            # This is safe because we're only parsing simple key-value pairs
+                            from ast import literal_eval
+                            args_dict = {k.strip(): v for k, v in [arg.split("=", 1) for arg in args_str.split(",") if "=" in arg]}
+                            
+                            # Clean up the values (remove quotes)
+                            for k, v in args_dict.items():
+                                if isinstance(v, str) and v.startswith('"') and v.endswith('"'):
+                                    args_dict[k] = v[1:-1]
+                                elif isinstance(v, str) and v.startswith("'") and v.endswith("'"):
+                                    args_dict[k] = v[1:-1]
+                        except Exception as e:
+                            logger.warning(f"Error parsing tool arguments: {e}")
+                        
+                        # Create function call
+                        tool_call = {
+                            "id": str(uuid.uuid4()),
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": args_dict
+                            }
+                        }
+                        function_calls.append(tool_call)
+            
+            # Also check for function calls in the standard Gemini format
+            if hasattr(response, 'candidates') and response.candidates:
+                for candidate in response.candidates:
+                    if hasattr(candidate, 'content') and candidate.content:
+                        # Check for function calls in the content
+                        if hasattr(candidate.content, 'parts') and candidate.content.parts:
+                            logger.debug(f"Response has {len(candidate.content.parts)} parts")
+                            for i, part in enumerate(candidate.content.parts):
+                                logger.debug(f"Examining part {i}: {type(part)}")
+                                if hasattr(part, 'function_call'):
+                                    function_call = part.function_call
+                                    logger.debug(f"Found function call: name={function_call.name}, args type={type(function_call.args)}")
+                                    logger.debug(f"Function call args: {function_call.args}")
+                                    
+                                    # Only process valid function calls with a name
+                                    if hasattr(function_call, 'name') and function_call.name:
+                                        # Convert function call to the expected format
+                                        
+                                        # Parse arguments - they might be a string that needs to be converted to JSON
+                                        arguments = function_call.args
+                                        if isinstance(arguments, str):
+                                            try:
+                                                # Try to parse as JSON if it's a string
+                                                arguments = json.loads(arguments)
+                                            except json.JSONDecodeError:
+                                                # If not valid JSON, keep as is
+                                                logger.warning(f"Could not parse function arguments as JSON: {arguments}")
+                                        
+                                        tool_call = {
+                                            "id": str(uuid.uuid4()),
+                                            "type": "function",
+                                            "function": {
+                                                "name": function_call.name,
+                                                "arguments": arguments
+                                            }
+                                        }
+                                        function_calls.append(tool_call)
+            
+            # If we have valid function calls, return them
+            if function_calls:
+                logger.info(f"Extracted {len(function_calls)} function calls from Gemini response")
+                return {
+                    "content": "",
+                    "tool_calls": function_calls
+                }
+            
+            # If no valid function calls were found, return the text response
+            if response_text:
+                return response_text
             
             # Fallback to string representation
             return str(response)
         
         except Exception as e:
             logger.error(f"Error generating response from Gemini: {e}")
+            logger.exception("Exception details:")
             raise
     
     async def process_tool_calls(
@@ -300,8 +426,46 @@ class GeminiProvider:
         results = []
         
         for tool_call in tool_calls:
-            # Execute the tool call
-            tool_result = await tool_executor(tool_call)
-            results.append(tool_result)
+            try:
+                # Extract the function call details
+                function_call = tool_call.get("function", {})
+                tool_name = function_call.get("name", "")
+                arguments = function_call.get("arguments", "{}")
+                
+                # Ensure arguments is a string (JSON)
+                if not isinstance(arguments, str):
+                    try:
+                        arguments = json.dumps(arguments)
+                    except Exception as e:
+                        logger.warning(f"Failed to convert arguments to JSON string: {e}")
+                        arguments = str(arguments)
+                
+                logger.debug(f"Processing tool call: {tool_name} with arguments: {arguments}")
+                
+                # Create a tool call object in the format expected by the tool executor
+                formatted_tool_call = {
+                    "id": tool_call.get("id", str(uuid.uuid4())),
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": arguments
+                    }
+                }
+                
+                # Execute the tool call
+                async for tool_result in tool_executor(formatted_tool_call):
+                    # Add the result to our list
+                    results.append(tool_result)
+                    logger.debug(f"Tool {tool_name} returned result: {tool_result.result}")
+                    
+            except Exception as e:
+                logger.error(f"Error processing tool call: {e}")
+                # Create an error result
+                error_result = ToolResult(
+                    tool_name=tool_call.get("function", {}).get("name", "unknown_tool"),
+                    result=f"Error: {str(e)}",
+                    error=True
+                )
+                results.append(error_result)
         
         return results

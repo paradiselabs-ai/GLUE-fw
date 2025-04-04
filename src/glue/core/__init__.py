@@ -6,11 +6,15 @@ including application management, model connectors, and adhesive types.
 """
 
 from .app import GlueApp
-from .model import BaseModel, ModelProvider
+from .model import Model
+from .base_model import BaseModel, ModelProvider
+from .types import AdhesiveType
 
-# Adhesive types for tool binding
-class AdhesiveType:
-    """Enumeration of adhesive types for tool binding."""
-    STRONG = "strong"  # Tool is always used
-    WEAK = "weak"      # Tool is suggested but optional
-    STICKY = "sticky"  # Tool persists across multiple steps
+# Export public API
+__all__ = [
+    "GlueApp",
+    "Model",
+    "BaseModel",
+    "ModelProvider",
+    "AdhesiveType"
+]

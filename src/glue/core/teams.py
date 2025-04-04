@@ -33,7 +33,7 @@ class Team:
         self.models: Dict[str, Model] = {}
         self.lead: Optional[Model] = None
         self._tools: Dict[str, Any] = {}
-        self.tool_bindings: Dict[str, AdhesiveType] = {}
+        # self.tool_bindings: Dict[str, AdhesiveType] = {}
         
         # State management
         self.shared_results: Dict[str, ToolResult] = {}
@@ -141,38 +141,57 @@ class Team:
         self.updated_at = datetime.now()
         logger.info(f"Added model {model.name} to team {self.name}")
 
-    async def add_tool(self, name: str, tool: Any, binding: AdhesiveType = AdhesiveType.VELCRO) -> None:
+    async def add_tool(self, name: str, tool: Any) -> None:
         """Add a tool to this team.
         
         Args:
             name: Tool name
             tool: Tool instance
-            binding: Adhesive type to use for binding the tool
         """
         # Add tool to team
         self._tools[name] = tool
-        self.tool_bindings[name] = binding
         
         # Add tool to all models in the team
         for model in self.models.values():
             # Use await here since model.add_tool is async
             await model.add_tool(name, tool)
         
-        logger.info(f"Added tool {name} to team {self.name} with binding {binding}")
+        logger.info(f"Added tool {name} to team {self.name}")
 
     async def share_result(
         self,
         tool_name: str,
-        result: ToolResult
+        result: ToolResult,
+        model_name: Optional[str] = None
     ) -> None:
-        """Share a tool result with the team"""
+        """Share a tool result with the team
+        
+        Args:
+            tool_name: Name of the tool that generated the result
+            result: The tool result to share
+            model_name: Optional name of the model that used the tool
+        """
+        # If a specific model is provided, use its adhesives
+        if model_name and model_name in self.models:
+            model = self.models[model_name]
+            if hasattr(model, 'adhesives') and model.adhesives:
+                # Use the first adhesive defined in the model
+                adhesive = next(iter(model.adhesives))
+                result.adhesive = adhesive
+                logger.debug(f"Using adhesive {adhesive} from model {model_name}")
+        
+        # Process based on adhesive type
         if result.adhesive == AdhesiveType.GLUE:
+            # GLUE: Team-wide persistent results
             self.shared_results[tool_name] = result
-            logger.info(f"Shared result from {tool_name} in team {self.name}")
+            logger.info(f"Shared result from {tool_name} in team {self.name} with GLUE adhesive")
         elif result.adhesive == AdhesiveType.VELCRO:
-            # Only store in model's session
-            pass
-        # TAPE results are not stored
+            # VELCRO: Session-based persistence
+            # Only store temporarily for the current session
+            logger.info(f"Stored result from {tool_name} in team {self.name} with VELCRO adhesive (session only)")
+        else:
+            # TAPE: One-time use, no persistence
+            logger.info(f"Used result from {tool_name} in team {self.name} with TAPE adhesive (one-time use)")
 
     async def process_message(
         self,
@@ -222,13 +241,173 @@ class Team:
         )
         self.conversation_history.append(message)
         
+        # Check if the response contains tool calls
+        if isinstance(response, dict) and "tool_calls" in response:
+            logger.info(f"Detected tool calls in response from model {source.name}")
+            tool_calls = response.get("tool_calls", [])
+            
+            # Process each tool call
+            tool_results = []
+            for tool_call in tool_calls:
+                try:
+                    # Extract tool information
+                    function_info = tool_call.get("function", {})
+                    tool_name = function_info.get("name", "")
+                    arguments = function_info.get("arguments", {})
+                    
+                    logger.info(f"Executing tool: {tool_name} with arguments: {arguments}")
+                    
+                    # Check if the tool exists
+                    if tool_name in self._tools:
+                        tool = self._tools[tool_name]
+                        
+                        # Execute the tool
+                        if callable(getattr(tool, "execute", None)):
+                            # Convert arguments to the expected format if needed
+                            if isinstance(arguments, str):
+                                try:
+                                    import json
+                                    arguments = json.loads(arguments)
+                                except json.JSONDecodeError:
+                                    logger.warning(f"Failed to parse arguments as JSON: {arguments}")
+                            
+                            # Execute the tool
+                            result = await tool.execute(**arguments)
+                            
+                            # Create a tool result
+                            tool_result = ToolResult(
+                                tool_name=tool_name,
+                                result=result,
+                                error=False,
+                                adhesive=next(iter(source.adhesives)) if hasattr(source, 'adhesives') and source.adhesives else None
+                            )
+                            
+                            # Share the result with the team
+                            await self.share_result(tool_name, tool_result, source.name)
+                            
+                            # Add to results
+                            tool_results.append(tool_result)
+                            
+                            logger.info(f"Tool {tool_name} executed successfully")
+                        else:
+                            error_msg = f"Tool {tool_name} does not have an execute method"
+                            logger.error(error_msg)
+                            tool_results.append(ToolResult(
+                                tool_name=tool_name,
+                                result={"error": error_msg},
+                                error=True
+                            ))
+                    else:
+                        # Handle case where tool doesn't exist - create a new tool if possible
+                        logger.info(f"Tool {tool_name} not found, attempting to create it")
+                        
+                        # Check if there's a tool creation capability
+                        if "create_tool" in self._tools:
+                            try:
+                                # Create a new tool configuration
+                                tool_config = {
+                                    "name": tool_name,
+                                    "description": f"Dynamically created tool: {tool_name}",
+                                    "parameters": arguments.get("parameters", {})
+                                }
+                                
+                                # Use the create_tool tool to create a new tool
+                                create_tool = self._tools["create_tool"]
+                                new_tool_result = await create_tool.execute(config=tool_config)
+                                
+                                # Add the new tool to the team
+                                if new_tool_result and "tool" in new_tool_result:
+                                    new_tool = new_tool_result["tool"]
+                                    await self.add_tool(tool_name, new_tool)
+                                    
+                                    # Now execute the newly created tool
+                                    if callable(getattr(new_tool, "execute", None)):
+                                        result = await new_tool.execute(**arguments)
+                                        
+                                        # Create a tool result
+                                        tool_result = ToolResult(
+                                            tool_name=tool_name,
+                                            result=result,
+                                            error=False,
+                                            adhesive=next(iter(source.adhesives)) if hasattr(source, 'adhesives') and source.adhesives else None
+                                        )
+                                        
+                                        # Share the result with the team
+                                        await self.share_result(tool_name, tool_result, source.name)
+                                        
+                                        # Add to results
+                                        tool_results.append(tool_result)
+                                        
+                                        logger.info(f"Newly created tool {tool_name} executed successfully")
+                                else:
+                                    error_msg = f"Failed to create tool {tool_name}"
+                                    logger.error(error_msg)
+                                    tool_results.append(ToolResult(
+                                        tool_name=tool_name,
+                                        result={"error": error_msg},
+                                        error=True
+                                    ))
+                            except Exception as e:
+                                error_msg = f"Error creating tool {tool_name}: {str(e)}"
+                                logger.error(error_msg)
+                                tool_results.append(ToolResult(
+                                    tool_name=tool_name,
+                                    result={"error": error_msg},
+                                    error=True
+                                ))
+                        else:
+                            error_msg = f"Tool {tool_name} not found and create_tool capability not available"
+                            logger.error(error_msg)
+                            tool_results.append(ToolResult(
+                                tool_name=tool_name,
+                                result={"error": error_msg},
+                                error=True
+                            ))
+                except Exception as e:
+                    error_msg = f"Error executing tool {tool_call.get('function', {}).get('name', 'unknown')}: {str(e)}"
+                    logger.error(error_msg)
+                    tool_results.append(ToolResult(
+                        tool_name=tool_call.get("function", {}).get("name", "unknown"),
+                        result={"error": error_msg},
+                        error=True
+                    ))
+            
+            # Format tool results for the response
+            tool_results_text = "\n\n".join([
+                f"Tool: {result.tool_name}\n" +
+                f"Result: {result.result}\n" +
+                (f"Error: {result.result}" if result.error else "")
+                for result in tool_results
+            ])
+            
+            # Generate a new response with the tool results
+            if tool_results:
+                # Send tool results back to the model for further processing
+                tool_results_message = f"I executed the following tools:\n\n{tool_results_text}"
+                follow_up_response = await source.generate(tool_results_message)
+                
+                # Store the follow-up in history
+                self.conversation_history.append(Message(
+                    role="system",
+                    content=tool_results_message
+                ))
+                
+                self.conversation_history.append(Message(
+                    role="model",
+                    content=follow_up_response
+                ))
+                
+                # Return the combined response
+                return follow_up_response
+        
+        # Store the original response in history
         response_message = Message(
             role="model",
-            content=response
+            content=response if isinstance(response, str) else str(response)
         )
         self.conversation_history.append(response_message)
         
-        return response
+        return response if isinstance(response, str) else str(response)
 
     async def direct_communication(
         self,

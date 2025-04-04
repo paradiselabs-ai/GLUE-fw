@@ -1,14 +1,17 @@
 """GLUE DSL Lexer
 
-This module provides the lexer for the GLUE DSL, which tokenizes the input
-text into a stream of tokens for the parser.
+This module contains the lexer for the GLUE DSL, which tokenizes the input
+into a stream of tokens for the parser.
 """
 
 import re
 from typing import List, Tuple, Dict, Any
 import logging
 
-from glue.dsl.parser import TokenType, Token
+# Import TokenType and Token from tokens module instead of parser
+from .tokens import TokenType, Token
+
+logger = logging.getLogger("glue.dsl.lexer")
 
 
 class GlueLexer:
@@ -19,7 +22,7 @@ class GlueLexer:
     
     # Token types
     TOKEN_TYPES = {
-        'KEYWORD': r'(app|team|tool|tools|model|config|use|with|apply|glue|magnetize)',
+        'KEYWORD': r'(app|team|tool|tools|model|config|use|with|apply|glue|magnetize|flow)',
         'IDENTIFIER': r'[a-zA-Z_][a-zA-Z0-9_]*',
         'STRING': r'"([^"\\]|\\.)*"',
         'NUMBER': r'\d+(\.\d+)?',
@@ -32,6 +35,7 @@ class GlueLexer:
         'COLON': r':',
         'COMMA': r',',
         'EQUALS': r'=',
+        'ARROW': r'(->|<-|><|<>)',  # Add support for magnetic flow operators
         'COMMENT': r'//.*',
         'WHITESPACE': r'[ \t]+',
         'NEWLINE': r'\n',
@@ -106,11 +110,13 @@ class GlueLexer:
                 # Skip whitespace and comments
                 if token_type not in ['WHITESPACE', 'COMMENT', 'NEWLINE']:
                     if token_type == 'KEYWORD':
+                        value = match.group(0)
+                        
                         # Check if we're in a config block
                         in_config = 'config' in self.context_stack
                         
                         # Only treat specific words as keywords at the top level
-                        if value in ["app", "model", "tool", "apply", "glue", "magnetize"] and not in_config:
+                        if value in ["app", "model", "tool", "apply", "tools", "glue", "config", "magnetize", "team", "flow"] and not in_config:
                             self.tokens.append(Token(TokenType.KEYWORD, value, self.line))
                         else:
                             # Treat everything else as an identifier

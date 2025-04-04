@@ -215,10 +215,26 @@ class GlueApp:
                     tools_list = team_config.get("tools", [])
                     for tool_name in tools_list:
                         if tool_name in self.tools:
-                            # Add the tool to the team with VELCRO binding
-                            team.tool_bindings[tool_name] = AdhesiveType.VELCRO
+                            # Add the tool to the team
                             team._tools[tool_name] = self.tools[tool_name]
-                            logger.info(f"Added tool {tool_name} to team {team_name} with binding VELCRO")
+                            
+                            # Also add the tool to the lead model
+                            if model and hasattr(model, 'add_tool_sync'):
+                                model.add_tool_sync(tool_name, self.tools[tool_name])
+                            elif model and hasattr(model, 'add_tool'):
+                                # Note: This is an async method being called in a sync context
+                                # This is not ideal, but it's necessary for backward compatibility
+                                import asyncio
+                                try:
+                                    # Try to run the async method in a new event loop
+                                    loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(loop)
+                                    loop.run_until_complete(model.add_tool(tool_name, self.tools[tool_name]))
+                                    loop.close()
+                                except Exception as e:
+                                    logger.warning(f"Failed to add tool {tool_name} to model {lead_model_name}: {e}")
+                            
+                            logger.info(f"Added tool {tool_name} to team {team_name}")
                     
                     self.teams[team_name] = team
         
@@ -226,7 +242,17 @@ class GlueApp:
         for flow_config in config.get("flows", []):
             source = flow_config.get("source")
             target = flow_config.get("target")
-            flow_type = flow_config.get("type", "bidirectional")
+            flow_type_str = flow_config.get("type", "BIDIRECTIONAL")
+            
+            # Convert string flow type to FlowType enum
+            from .types import FlowType
+            flow_type_map = {
+                "PUSH": FlowType.PUSH,
+                "PULL": FlowType.PULL,
+                "BIDIRECTIONAL": FlowType.BIDIRECTIONAL,
+                "REPEL": FlowType.REPEL
+            }
+            flow_type = flow_type_map.get(flow_type_str, FlowType.BIDIRECTIONAL)
             
             source_team = self.teams.get(source)
             target_team = self.teams.get(target)
