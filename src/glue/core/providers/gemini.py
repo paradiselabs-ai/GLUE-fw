@@ -260,11 +260,23 @@ class GeminiProvider:
                 function_declarations = []
                 
                 for tool in tools:
+                    # Ensure tool has the required fields
                     function_declaration = {
                         "name": tool["name"],
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get("parameters", {})
+                        "description": tool.get("description", "")
                     }
+                    
+                    # Ensure parameters have the required structure
+                    parameters = tool.get("parameters", {})
+                    if "type" not in parameters:
+                        parameters["type"] = "object"
+                    
+                    # Ensure properties exists
+                    if "properties" not in parameters:
+                        parameters["properties"] = {}
+                        
+                    function_declaration["parameters"] = parameters
+                    
                     function_declarations.append(function_declaration)
                     logger.debug(f"Configured tool: {tool['name']}")
                     logger.debug(f"Tool parameters: {json.dumps(tool.get('parameters', {}), indent=2)}")

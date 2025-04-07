@@ -1,3 +1,36 @@
+
+# read section1 and section2
+
+## section 1:
+
+-# Core System Components
+- The main framework logic is in src/glue/core.
+- Shared utilities and helpers are in src/glue/utils.
+- Configuration settings and version information are in src/glue/version.py.
+
+# GLUE Framework Architecture
+- The core model implementation is in src/glue/core/model.py.
+- Team and agent communication systems are in src/glue/core/team.py.
+- The adhesive system for persistence is managed in src/glue/core/adhesive.py.
+
+# DSL & Tools Structure
+- The StickyScript DSL components are in src/glue/dsl.
+- Tool registry and implementations are in src/glue/tools.
+- The Magnetic Field System for inter-team communication is in src/glue/magnetic.
+
+# CLI & API
+- The GLUE Forge CLI implementation is in src/glue/cli.py.
+- CLI helper functions are in src/glue/cliHelpers.py.
+- Provider integrations (including Google Gemini) are in src/glue/models.
+
+# Testing & Development
+- Unit tests follow TDD principles and are in tests/unit.
+- Integration tests for the framework are in tests/integration.
+- Development progress is tracked in progressFiles.
+- All tests must pass before implementation is considered complete.
+
+## section 2
+
 This is a multi-agentic autonomous AI development framework we are building in python and writing a DSL for as well. 
 
 Most information can be found in progressFiles/ and the README.md in the root directory. 

@@ -29,9 +29,10 @@ class ToolResult:
     """Result from a tool execution"""
     tool_name: str
     result: Any
-    adhesive: AdhesiveType
+    adhesive: AdhesiveType = AdhesiveType.TAPE  # Default to TAPE (one-time use)
     timestamp: datetime = field(default_factory=datetime.now)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    is_error: bool = False  # Flag to indicate if this result represents an error
 
 @dataclass
 class Message:

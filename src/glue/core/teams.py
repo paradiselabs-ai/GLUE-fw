@@ -261,41 +261,52 @@ class Team:
                     if tool_name in self._tools:
                         tool = self._tools[tool_name]
                         
-                        # Execute the tool
-                        if callable(getattr(tool, "execute", None)):
-                            # Convert arguments to the expected format if needed
-                            if isinstance(arguments, str):
-                                try:
-                                    import json
-                                    arguments = json.loads(arguments)
-                                except json.JSONDecodeError:
-                                    logger.warning(f"Failed to parse arguments as JSON: {arguments}")
-                            
-                            # Execute the tool
-                            result = await tool.execute(**arguments)
-                            
-                            # Create a tool result
-                            tool_result = ToolResult(
-                                tool_name=tool_name,
-                                result=result,
-                                error=False,
-                                adhesive=next(iter(source.adhesives)) if hasattr(source, 'adhesives') and source.adhesives else None
-                            )
-                            
-                            # Share the result with the team
-                            await self.share_result(tool_name, tool_result, source.name)
-                            
-                            # Add to results
-                            tool_results.append(tool_result)
-                            
-                            logger.info(f"Tool {tool_name} executed successfully")
-                        else:
-                            error_msg = f"Tool {tool_name} does not have an execute method"
+                        # Try to execute the tool
+                        try:
+                            if hasattr(tool, "execute") and callable(tool.execute):
+                                # Convert arguments to the expected format if needed
+                                if isinstance(arguments, str):
+                                    try:
+                                        import json
+                                        arguments = json.loads(arguments)
+                                    except json.JSONDecodeError:
+                                        logger.warning(f"Failed to parse arguments as JSON: {arguments}")
+                                
+                                # Execute the tool
+                                result = await tool.execute(**arguments)
+                                
+                                # Create a tool result
+                                adhesive_type = next(iter(source.adhesives)) if hasattr(source, 'adhesives') and source.adhesives else AdhesiveType.TAPE
+                                tool_result = ToolResult(
+                                    tool_name=tool_name,
+                                    result=result,
+                                    adhesive=adhesive_type
+                                )
+                                
+                                # Share the result with the team
+                                await self.share_result(tool_name, tool_result, source.name)
+                                
+                                # Add to results
+                                tool_results.append(tool_result)
+                                
+                                logger.info(f"Tool {tool_name} executed successfully")
+                            else:
+                                error_msg = f"Tool {tool_name} does not have an execute method"
+                                logger.error(error_msg)
+                                tool_results.append(ToolResult(
+                                    tool_name=tool_name,
+                                    result={"error": error_msg},
+                                    adhesive=AdhesiveType.TAPE,
+                                    is_error=True
+                                ))
+                        except Exception as e:
+                            error_msg = f"Error executing tool {tool_name}: {str(e)}"
                             logger.error(error_msg)
                             tool_results.append(ToolResult(
                                 tool_name=tool_name,
                                 result={"error": error_msg},
-                                error=True
+                                adhesive=AdhesiveType.TAPE,
+                                is_error=True
                             ))
                     else:
                         # Handle case where tool doesn't exist - create a new tool if possible
@@ -325,11 +336,11 @@ class Team:
                                         result = await new_tool.execute(**arguments)
                                         
                                         # Create a tool result
+                                        adhesive_type = next(iter(source.adhesives)) if hasattr(source, 'adhesives') and source.adhesives else AdhesiveType.TAPE
                                         tool_result = ToolResult(
                                             tool_name=tool_name,
                                             result=result,
-                                            error=False,
-                                            adhesive=next(iter(source.adhesives)) if hasattr(source, 'adhesives') and source.adhesives else None
+                                            adhesive=adhesive_type
                                         )
                                         
                                         # Share the result with the team
@@ -345,7 +356,8 @@ class Team:
                                     tool_results.append(ToolResult(
                                         tool_name=tool_name,
                                         result={"error": error_msg},
-                                        error=True
+                                        adhesive=AdhesiveType.TAPE,
+                                        is_error=True
                                     ))
                             except Exception as e:
                                 error_msg = f"Error creating tool {tool_name}: {str(e)}"
@@ -353,7 +365,8 @@ class Team:
                                 tool_results.append(ToolResult(
                                     tool_name=tool_name,
                                     result={"error": error_msg},
-                                    error=True
+                                    adhesive=AdhesiveType.TAPE,
+                                    is_error=True
                                 ))
                         else:
                             error_msg = f"Tool {tool_name} not found and create_tool capability not available"
@@ -361,7 +374,8 @@ class Team:
                             tool_results.append(ToolResult(
                                 tool_name=tool_name,
                                 result={"error": error_msg},
-                                error=True
+                                adhesive=AdhesiveType.TAPE,
+                                is_error=True
                             ))
                 except Exception as e:
                     error_msg = f"Error executing tool {tool_call.get('function', {}).get('name', 'unknown')}: {str(e)}"
@@ -369,14 +383,15 @@ class Team:
                     tool_results.append(ToolResult(
                         tool_name=tool_call.get("function", {}).get("name", "unknown"),
                         result={"error": error_msg},
-                        error=True
+                        adhesive=AdhesiveType.TAPE,
+                        is_error=True
                     ))
             
             # Format tool results for the response
             tool_results_text = "\n\n".join([
                 f"Tool: {result.tool_name}\n" +
                 f"Result: {result.result}\n" +
-                (f"Error: {result.result}" if result.error else "")
+                (f"Error: {result.result}" if result.is_error else "")
                 for result in tool_results
             ])
             
@@ -489,6 +504,10 @@ class Team:
             del self.relationships[team_name]
         logger.info(f"Set repulsion with team {team_name}")
 
+    async def get_relationships(self) -> Dict[str, str]:
+        """Get all team relationships"""
+        return self.relationships.copy()
+
     # ==================== Helper Methods ====================
     def get_model_tools(self, model_name: str) -> Dict[str, Any]:
         """Get tools available to a specific model"""
@@ -544,7 +563,3 @@ class Team:
         """Handle team-level errors"""
         logger.error(f"Team error in {self.name}: {str(error)}")
         raise
-
-    async def get_relationships(self) -> Dict[str, str]:
-        """Get all team relationships"""
-        return self.relationships.copy()

@@ -133,16 +133,26 @@ class Model(BaseModel):
         # Add parameters if available
         if hasattr(tool, "parameters"):
             formatted_tool["parameters"] = tool.parameters
+            # Ensure 'type' is set for Gemini compatibility
+            if "type" not in formatted_tool["parameters"]:
+                formatted_tool["parameters"]["type"] = "object"
         elif hasattr(tool, "get_parameters") and callable(tool.get_parameters):
             try:
                 formatted_tool["parameters"] = tool.get_parameters()
+                # Ensure 'type' is set for Gemini compatibility
+                if "type" not in formatted_tool["parameters"]:
+                    formatted_tool["parameters"]["type"] = "object"
             except Exception as e:
                 logger.warning(f"Error getting parameters for tool {name}: {e}")
-                formatted_tool["parameters"] = {}
+                formatted_tool["parameters"] = {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
         else:
             # Default parameters structure
             formatted_tool["parameters"] = {
-                "type": "object",
+                "type": "object",  # Required by Gemini API
                 "properties": {},
                 "required": []
             }

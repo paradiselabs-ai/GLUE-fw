@@ -455,6 +455,7 @@ When using tools, clearly indicate which tool you're using and provide all requi
             "name": name,
             "description": description,
             "parameters": {
+                "type": "object",  # Required by Gemini API
                 "required": required_params,
                 "properties": properties
             }
