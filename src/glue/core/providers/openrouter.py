@@ -21,7 +21,7 @@ logger = logging.getLogger("glue.model.openrouter")
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 
 
-class OpenRouterProvider:
+class OpenrouterProvider:
     """Provider implementation for OpenRouter models.
     
     OpenRouter provides a unified API for accessing various LLM providers,
