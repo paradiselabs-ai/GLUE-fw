@@ -45,7 +45,9 @@ class BaseModel:
         self.config = config or {}
         self.name = self.config.get('name', 'unnamed_model')
         self.provider_name = self.config.get('provider', 'gemini')
-        self.model_name = self.config.get('model', 'gemini-1.5-pro')
+        # Look inside the nested 'config' block first, then top-level, then default
+        nested_config = self.config.get('config', {})
+        self.model_name = nested_config.get('model', self.config.get('model', 'gemini-1.5-pro'))
         self.temperature = self.config.get('temperature', 0.7)
         self.max_tokens = self.config.get('max_tokens', 1024)
         self.api_key = self.config.get('api_key')
@@ -489,7 +491,8 @@ When using tools, clearly indicate which tool you're using and provide all requi
                     if isinstance(msg, dict):
                         provider_messages.append(msg)
                     elif hasattr(msg, '__dict__'):
-                        provider_messages.append(msg.__dict__)
+                        # Pass the Message object directly
+                        provider_messages.append(msg)
                     else:
                         # Handle case where message might be a string or other type
                         provider_messages.append({"role": "user", "content": str(msg)})

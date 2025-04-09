@@ -11,6 +11,7 @@ import logging
 import os
 from typing import Dict, List, Any, Optional, Callable, AsyncIterable
 import httpx
+import openai
 
 from glue.core.schemas import Message, ToolCall, ToolResult
 
@@ -152,7 +153,7 @@ class OpenrouterProvider:
         
         # Prepare the API call parameters
         api_params = {
-            "model": self.model.model,
+            "model": self.model.model_name,
             "messages": openrouter_messages,
             "temperature": self.model.temperature,
             "max_tokens": self.model.max_tokens,
@@ -184,9 +185,41 @@ class OpenrouterProvider:
             else:
                 # Return the text response
                 return response.choices[0].message.content
+        except openai.NotFoundError as e:
+            # Check if the error is the specific one about tool use incompatibility
+            if "No endpoints found that support tool use" in str(e):
+                logger.warning(
+                    f"Model {self.model.model_name} does not support tool use on OpenRouter. "
+                    f"Retrying without tools."
+                )
+                # Remove tool parameters and retry
+                api_params.pop("tools", None)
+                api_params.pop("tool_choice", None)
+                response = await self.client.chat.completions.create(**api_params)
+            else:
+                # If it's a different NotFoundError, re-raise it
+                logger.error(f"Error generating response from OpenRouter (NotFound): {e}")
+                raise
         except Exception as e:
             logger.error(f"Error generating response from OpenRouter: {e}")
             raise
+        
+        # Process the response (moved the processing logic here to handle both original and retry responses)
+        if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
+            # Process tool calls
+            tool_calls = []
+            for tool_call in response.choices[0].message.tool_calls:
+                # Parse the arguments from JSON string to dict
+                arguments = json.loads(tool_call.function.arguments)
+                tool_calls.append({
+                    "id": tool_call.id,
+                    "name": tool_call.function.name,
+                    "arguments": arguments
+                })
+            return {"tool_calls": tool_calls}
+        else:
+            # Return the text response
+            return response.choices[0].message.content
     
     async def process_tool_calls(
         self, 
