@@ -53,7 +53,7 @@ class OpenrouterProvider:
                 api_key=api_key,
                 http_client=httpx.AsyncClient(timeout=60.0),
             )
-            logger.info(f"Initialized OpenRouter client for model {self.model.model}")
+            logger.info(f"Initialized OpenRouter client for model {self.model.model_name}")
         except ImportError:
             logger.error("Failed to import OpenAI client. Install with: pip install openai")
             # Create a mock client for testing
