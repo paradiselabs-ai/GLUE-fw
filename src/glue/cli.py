@@ -249,26 +249,31 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         # Create a new GlueApp instance with the parsed config
         app = GlueApp(config=ast)
         
+        # Setup the app first
+        print("[DEBUG] Before app.setup()")
+        await app.setup()
+        print("[DEBUG] After app.setup()")
+        
         # Display available tools if in interactive mode
         if interactive:
             display_available_tools(app)
-        
-        # Run the application
-        if interactive:
             logger.info("Starting interactive session")
             print(f"\nStarting interactive session with {app.name}")
+            print("[DEBUG] Before run_interactive_session()")
             await run_interactive_session(app)
-        else:
-            if input_text:
-                logger.info(f"Running with input: {input_text}")
-                response = await app.run(input_text)
-                print(response)
-            else:
-                logger.error("No input provided for non-interactive mode")
-                print("Error: No input provided for non-interactive mode")
-                return False
+            print("[DEBUG] After run_interactive_session()")
+            return True
         
-        return True
+        # Non-interactive mode
+        if input_text:
+            logger.info(f"Running with input: {input_text}")
+            response = await app.run(input_text)
+            print(response)
+            return True
+        else:
+            logger.error("No input provided for non-interactive mode")
+            print("Error: No input provided for non-interactive mode")
+            return False
         
     except Exception as e:
         logger.error(f"Error running application: {str(e)}", exc_info=True)
@@ -283,6 +288,7 @@ async def run_interactive_session(app: GlueApp) -> None:
     """
     logger = logging.getLogger("glue.interactive")
     
+    print("[DEBUG] Entered run_interactive_session()")
     print("\nType 'exit' or 'quit' to end the session")
     print("Type 'help' for a list of commands")
     

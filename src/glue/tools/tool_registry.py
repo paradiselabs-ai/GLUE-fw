@@ -20,7 +20,7 @@ def register_tool_class(name: str, tool_class: Any) -> None:
     Register a tool class with the registry.
     
     Args:
-        name: The name of the tool class
+        name: The name of the tool class to register
         tool_class: The tool class to register
     """
     _tool_classes[name] = tool_class
@@ -28,6 +28,8 @@ def register_tool_class(name: str, tool_class: Any) -> None:
 
 # Register the web search tool
 register_tool_class("search", WebSearchTool)
+register_tool_class("serp", WebSearchTool)  # Register with serp provider name as well
+register_tool_class("web_search", WebSearchTool)  # Register with the actual tool name too
 
 # Register additional tools needed for tests
 class CodeInterpreterTool(Tool):

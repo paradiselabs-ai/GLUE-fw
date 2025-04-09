@@ -9,7 +9,8 @@ import logging
 from typing import Dict, Any, List, Optional, Callable, Union, Type, AsyncIterable, Set
 import inspect
 
-from .base_model import BaseModel
+from .base_model import BaseModel, ModelProvider
+from .providers import ProviderBase
 from .schemas import Message, ToolCall, ToolResult, ModelConfig
 from .types import AdhesiveType
 

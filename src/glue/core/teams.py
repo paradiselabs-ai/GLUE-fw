@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from .types import AdhesiveType, TeamConfig, ToolResult, Message
 from .model import Model
+from .agent_loop import AgentLoop, TeamLoopCoordinator, AgentState
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
@@ -41,6 +42,10 @@ class Team:
         self.relationships: Dict[str, str] = {}  # Team magnetic relationships
         self.repelled_by: Set[str] = set()      # Teams that repel this one
 
+        # Agent loop management
+        self.agent_loops: Dict[str, AgentLoop] = {}
+        self.loop_coordinator: Optional[TeamLoopCoordinator] = None
+        
         # Metadata
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
@@ -150,6 +155,15 @@ class Team:
         """
         # Add tool to team
         self._tools[name] = tool
+        
+        # Initialize the tool if it's not already initialized
+        if hasattr(tool, "initialize") and callable(tool.initialize) and hasattr(tool, "_initialized"):
+            if not tool._initialized:
+                try:
+                    await tool.initialize()
+                    logger.info(f"Initialized tool {name} for team {self.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize tool {name}: {e}")
         
         # Add tool to all models in the team
         for model in self.models.values():
@@ -481,6 +495,78 @@ class Team:
         
         logger.info(f"Added model {model.name} to team {self.name} with role {role}")
 
+    async def create_agent_loops(self) -> None:
+        """Create agent loops for all team members and set up the coordinator"""
+        if not self.loop_coordinator:
+            self.loop_coordinator = TeamLoopCoordinator(self.name)
+            
+        # Create agent loops for each model
+        for agent_id, model in self.models.items():
+            # Skip if agent loop already exists
+            if agent_id in self.agent_loops:
+                continue
+                
+            # Create new agent loop
+            agent_loop = AgentLoop(agent_id, self.name, model)
+            
+            # Register tools
+            for tool_name, tool_func in self._tools.items():
+                agent_loop.register_tool(tool_name, tool_func)
+                
+            # Add to our tracking and the coordinator
+            self.agent_loops[agent_id] = agent_loop
+            self.loop_coordinator.add_agent(agent_loop)
+            
+            logger.info(f"Created agent loop for {agent_id} in team {self.name}")
+            
+    async def start_agent_loops(self, initial_input: Optional[str] = None) -> None:
+        """Start all agent loops in the team"""
+        # Ensure agent loops are created
+        await self.create_agent_loops()
+        
+        # Start the coordinator
+        if self.loop_coordinator:
+            await self.loop_coordinator.start()
+            logger.info(f"Started agent loops for team {self.name}")
+        else:
+            logger.error(f"Cannot start agent loops: coordinator not initialized for team {self.name}")
+            
+    def get_agent_status(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
+        """Get the status of agent loops
+        
+        Args:
+            agent_id: Optional specific agent ID to get status for
+            
+        Returns:
+            Status information
+        """
+        if agent_id:
+            if agent_id in self.agent_loops:
+                return self.agent_loops[agent_id].get_status()
+            else:
+                return {"error": f"Agent {agent_id} not found"}
+        else:
+            # Get status of all agents
+            return {
+                "team": self.name,
+                "agents": {agent_id: loop.get_status() for agent_id, loop in self.agent_loops.items()},
+                "coordinator": self.loop_coordinator.get_status() if self.loop_coordinator else None
+            }
+            
+    async def terminate_agent_loops(self, reason: str = "requested") -> None:
+        """Terminate all agent loops in the team
+        
+        Args:
+            reason: Reason for termination
+        """
+        if self.loop_coordinator:
+            self.loop_coordinator.terminate(reason)
+            logger.info(f"Terminated agent loops for team {self.name}: {reason}")
+        
+        # Reset agent loops
+        self.agent_loops = {}
+        self.loop_coordinator = None
+
     # ==================== Magnetic Field Methods ====================
     def set_relationship(self, team_name: str, relationship: str) -> None:
         """Set magnetic relationship with another team"""
@@ -563,3 +649,15 @@ class Team:
         """Handle team-level errors"""
         logger.error(f"Team error in {self.name}: {str(error)}")
         raise
+
+    def register_outgoing_flow(self, flow):
+        """Register an outgoing flow from this team."""
+        if not hasattr(self, 'outgoing_flows'):
+            self.outgoing_flows = []
+        self.outgoing_flows.append(flow)
+
+    def register_incoming_flow(self, flow):
+        """Register an incoming flow to this team."""
+        if not hasattr(self, 'incoming_flows'):
+            self.incoming_flows = []
+        self.incoming_flows.append(flow)

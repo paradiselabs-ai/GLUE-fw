@@ -39,6 +39,7 @@ class Message:
     """Message for communication"""
     role: str
     content: str
+    name: Optional[str] = None  # For function messages
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 

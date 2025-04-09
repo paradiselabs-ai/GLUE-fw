@@ -154,17 +154,55 @@ class BaseModel:
         """Set the team this model belongs to."""
         self.team = team
     
-    def add_tool(self, name: str, tool: Any):
+    def add_tool_sync(self, name: str, tool: Any):
+        """Add a tool to this model (synchronous version).
+        
+        Args:
+            name: Tool name
+            tool: Tool instance
+        """
+        # Make sure the tool is callable
+        if hasattr(tool, "execute") and callable(tool.execute):
+            # Create a wrapper function that calls the tool's execute method
+            async def tool_wrapper(**kwargs):
+                # Initialize the tool if it's not already initialized
+                if hasattr(tool, "_initialized") and not tool._initialized and hasattr(tool, "initialize"):
+                    await tool.initialize()
+                
+                # Call the execute method
+                if asyncio.iscoroutinefunction(tool.execute):
+                    return await tool.execute(**kwargs)
+                else:
+                    return tool.execute(**kwargs)
+            
+            # Store the wrapper function
+            self.tools[name] = tool_wrapper
+            
+            # Store the original tool object as an attribute of the wrapper
+            tool_wrapper.tool_obj = tool
+            
+            # Copy important attributes from the tool to the wrapper
+            if hasattr(tool, "description"):
+                tool_wrapper.description = tool.description
+            
+            logger.info(f"Added callable tool wrapper for {name}")
+        else:
+            # Just store the tool as is (for backward compatibility)
+            self.tools[name] = tool
+            logger.warning(f"Added tool {name} without execute method")
+
+    async def add_tool(self, name: str, tool: Any):
         """Add a tool to this model.
         
         Args:
             name: Tool name
             tool: Tool instance
         """
-        self.tools[name] = tool
-    
+        # Just call the sync version
+        self.add_tool_sync(name, tool)
+
     async def generate(self, content: str) -> str:
-        """Generate a response from the model.
+        """Generate a response from the model, with tool call detection and execution loop.
         
         Args:
             content: The content to generate a response for
@@ -172,15 +210,169 @@ class BaseModel:
         Returns:
             The generated response
         """
-        # Create a simple message from the content
-        message = Message(role="user", content=content)
+        # Initialize conversation history
+        messages = [Message(role="user", content=content)]
         
-        # Generate a response using the provider
-        try:
-            return await self.generate_response([message])
-        except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            return "I'm sorry, I encountered an error while generating a response."
+        # Prepare tool schemas if available
+        provider_tools = []
+        if hasattr(self, "_provider_tools") and self._provider_tools:
+            provider_tools = list(self._provider_tools.values())
+        elif hasattr(self, "tools") and self.tools:
+            # Fallback: format tools dict
+            for tool_name, tool in self.tools.items():
+                formatted = self._format_tool_for_provider(tool_name, tool)
+                provider_tools.append(formatted)
+        
+        # Tool call + execution loop
+        max_loops = 3  # prevent infinite loops
+        for _ in range(max_loops):
+            try:
+                response = await self.generate_response(messages, tools=provider_tools)
+            except Exception as e:
+                logger.error(f"Error generating response: {e}")
+                return "I'm sorry, I encountered an error while generating a response."
+            
+            # If response is dict with tool calls (Gemini style)
+            if isinstance(response, dict) and "tool_calls" in response:
+                tool_calls = response.get("tool_calls", [])
+                if not tool_calls:
+                    # No tool calls, return empty content or fallback
+                    return response.get("content", "")
+                
+                # Execute each tool call
+                tool_results = []
+                for call in tool_calls:
+                    fn = call.get("function", {})
+                    tool_name = fn.get("name")
+                    arguments = fn.get("arguments", {})
+                    # If arguments is stringified JSON, parse it
+                    if isinstance(arguments, str):
+                        try:
+                            import json as _json
+                            arguments = _json.loads(arguments)
+                        except Exception:
+                            # If it's not valid JSON, wrap it in a dictionary with a default key
+                            arguments = {"query": arguments}
+                    elif not isinstance(arguments, dict):
+                        # If it's not a string or dict, convert to a dict with a default key
+                        arguments = {"query": str(arguments)}
+                    
+                    # Find the tool
+                    tool_obj = None
+                    if hasattr(self, "tools") and self.tools:
+                        tool_obj = self.tools.get(tool_name)
+                    if not tool_obj:
+                        logger.warning(f"Tool '{tool_name}' not found for call, skipping execution")
+                        continue
+                    
+                    # Execute the tool
+                    try:
+                        if callable(tool_obj):
+                            if asyncio.iscoroutinefunction(tool_obj):
+                                result = await tool_obj(**arguments)
+                            else:
+                                result = tool_obj(**arguments)
+                        elif hasattr(tool_obj, "execute") and callable(tool_obj.execute):
+                            if asyncio.iscoroutinefunction(tool_obj.execute):
+                                result = await tool_obj.execute(**arguments)
+                            else:
+                                result = tool_obj.execute(**arguments)
+                        else:
+                            logger.warning(f"Tool '{tool_name}' is not callable")
+                            continue
+                        # Append tool result message
+                        tool_result_msg = Message(
+                            role="function",
+                            content=str(result),
+                            name=tool_name
+                        )
+                        messages.append(tool_result_msg)
+                    except Exception as e:
+                        logger.error(f"Error executing tool '{tool_name}': {e}")
+                        error_msg = Message(
+                            role="function",
+                            content=f"Error executing tool '{tool_name}': {e}",
+                            name=tool_name
+                        )
+                        messages.append(error_msg)
+                # Continue loop: re-call LLM with appended tool results
+                continue
+            
+            # If response is string, check for ```tool_code``` blocks (Gemini style)
+            if isinstance(response, str):
+                import re
+                tool_code_pattern = r"```tool_code\s*(.*?)\s*```"
+                matches = re.findall(tool_code_pattern, response, re.DOTALL)
+                if matches:
+                    for code in matches:
+                        # Parse tool_name(args)
+                        m = re.match(r"(\w+)\s*\((.*)\)", code.strip())
+                        if not m:
+                            continue
+                        tool_name = m.group(1)
+                        args_str = m.group(2)
+                        # Parse args into dict
+                        args_dict = {}
+                        try:
+                            parts = [p.strip() for p in args_str.split(",") if "=" in p]
+                            for p in parts:
+                                k, v = p.split("=", 1)
+                                k = k.strip()
+                                v = v.strip().strip('"').strip("'")
+                                args_dict[k] = v
+                        except Exception:
+                            pass
+                        # Find tool
+                        tool_obj = None
+                        if hasattr(self, "tools") and self.tools:
+                            tool_obj = self.tools.get(tool_name)
+                        if not tool_obj:
+                            logger.warning(f"Tool '{tool_name}' not found for tool_code, skipping execution")
+                            continue
+                        # Execute tool
+                        try:
+                            if callable(tool_obj):
+                                if asyncio.iscoroutinefunction(tool_obj):
+                                    result = await tool_obj(**args_dict)
+                                else:
+                                    result = tool_obj(**args_dict)
+                            elif hasattr(tool_obj, "execute") and callable(tool_obj.execute):
+                                if asyncio.iscoroutinefunction(tool_obj.execute):
+                                    result = await tool_obj.execute(**args_dict)
+                                else:
+                                    result = tool_obj.execute(**args_dict)
+                            else:
+                                logger.warning(f"Tool '{tool_name}' is not callable")
+                                continue
+                            # Append tool result message
+                            tool_result_msg = Message(
+                                role="function",
+                                content=str(result),
+                                name=tool_name
+                            )
+                            messages.append(tool_result_msg)
+                        except Exception as e:
+                            logger.error(f"Error executing tool '{tool_name}': {e}")
+                            error_msg = Message(
+                                role="function",
+                                content=f"Error executing tool '{tool_name}': {e}",
+                                name=tool_name
+                            )
+                            messages.append(error_msg)
+                    # Continue loop: re-call LLM with appended tool results
+                    continue
+            
+            # If response is plain string and no tool calls detected, return it
+            if isinstance(response, str):
+                return response
+            # If response dict with 'content', return it
+            if isinstance(response, dict) and "content" in response:
+                return response["content"]
+            # Else, return stringified response
+            return str(response)
+        
+        # If max loops exceeded, return last response as string
+        return str(response)
     
     def _format_messages_for_provider(self, messages: List[Message]) -> List[Message]:
         """Format messages for the provider, adding system prompt if needed.

@@ -5,6 +5,9 @@ This package contains provider-specific implementations for different
 AI model providers supported by the GLUE framework.
 """
 
+# Import provider base
+from .provider_base import ProviderBase
+
 # Import all providers
 from . import gemini
 from . import openai
@@ -14,6 +17,7 @@ from . import portkey_wrapper
 
 # Define available providers
 __all__ = [
+    "ProviderBase",
     "gemini",
     "openai",
     "anthropic",

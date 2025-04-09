@@ -16,6 +16,11 @@ from .flow import Flow
 from .schemas import ModelConfig, ToolConfig, MagnetConfig
 from ..magnetic.field import MagneticField
 
+# Import built-in tool classes
+from glue.tools.web_search_tool import WebSearchTool
+from glue.tools.file_handler_tool import FileHandlerTool
+from glue.tools.code_interpreter_tool import CodeInterpreterTool
+
 
 # Set up logging
 logger = logging.getLogger("glue.app")
@@ -46,9 +51,31 @@ def create_tool(config: Dict[str, Any]) -> Any:
     Returns:
         Tool instance
     """
-    # In a real implementation, this would create a tool instance
-    # For now, just return the config for test compatibility
-    return config
+    # Get the tool class from the registry
+    from ..tools.tool_registry import get_tool_class
+    
+    tool_name = config.get("name", "unknown_tool")
+    tool_provider = config.get("provider", "")
+    
+    try:
+        # Try to get the tool class based on the provider
+        tool_class = get_tool_class(tool_provider)
+        
+        # Create an instance of the tool
+        tool_instance = tool_class(
+            name=tool_name,
+            description=config.get("description", ""),
+            provider_type=tool_provider,
+            provider_config=config.get("config", {}),
+            config=config
+        )
+        
+        logger.info(f"Created tool instance: {tool_name} using provider {tool_provider}")
+        return tool_instance
+    except (ValueError, ImportError) as e:
+        logger.warning(f"Failed to create tool instance for {tool_name}: {e}")
+        # For backward compatibility, return the config if we can't create a tool instance
+        return config
 
 
 class AppConfig:
@@ -193,9 +220,28 @@ class GlueApp:
                 if isinstance(tool_config, dict) and "name" not in tool_config:
                     tool_config["name"] = tool_name
                 
-                # Store the tool configuration for now
-                # We'll handle actual tool creation later or in a real implementation
-                self.tools[tool_name] = tool_config
+                # Instantiate built-in tool classes
+                if tool_name == "web_search":
+                    try:
+                        tool_instance = WebSearchTool(**tool_config) if isinstance(tool_config, dict) else WebSearchTool()
+                        self.tools[tool_name] = tool_instance
+                    except Exception:
+                        self.tools[tool_name] = WebSearchTool()
+                elif tool_name == "file_handler":
+                    try:
+                        tool_instance = FileHandlerTool(**tool_config) if isinstance(tool_config, dict) else FileHandlerTool()
+                        self.tools[tool_name] = tool_instance
+                    except Exception:
+                        self.tools[tool_name] = FileHandlerTool()
+                elif tool_name == "code_interpreter":
+                    try:
+                        tool_instance = CodeInterpreterTool(**tool_config) if isinstance(tool_config, dict) else CodeInterpreterTool()
+                        self.tools[tool_name] = tool_instance
+                    except Exception:
+                        self.tools[tool_name] = CodeInterpreterTool()
+                else:
+                    # For custom or unknown tools, just store the config for now
+                    self.tools[tool_name] = tool_config
         
         # Set up teams
         magnetize_dict = config.get("magnetize", {})
@@ -292,6 +338,15 @@ class GlueApp:
                 # For test compatibility, just continue
                 pass
         
+        # Initialize tools first
+        for tool_name, tool in self.tools.items():
+            try:
+                if hasattr(tool, "initialize") and callable(tool.initialize):
+                    await tool.initialize()
+                    logger.info(f"Initialized tool: {tool_name}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize tool {tool_name}: {e}")
+        
         # Set up teams
         for team in self.teams.values():
             # Get tools from config
@@ -324,9 +379,6 @@ class GlueApp:
                 # If team.setup() is a MagicMock, it can't be awaited directly
                 # For test compatibility, just continue
                 pass
-        
-        # Set up tools
-        # In a real implementation, we would set up tools here
         
         # Set up flows
         for flow in self.flows:

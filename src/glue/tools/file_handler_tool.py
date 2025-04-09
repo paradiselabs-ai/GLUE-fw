@@ -70,6 +70,15 @@ class FileHandlerTool(Tool):
         Raises:
             ValueError: If the operation or file_path is missing or invalid
         """
+        # Handle string input by assuming it's a file path for a read operation
+        if isinstance(input_data, str):
+            # If input is a string, assume it's a file path for a read operation
+            input_data = {
+                "operation": "read",
+                "file_path": input_data
+            }
+            logger.info(f"Converted string input to read operation for path: {input_data['file_path']}")
+        
         # Get the operation
         operation_str = input_data.get("operation")
         if not operation_str:
