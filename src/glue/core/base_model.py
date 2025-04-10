@@ -45,7 +45,11 @@ class BaseModel:
         self.config = config or {}
         self.name = self.config.get('name', 'unnamed_model')
         self.provider_name = self.config.get('provider', 'gemini')
-        self.model_name = self.config.get('model', 'gemini-1.5-pro')
+        
+        # Check for model name in nested config first, then at top level
+        nested_config = self.config.get('config', {})
+        self.model_name = nested_config.get('model') if nested_config and 'model' in nested_config else self.config.get('model', 'gpt-3.5-turbo')
+        
         self.temperature = self.config.get('temperature', 0.7)
         self.max_tokens = self.config.get('max_tokens', 1024)
         self.api_key = self.config.get('api_key')
@@ -301,6 +305,9 @@ class BaseModel:
             # If response is string, check for ```tool_code``` blocks (Gemini style)
             if isinstance(response, str):
                 import re
+                import json
+                
+                # Check for ```tool_code``` blocks (Gemini style)
                 tool_code_pattern = r"```tool_code\s*(.*?)\s*```"
                 matches = re.findall(tool_code_pattern, response, re.DOTALL)
                 if matches:
@@ -360,6 +367,86 @@ class BaseModel:
                             )
                             messages.append(error_msg)
                     # Continue loop: re-call LLM with appended tool results
+                    continue
+                
+                # Also check for ```tool_call``` blocks (for models without native tool support)
+                tool_call_pattern = r"```tool_call\s*(.*?)\s*```"
+                tool_call_matches = re.findall(tool_call_pattern, response, re.DOTALL)
+                
+                if tool_call_matches:
+                    logger.debug(f"Found {len(tool_call_matches)} tool_call blocks in response")
+                    
+                    for tool_call_content in tool_call_matches:
+                        # Parse the tool call content
+                        tool_name = None
+                        parameters = {}
+                        
+                        # Extract tool name and parameters
+                        for line in tool_call_content.strip().split('\n'):
+                            if line.startswith('tool_name:'):
+                                tool_name = line.replace('tool_name:', '').strip()
+                            elif line.startswith('parameters:'):
+                                param_str = line.replace('parameters:', '').strip()
+                                try:
+                                    # Try to parse as JSON
+                                    parameters = json.loads(param_str)
+                                except json.JSONDecodeError:
+                                    # If not valid JSON, try to parse as Python dict
+                                    try:
+                                        # Simple parsing for key-value pairs
+                                        param_str = param_str.strip('{}')
+                                        for pair in param_str.split(','):
+                                            if ':' in pair:
+                                                k, v = pair.split(':', 1)
+                                                parameters[k.strip().strip('"').strip("'")] = v.strip().strip('"').strip("'")
+                                    except Exception:
+                                        logger.warning(f"Failed to parse parameters: {param_str}")
+                        
+                        if not tool_name:
+                            logger.warning("Tool call block missing tool_name")
+                            continue
+                        
+                        # Find the tool
+                        tool_obj = None
+                        if hasattr(self, "tools") and self.tools:
+                            tool_obj = self.tools.get(tool_name)
+                        if not tool_obj:
+                            logger.warning(f"Tool '{tool_name}' not found for simulated tool call, skipping execution")
+                            continue
+                        
+                        # Execute the tool
+                        try:
+                            if callable(tool_obj):
+                                if asyncio.iscoroutinefunction(tool_obj):
+                                    result = await tool_obj(**parameters)
+                                else:
+                                    result = tool_obj(**parameters)
+                            elif hasattr(tool_obj, "execute") and callable(tool_obj.execute):
+                                if asyncio.iscoroutinefunction(tool_obj.execute):
+                                    result = await tool_obj.execute(**parameters)
+                                else:
+                                    result = tool_obj.execute(**parameters)
+                            else:
+                                logger.warning(f"Tool '{tool_name}' is not callable")
+                                continue
+                            
+                            # Append tool result message
+                            tool_result_msg = Message(
+                                role="function",
+                                content=str(result),
+                                name=tool_name
+                            )
+                            messages.append(tool_result_msg)
+                        except Exception as e:
+                            logger.error(f"Error executing tool '{tool_name}': {e}")
+                            error_msg = Message(
+                                role="function",
+                                content=f"Error executing tool '{tool_name}': {e}",
+                                name=tool_name
+                            )
+                            messages.append(error_msg)
+                    
+                    # Continue the loop to process the tool results
                     continue
             
             # If response is plain string and no tool calls detected, return it
@@ -589,6 +676,24 @@ When using tools, clearly indicate which tool you're using and provide all requi
             
             tool_descriptions.append("\n".join(tool_desc))
         
+        # Add instructions for simulated tool calls
+        tool_descriptions.append("""
+## Tool Use Instructions
+
+You can use tools in two ways:
+
+1. **Native Tool Calls**: If you support native tool calling, use the appropriate method for your model.
+
+2. **Simulated Tool Calls**: If you don't support native tool calling or are communicating with a model that doesn't, use this format:
+
+```tool_call
+tool_name: name_of_tool
+parameters: {"param1": "value1", "param2": "value2"}
+```
+
+When you receive a simulated tool call from another model, execute it and respond with the result.
+""")
+        
         return "\n\n".join(tool_descriptions)
     
     def _add_prompt_engineering(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> List[Message]:
@@ -613,13 +718,56 @@ When using tools, clearly indicate which tool you're using and provide all requi
             )
             
             if not has_tool_description:
+                # Check if there's a communicate tool
+                communicate_tool = None
+                for tool in tools:
+                    if tool.get("name") == "communicate":
+                        communicate_tool = tool
+                        break
+                
                 # Append tool descriptions to the system message
                 for i, msg in enumerate(formatted_messages):
                     if (isinstance(msg, dict) and msg.get('role') == 'system') or (hasattr(msg, 'role') and msg.role == 'system'):
+                        tool_description = self._prepare_tools_description(tools)
+                        
+                        # Add special instructions for the communicate tool if it exists
+                        if communicate_tool:
+                            tool_description += "\n\n## Special Instructions for the Communicate Tool\n\n"
+                            tool_description += "The `communicate` tool allows you to send messages to other models or teams. "
+                            tool_description += "You can use it to collaborate with other models in your team or in other teams.\n\n"
+                            tool_description += "Example usage:\n\n"
+                            
+                            # Native tool call example
+                            tool_description += "Native tool call:\n"
+                            tool_description += "```\n"
+                            tool_description += "communicate(target_type=\"model\", target_name=\"assistant\", message=\"Hello, can you help me with this task?\")\n"
+                            tool_description += "```\n\n"
+                            
+                            # Simulated tool call example
+                            tool_description += "Simulated tool call (for models without native tool support):\n"
+                            tool_description += "```tool_call\n"
+                            tool_description += "tool_name: communicate\n"
+                            tool_description += "parameters: {\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello, can you help me with this task?\"}\n"
+                            tool_description += "```\n\n"
+                            
+                            # Add information about available models and teams
+                            if hasattr(self, 'team') and self.team:
+                                # List models in the same team
+                                tool_description += "Models in your team:\n"
+                                for model_name in self.team.models.keys():
+                                    if model_name != self.name:  # Don't include self
+                                        tool_description += f"- {model_name}\n"
+                                
+                                # List other teams if there are outgoing flows
+                                if hasattr(self.team, 'outgoing_flows') and self.team.outgoing_flows:
+                                    tool_description += "\nTeams you can communicate with:\n"
+                                    for flow in self.team.outgoing_flows:
+                                        tool_description += f"- {flow.target.name}\n"
+                        
                         if isinstance(msg, dict):
-                            msg['content'] += "\n\n" + self._prepare_tools_description(tools)
+                            msg['content'] += "\n\n" + tool_description
                         else:
-                            msg.content += "\n\n" + self._prepare_tools_description(tools)
+                            msg.content += "\n\n" + tool_description
                         break
         
         return formatted_messages

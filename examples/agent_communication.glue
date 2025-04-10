@@ -1,0 +1,91 @@
+// Agent Communication Example
+// Demonstrates agent-to-agent communication in GLUE
+
+glue app {
+    name = "Agent Communication Example"
+    description = "Demonstrates agent-to-agent communication in GLUE"
+    version = "0.1.0"
+    config {
+        development = true
+    }
+}
+
+// Define models
+model researcher {
+    provider = openrouter
+    role = "Researcher who finds information and communicates with other models"
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+    }
+    system_prompt = "You are a researcher in a team of AI models. Your job is to find information and share it with other models. You can communicate with other models using the communicate tool. Available models in your team: assistant (helps organize information). Available models in other teams: writer (creates content) and editor (reviews content) in the docs team."
+}
+
+model assistant {
+    provider = openrouter
+    role = "Assistant who helps organize information and communicates with other models"
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+    }
+    system_prompt = "You are an assistant in a team of AI models. Your job is to help organize information and communicate with other models. You can communicate with other models using the communicate tool. Available models in your team: researcher (finds information). Available models in other teams: writer (creates content) and editor (reviews content) in the docs team."
+}
+
+model writer {
+    provider = openrouter
+    role = "Writer who creates content and communicates with other models"
+    adhesives = [glue, velcro]  // Changed from tape to glue and velcro for better inter-team communication
+    config {
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+    }
+    system_prompt = "You are a writer in a team of AI models. Your job is to create content based on information from other models. You can communicate with other models using the communicate tool. Available models in your team: editor (reviews and improves content). Available models in other teams: researcher (finds information) and assistant (helps organize information) in the research team."
+}
+
+model editor {
+    provider = openrouter
+    role = "Editor who reviews and improves content and communicates with other models"
+    adhesives = [glue]
+    config {
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+    }
+    system_prompt = "You are an editor in a team of AI models. Your job is to review and improve content created by other models. You can communicate with other models using the communicate tool. Available models in your team: writer (creates content). Available models in other teams: researcher (finds information) and assistant (helps organize information) in the research team."
+}
+
+// Define tools
+tool web_search {
+    description = "Search the web for information"
+}
+
+tool file_handler {
+    description = "Read and write files"
+}
+
+tool code_interpreter {
+    description = "Execute Python code"
+}
+
+tool communicate {
+    description = "Communicate with other models and teams"
+}
+
+// Define teams and flows
+magnetize {
+    research {
+        lead = researcher
+        members = [assistant]
+        tools = [web_search, code_interpreter, communicate]
+    }
+    
+    docs {
+        lead = writer
+        members = [editor]
+        tools = [file_handler, communicate]
+    }
+    
+    flow {
+        research >< docs  // Bidirectional flow
+    }
+}
+
+
+apply glue

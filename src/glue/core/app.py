@@ -239,8 +239,23 @@ class GlueApp:
                         self.tools[tool_name] = tool_instance
                     except Exception:
                         self.tools[tool_name] = CodeInterpreterTool()
+                elif tool_name == "communicate":
+                    # Explicitly instantiate CommunicateTool
+                    try:
+                        from ..tools.communicate import CommunicateTool
+                        # Pass self (the app instance) if the tool needs it
+                        tool_instance = CommunicateTool(app=self) 
+                        self.tools[tool_name] = tool_instance
+                        logger.info(f"Instantiated built-in tool: {tool_name}")
+                    except ImportError:
+                         logger.warning("CommunicateTool not found, storing config instead.")
+                         self.tools[tool_name] = tool_config
+                    except Exception as e:
+                         logger.warning(f"Failed to instantiate CommunicateTool: {e}, storing config instead.")
+                         self.tools[tool_name] = tool_config
                 else:
-                    # For custom or unknown tools, just store the config for now
+                    # For other custom or unknown tools, store the config
+                    logger.debug(f"Storing config for unknown/custom tool: {tool_name}")
                     self.tools[tool_name] = tool_config
         
         # Set up teams
@@ -251,11 +266,21 @@ class GlueApp:
                 lead_model_name = team_config.get("lead", "")
                 
                 # Get the lead model
-                model = self.models.get(lead_model_name)
-                if model:
+                lead_model = self.models.get(lead_model_name)
+                if lead_model:
+                    # Get member model names
+                    member_names = team_config.get("members", [])
+                    
                     # Create the team with the lead model
-                    team_config_obj = TeamConfig(name=team_name, lead=lead_model_name, members=[], tools=[])
-                    team = Team(name=team_name, config=team_config_obj, lead=model)
+                    team_config_obj = TeamConfig(name=team_name, lead=lead_model_name, members=member_names, tools=[])
+                    team = Team(name=team_name, config=team_config_obj, lead=lead_model)
+                    
+                    # Add member models to the team
+                    for member_name in member_names:
+                        member_model = self.models.get(member_name)
+                        if member_model:
+                            team.add_member_sync(member_model)
+                            logger.info(f"Added member model {member_name} to team {team_name}")
                     
                     # Add tools to the team
                     tools_list = team_config.get("tools", [])
@@ -265,9 +290,9 @@ class GlueApp:
                             team._tools[tool_name] = self.tools[tool_name]
                             
                             # Also add the tool to the lead model
-                            if model and hasattr(model, 'add_tool_sync'):
-                                model.add_tool_sync(tool_name, self.tools[tool_name])
-                            elif model and hasattr(model, 'add_tool'):
+                            if lead_model and hasattr(lead_model, 'add_tool_sync'):
+                                lead_model.add_tool_sync(tool_name, self.tools[tool_name])
+                            elif lead_model and hasattr(lead_model, 'add_tool'):
                                 # Note: This is an async method being called in a sync context
                                 # This is not ideal, but it's necessary for backward compatibility
                                 import asyncio
@@ -275,10 +300,17 @@ class GlueApp:
                                     # Try to run the async method in a new event loop
                                     loop = asyncio.new_event_loop()
                                     asyncio.set_event_loop(loop)
-                                    loop.run_until_complete(model.add_tool(tool_name, self.tools[tool_name]))
+                                    loop.run_until_complete(lead_model.add_tool(tool_name, self.tools[tool_name]))
                                     loop.close()
                                 except Exception as e:
                                     logger.warning(f"Failed to add tool {tool_name} to model {lead_model_name}: {e}")
+                            
+                            # Add the tool to all member models
+                            for member_name in member_names:
+                                member_model = self.models.get(member_name)
+                                if member_model and hasattr(member_model, 'add_tool_sync'):
+                                    member_model.add_tool_sync(tool_name, self.tools[tool_name])
+                                    logger.debug(f"Added tool {tool_name} to member model {member_name}")
                             
                             logger.info(f"Added tool {tool_name} to team {team_name}")
                     
@@ -380,9 +412,52 @@ class GlueApp:
                 # For test compatibility, just continue
                 pass
         
+        # Set up tools
+        # Register the communication tool if it's not already registered
+        if "communicate" not in self.tools:
+            try:
+                # Import the communication tool
+                from ..tools.communicate import CommunicateTool
+                
+                # Create an instance of the tool
+                communicate_tool = CommunicateTool(app=self)
+                
+                # Add to tools dictionary
+                self.tools["communicate"] = communicate_tool
+                
+                # Add to all teams - but check if the team has models first
+                for team in self.teams.values():
+                    if team.models:  # Only add if the team has models
+                        team._tools["communicate"] = communicate_tool
+                        # Add to each model in the team
+                        for model_name, model in team.models.items():
+                            if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
+                                model.add_tool_sync("communicate", communicate_tool)
+                    
+                logger.info("Registered communication tool with all teams")
+            except ImportError:
+                logger.warning("Communication tool not available, skipping registration")
+        
         # Set up flows
+        logger.info(f"Setting up {len(self.flows)} flows")
         for flow in self.flows:
-            await flow.setup()
+            try:
+                logger.debug(f"Setting up flow from {flow.source.name} to {flow.target.name} ({flow.flow_type.name})")
+                await flow.setup()
+                
+                # Establish relationships between teams
+                if flow.flow_type == FlowType.BIDIRECTIONAL:
+                    flow.source.relationships[flow.target.name] = FlowType.BIDIRECTIONAL.value
+                    flow.target.relationships[flow.source.name] = FlowType.BIDIRECTIONAL.value
+                    logger.info(f"Established bidirectional relationship between {flow.source.name} and {flow.target.name}")
+                elif flow.flow_type == FlowType.PUSH:
+                    flow.source.relationships[flow.target.name] = FlowType.PUSH.value
+                    logger.info(f"Established push relationship from {flow.source.name} to {flow.target.name}")
+                elif flow.flow_type == FlowType.PULL:
+                    flow.target.relationships[flow.source.name] = FlowType.PULL.value
+                    logger.info(f"Established pull relationship from {flow.target.name} to {flow.source.name}")
+            except Exception as e:
+                logger.error(f"Error setting up flow: {e}")
     
     async def run(self, input_text: str = None) -> str:
         """Run the application with the given input.

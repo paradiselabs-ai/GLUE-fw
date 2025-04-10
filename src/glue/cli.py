@@ -325,8 +325,104 @@ async def run_interactive_session(app: GlueApp) -> None:
                 
             # Process regular input
             logger.info(f"Processing user input: {user_input}")
-            response = await app.run(user_input)
-            print(f"\n{response}")
+            response_content = await app.run(user_input)
+
+            # --- BEGIN INTERACTIVE SIMULATED TOOL CALL HANDLING ---
+            import re
+            import json
+            
+            # Regex to find ```json ... ``` block and capture the content inside
+            json_match = re.search(r"```json\s*(\{.*?\})\s*```", response_content, re.DOTALL)
+            
+            if json_match:
+                json_string = json_match.group(1)
+                logger.debug(f"Interactive loop extracted potential JSON tool call: {json_string}")
+                tool_executed_interactively = False # Flag to check if we processed a tool call
+                try:
+                    processed_json_string = json_string # Keep original for logging
+                    try:
+                        # Attempt to fix missing comma between top-level keys like "key": value\n "next_key": ...
+                        # More robust: looks for closing quote/bracket/brace, whitespace/newline, opening quote
+                        processed_json_string = re.sub(r'(["\}\]]\s*\n\s*)(")', r'\1,\n\2', json_string)
+                        if processed_json_string != json_string:
+                             logger.info(f"Attempting parsing with fixed JSON (added comma): {processed_json_string}")
+
+                        tool_call_data = json.loads(processed_json_string)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON parsing failed even after attempting fixes: {e}. Processed JSON attempt: {processed_json_string[:200]}...")
+                        raise # Re-raise to fall through to printing original response
+
+                    if isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
+                        tool_name = tool_call_data["tool_name"]
+                        arguments = tool_call_data["arguments"]
+                        logger.info(f"Interactive loop detected SIMULATED tool call: {tool_name} with args: {arguments}")
+
+                        # Execute the local tool from the app's tool registry
+                        if tool_name in app.tools:
+                            tool = app.tools[tool_name]
+                            tool_result_content = None
+                            tool_error = False
+                            try:
+                                if hasattr(tool, "execute") and callable(tool.execute):
+                                    # Note: Context setting might be tricky here, might need adjustment
+                                    # For now, execute without specific model/team context from CLI
+                                    tool_result_content = await tool.execute(**arguments)
+                                    logger.info(f"Interactive loop executed tool {tool_name} successfully.")
+                                else:
+                                    tool_result_content = {"error": f"Tool {tool_name} has no execute method"}
+                                    tool_error = True
+                            except Exception as e:
+                                tool_result_content = {"error": f"Error executing tool {tool_name}: {str(e)}"}
+                                tool_error = True
+                                logger.error(f"Error executing tool {tool_name} from interactive loop", exc_info=True)
+
+                            # Format the result to send back to the app/model
+                            tool_result_for_model = json.dumps({
+                                "tool_name": tool_name,
+                                "result": tool_result_content,
+                                "is_error": tool_error
+                            })
+                            
+                            # Add a system message indicating tool execution result
+                            print(f"\n[SYSTEM] Executed tool '{tool_name}'. Result: {tool_result_content}")
+
+                            # Send the result back to the app for the model to process
+                            logger.info(f"Sending tool result back to app for model processing")
+                            # --- SIMPLIFIED FEEDBACK ---
+                            # Just print the result for now, don't try to feed it back automatically
+                            # We need to figure out the correct mechanism for the feedback loop later.
+                            # final_response = await app.run(json.dumps(input_for_next_turn))
+                            # print(f"\n{final_response}")
+                            tool_executed_interactively = True # Mark as executed
+
+                        else:
+                            logger.warning(f"Interactive loop: Tool '{tool_name}' not found in app tools.")
+                            print(f"\n[SYSTEM] Error: Tool '{tool_name}' not found.")
+                            # Mark as handled even if tool not found, to prevent printing raw JSON
+                            tool_executed_interactively = True 
+                            print(f"\n[SYSTEM] Error: Tool '{tool_name}' not found.")
+                            # Continue the loop without sending result back
+                    else:
+                        # Parsed JSON but not the expected format
+                        logger.debug("Parsed JSON, but not a valid tool call format.")
+                        print(f"\n{response_content}") # Print the original JSON response
+                except json.JSONDecodeError:
+                    # Failed to parse the extracted JSON
+                    logger.warning(f"Failed to decode extracted JSON: {e}. JSON string: {json_string[:200]}...")
+                    # Fall through to print original response if parsing failed
+                except Exception as e:
+                    logger.error(f"Error processing interactive simulated tool call: {e}", exc_info=True)
+                    # Fall through to print original response if unexpected error
+
+                # If no tool was executed interactively (e.g., JSON parse error, tool not found), print original response
+                if not tool_executed_interactively:
+                     logger.debug("Tool not executed interactively or failed, printing original model response.")
+                     print(f"\n{response_content}") # Print the raw response containing the JSON
+            else:
+                 # No JSON block found, print the response as is
+                 logger.debug("No JSON block found in response.")
+                 print(f"\n{response_content}")
+            # --- END INTERACTIVE SIMULATED TOOL CALL HANDLING ---
                 
         except KeyboardInterrupt:
             print("\nSession interrupted")
@@ -1277,6 +1373,9 @@ def run_forge_command():
         description = input("Enter a brief description of what your tool does: ").strip()
         
         print("\nChoose a template:")
+        description = input("Enter a brief description of what your tool does: ").strip()
+        
+        print("\nChoose a template:")
         print("1. Basic Tool (simple function)")
         print("2. API Tool (makes external API calls)")
         print("3. Data Tool (processes data files)")
@@ -1306,6 +1405,101 @@ def run_forge_command():
     
     print("\nThank you for using GLUE Forge!")
     return True
+
+# ==================== Utility Functions ====================
+def list_models():
+    """List available models."""
+    # Define available models by provider
+    AVAILABLE_MODELS = {
+        "openai": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
+        "anthropic": ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
+        "google": ["gemini-pro", "gemini-ultra"],
+        "openrouter": ["meta-llama/llama-3.1-8b-instruct", "anthropic/claude-3-opus", "google/gemini-pro"]
+    }
+    
+    print("Available models:")
+    for provider, models in AVAILABLE_MODELS.items():
+        print(f"\n{provider.capitalize()} Models:")
+        for model in models:
+            print(f"  - {model}")
+            
+def list_tools():
+    """List available tools."""
+    # Define available tools
+    AVAILABLE_TOOLS = {
+        "web_search": {
+            "description": "Search the web for information",
+            "parameters": {"query": "string"}
+        },
+        "file_handler": {
+            "description": "Read and write files",
+            "parameters": {"path": "string", "content": "string (optional)"}
+        },
+        "code_interpreter": {
+            "description": "Execute Python code",
+            "parameters": {"code": "string"}
+        },
+        "communicate": {
+            "description": "Communicate with other models or teams",
+            "parameters": {"target_type": "string", "target_name": "string", "message": "string"}
+        }
+    }
+    
+    print("Available tools:")
+    for tool_name, tool_info in AVAILABLE_TOOLS.items():
+        print(f"\n{tool_name}:")
+        print(f"  Description: {tool_info.get('description', 'No description')}")
+        print(f"  Parameters: {tool_info.get('parameters', 'No parameters')}")
+        
+def validate_glue_file(config_file):
+    """Validate a GLUE configuration file.
+    
+    Args:
+        config_file: Path to the GLUE configuration file
+    """
+    logger = logging.getLogger("glue.validate")
+    logger.info(f"Validating GLUE file: {config_file}")
+    
+    try:
+        # Read the GLUE file
+        with open(config_file, 'r') as f:
+            glue_content = f.read()
+        
+        # Create lexer and parser
+        from .dsl.lexer import GlueLexer
+        from .dsl.parser import GlueDSLParser
+        
+        lexer = GlueLexer()
+        parser = GlueDSLParser()
+        
+        # Parse the GLUE file
+        tokens = lexer.tokenize(glue_content)
+        ast = parser.parse(tokens)
+        
+        # If we get here, the file is valid
+        print(f"✅ GLUE file {config_file} is valid")
+        
+        # Print some basic information about the configuration
+        if "app" in ast:
+            app_name = ast["app"].get("name", "Unnamed App")
+            app_version = ast["app"].get("version", "Unknown Version")
+            print(f"App: {app_name} (Version: {app_version})")
+            
+        if "models" in ast:
+            print(f"Models: {len(ast['models'])}")
+            
+        if "tools" in ast:
+            print(f"Tools: {len(ast['tools'])}")
+            
+        if "magnetize" in ast:
+            print(f"Teams: {len(ast['magnetize'])}")
+            
+        if "flows" in ast:
+            print(f"Flows: {len(ast['flows'])}")
+            
+    except Exception as e:
+        print(f"❌ Error validating GLUE file: {e}")
+        sys.exit(1)
 
 # ==================== Main CLI Entry Point ====================
 def main():

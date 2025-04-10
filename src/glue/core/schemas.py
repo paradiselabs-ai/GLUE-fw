@@ -122,7 +122,7 @@ class Message(BaseModel):
     
     @field_validator('role')
     def validate_role(cls, v):
-        allowed_roles = {'system', 'user', 'assistant', 'tool'}
+        allowed_roles = {'system', 'user', 'assistant', 'tool', 'model', 'function'}
         if v not in allowed_roles:
             raise ValueError(f"Role must be one of {allowed_roles}")
         return v
