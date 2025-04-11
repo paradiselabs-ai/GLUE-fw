@@ -87,34 +87,39 @@ class CodeInterpreterTool(Tool):
             ValueError: If the language or code is missing or invalid
             asyncio.TimeoutError: If code execution times out
         """
-        # Get the language
-        language_str = input_data.get("language")
-        if not language_str:
-            return {
-                "success": False,
-                "error": "Language is required"
-            }
-        
-        # Convert string to enum if needed
-        if isinstance(language_str, str):
-            try:
-                language = CodeLanguage(language_str.lower())
-            except ValueError:
-                return {
-                    "success": False,
-                    "error": f"Unsupported language: {language_str}"
-                }
+        language = None
+        code = None
+
+        # Check if input_data is a string (assume Python code)
+        if isinstance(input_data, str):
+            code = input_data
+            language = CodeLanguage.PYTHON
+            logger.debug("CodeInterpreterTool received raw string input, assuming Python code.")
+        # Check if input_data is a dictionary
+        elif isinstance(input_data, dict):
+            language_str = input_data.get("language")
+            code = input_data.get("code")
+
+            if not language_str:
+                 # Try to infer language if only code is provided in dict
+                 if code:
+                     logger.warning("Language not specified, defaulting to Python.")
+                     language = CodeLanguage.PYTHON
+                 else:
+                    return {"success": False, "error": "Code is required"}
+            else:
+                # Convert string to enum if needed
+                if isinstance(language_str, str):
+                    try:
+                        language = CodeLanguage(language_str.lower())
+                    except ValueError:
+                        return {"success": False, "error": f"Unsupported language: {language_str}"}
+                else:
+                     # Assume it's already CodeLanguage enum
+                     language = language_str 
         else:
-            language = language_str
-        
-        # Get the code
-        code = input_data.get("code")
-        if not code:
-            return {
-                "success": False,
-                "error": "Code is required"
-            }
-        
+            return {"success": False, "error": "Invalid input_data format. Expected string or dict."}
+
         # Execute the code in the appropriate language
         if language == CodeLanguage.PYTHON:
             # The timeout is handled by the parent execute method

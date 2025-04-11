@@ -266,9 +266,71 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         
         # Non-interactive mode
         if input_text:
-            logger.info(f"Running with input: {input_text}")
-            response = await app.run(input_text)
-            print(response)
+            logger.info(f"Running non-interactive agentic workflow with initial input: {input_text}")
+            current_input = input_text
+            max_turns = 10 # Set a limit to prevent infinite loops
+            turn_count = 0
+            final_response = None
+
+            while turn_count < max_turns:
+                turn_count += 1
+                logger.info(f"Agentic Loop Turn {turn_count}/{max_turns}")
+                logger.debug(f"Input for turn {turn_count}: {current_input}")
+
+                # Get response from the app
+                response_content = await app.run(current_input) 
+                final_response = response_content # Store the latest response
+                logger.debug(f"Raw response from app run: {response_content[:500]}...") # Log partial response
+
+                # Check for tool call in the response
+                tool_call_found = False
+                if isinstance(response_content, str):
+                    # Use regex to find JSON block, potentially wrapped in markdown or standalone
+                    json_match = re.search(r'```json\s*({.*?})\s*```|({.*})', response_content, re.DOTALL)
+                    
+                    if json_match:
+                        json_string = json_match.group(1) if json_match.group(1) else json_match.group(2)
+                        logger.info("Potential tool call detected in response.")
+                        try:
+                            tool_call_data = json.loads(json_string)
+                            if isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
+                                tool_name = tool_call_data["tool_name"]
+                                arguments = tool_call_data["arguments"]
+                                logger.info(f"Executing tool call: {tool_name} with args {arguments}")
+                                tool_call_found = True
+
+                                # --- Execute Tool --- 
+                                # We need a way for the runner to execute tools defined in the app
+                                # Placeholder: Assume app has a method `execute_tool(tool_name, arguments)`
+                                # This needs to be implemented in GlueApp
+                                if hasattr(app, 'execute_tool') and callable(app.execute_tool):
+                                    tool_result = await app.execute_tool(tool_name, arguments)
+                                    logger.info(f"Tool {tool_name} executed. Result: {tool_result}")
+                                    # Format result for next turn input (e.g., as JSON string)
+                                    current_input = json.dumps({"tool_name": tool_name, "result": tool_result})
+                                else:
+                                    logger.error(f"App does not have execute_tool method. Cannot execute tool {tool_name}.")
+                                    # Prepare error message for next turn
+                                    current_input = json.dumps({"tool_name": tool_name, "error": "Tool execution failed: App cannot execute tools."}) 
+
+                            else:
+                                logger.debug("Parsed JSON, but not a valid tool call format.")
+                        except json.JSONDecodeError as e:
+                            logger.warning(f"Failed to decode potential JSON tool call: {e}")
+                        except Exception as e:
+                             logger.error(f"Error processing potential tool call: {e}", exc_info=True)
+
+                # If no tool call was found or executed, break the loop
+                if not tool_call_found:
+                    logger.info("No further tool call detected. Ending agentic loop.")
+                    break
+            
+            # Check if loop ended due to max turns
+            if turn_count >= max_turns:
+                 logger.warning(f"Agentic loop reached maximum turns ({max_turns}). Returning last response.")
+
+            # Print the final response (either last model response or error)
+            print(final_response)
             return True
         else:
             logger.error("No input provided for non-interactive mode")
@@ -328,96 +390,26 @@ async def run_interactive_session(app: GlueApp) -> None:
             response_content = await app.run(user_input)
 
             # --- BEGIN INTERACTIVE SIMULATED TOOL CALL HANDLING ---
-            import re
             import json
             
-            # Regex to find ```json ... ``` block and capture the content inside
-            json_match = re.search(r"```json\s*(\{.*?\})\s*```", response_content, re.DOTALL)
+            # Use regex to find JSON block, potentially wrapped in markdown or standalone
+            # Pattern tries to find ```json ... ``` block first, then a standalone { ... }
+            json_match = re.search(r'```json\s*({.*?})\s*```|({.*})', response_content, re.DOTALL)
             
             if json_match:
-                json_string = json_match.group(1)
+                # Extract the JSON string from the first or second capturing group
+                json_string = json_match.group(1) if json_match.group(1) else json_match.group(2)
                 logger.debug(f"Interactive loop extracted potential JSON tool call: {json_string}")
-                tool_executed_interactively = False # Flag to check if we processed a tool call
+                
+                # Attempt to parse and format the JSON for pretty printing
                 try:
-                    processed_json_string = json_string # Keep original for logging
-                    try:
-                        # Attempt to fix missing comma between top-level keys like "key": value\n "next_key": ...
-                        # More robust: looks for closing quote/bracket/brace, whitespace/newline, opening quote
-                        processed_json_string = re.sub(r'(["\}\]]\s*\n\s*)(")', r'\1,\n\2', json_string)
-                        if processed_json_string != json_string:
-                             logger.info(f"Attempting parsing with fixed JSON (added comma): {processed_json_string}")
-
-                        tool_call_data = json.loads(processed_json_string)
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"JSON parsing failed even after attempting fixes: {e}. Processed JSON attempt: {processed_json_string[:200]}...")
-                        raise # Re-raise to fall through to printing original response
-
-                    if isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
-                        tool_name = tool_call_data["tool_name"]
-                        arguments = tool_call_data["arguments"]
-                        logger.info(f"Interactive loop detected SIMULATED tool call: {tool_name} with args: {arguments}")
-
-                        # Execute the local tool from the app's tool registry
-                        if tool_name in app.tools:
-                            tool = app.tools[tool_name]
-                            tool_result_content = None
-                            tool_error = False
-                            try:
-                                if hasattr(tool, "execute") and callable(tool.execute):
-                                    # Note: Context setting might be tricky here, might need adjustment
-                                    # For now, execute without specific model/team context from CLI
-                                    tool_result_content = await tool.execute(**arguments)
-                                    logger.info(f"Interactive loop executed tool {tool_name} successfully.")
-                                else:
-                                    tool_result_content = {"error": f"Tool {tool_name} has no execute method"}
-                                    tool_error = True
-                            except Exception as e:
-                                tool_result_content = {"error": f"Error executing tool {tool_name}: {str(e)}"}
-                                tool_error = True
-                                logger.error(f"Error executing tool {tool_name} from interactive loop", exc_info=True)
-
-                            # Format the result to send back to the app/model
-                            tool_result_for_model = json.dumps({
-                                "tool_name": tool_name,
-                                "result": tool_result_content,
-                                "is_error": tool_error
-                            })
-                            
-                            # Add a system message indicating tool execution result
-                            print(f"\n[SYSTEM] Executed tool '{tool_name}'. Result: {tool_result_content}")
-
-                            # Send the result back to the app for the model to process
-                            logger.info(f"Sending tool result back to app for model processing")
-                            # --- SIMPLIFIED FEEDBACK ---
-                            # Just print the result for now, don't try to feed it back automatically
-                            # We need to figure out the correct mechanism for the feedback loop later.
-                            # final_response = await app.run(json.dumps(input_for_next_turn))
-                            # print(f"\n{final_response}")
-                            tool_executed_interactively = True # Mark as executed
-
-                        else:
-                            logger.warning(f"Interactive loop: Tool '{tool_name}' not found in app tools.")
-                            print(f"\n[SYSTEM] Error: Tool '{tool_name}' not found.")
-                            # Mark as handled even if tool not found, to prevent printing raw JSON
-                            tool_executed_interactively = True 
-                            print(f"\n[SYSTEM] Error: Tool '{tool_name}' not found.")
-                            # Continue the loop without sending result back
-                    else:
-                        # Parsed JSON but not the expected format
-                        logger.debug("Parsed JSON, but not a valid tool call format.")
-                        print(f"\n{response_content}") # Print the original JSON response
+                    parsed_json = json.loads(json_string)
+                    pretty_json = json.dumps(parsed_json, indent=2)
+                    print(f"\n[TOOL CALL DETECTED]\n{pretty_json}")
                 except json.JSONDecodeError:
-                    # Failed to parse the extracted JSON
-                    logger.warning(f"Failed to decode extracted JSON: {e}. JSON string: {json_string[:200]}...")
-                    # Fall through to print original response if parsing failed
-                except Exception as e:
-                    logger.error(f"Error processing interactive simulated tool call: {e}", exc_info=True)
-                    # Fall through to print original response if unexpected error
-
-                # If no tool was executed interactively (e.g., JSON parse error, tool not found), print original response
-                if not tool_executed_interactively:
-                     logger.debug("Tool not executed interactively or failed, printing original model response.")
-                     print(f"\n{response_content}") # Print the raw response containing the JSON
+                    # If parsing fails, just print the raw extracted string
+                    logger.warning(f"Could not parse extracted JSON for pretty printing. Raw string: {json_string[:200]}...")
+                    print(f"\n[POTENTIAL TOOL CALL (Raw)]\n{json_string}")
             else:
                  # No JSON block found, print the response as is
                  logger.debug("No JSON block found in response.")
@@ -1370,9 +1362,6 @@ def run_forge_command():
     
     if forge_choice == "1":
         name = input("\nEnter a name for your tool (letters, numbers, underscores only): ").strip()
-        description = input("Enter a brief description of what your tool does: ").strip()
-        
-        print("\nChoose a template:")
         description = input("Enter a brief description of what your tool does: ").strip()
         
         print("\nChoose a template:")

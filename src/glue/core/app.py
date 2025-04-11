@@ -629,3 +629,27 @@ class GlueApp:
         
         # Call cleanup after handling flows
         await self.cleanup()
+
+    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Execute a tool registered with the application."""
+        logger.info(f"App attempting to execute tool: {tool_name} with args: {arguments}")
+        if tool_name in self.tools:
+            tool = self.tools[tool_name]
+            try:
+                if hasattr(tool, "execute") and callable(tool.execute):
+                    # Note: Context might be missing here compared to team-based execution
+                    # Consider if top-level context needs setting
+                    result = await tool.execute(**arguments)
+                    logger.info(f"Tool {tool_name} executed successfully by app.")
+                    # Tools might return complex objects, let's return them directly for now
+                    # The calling loop might need to serialize/deserialize if needed
+                    return result 
+                else:
+                    logger.error(f"Tool {tool_name} found but has no callable execute method.")
+                    return {"error": f"Tool {tool_name} has no execute method"} # Return error dict
+            except Exception as e:
+                logger.error(f"Error executing tool {tool_name} via app: {e}", exc_info=True)
+                return {"error": f"Error executing tool {tool_name}: {str(e)}"} # Return error dict
+        else:
+            logger.error(f"Tool '{tool_name}' not found in application tools.")
+            return {"error": f"Tool '{tool_name}' not found"} # Return error dict

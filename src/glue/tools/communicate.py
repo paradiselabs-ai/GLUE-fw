@@ -8,6 +8,8 @@ and teams within the GLUE framework.
 import logging
 from typing import Dict, Any, Optional
 from datetime import datetime
+import asyncio
+import uuid
 
 logger = logging.getLogger("glue.tools.communicate")
 
@@ -88,8 +90,15 @@ class CommunicateTool:
         elif target_type == "team":
             # Check for intra-team communication
             if target_name == calling_team.name:
-                logger.debug(f"Handling intra-team communication within {calling_team.name} via message queue")
-                # Construct message and put into team's queue
+                logger.debug(f"Initiating intra-team broadcast within {calling_team.name}")
+                broadcast_id = str(uuid.uuid4())
+                future = asyncio.get_running_loop().create_future()
+
+                # Ensure pending_broadcasts exists on the team
+                if not hasattr(calling_team, 'pending_broadcasts'):
+                    calling_team.pending_broadcasts = {}
+                calling_team.pending_broadcasts[broadcast_id] = future
+
                 internal_message = {
                     "content": message,
                     "metadata": {
@@ -97,23 +106,51 @@ class CommunicateTool:
                         "target_team": calling_team.name,
                         "source_model": calling_model.name,
                         "timestamp": datetime.now().isoformat(),
-                        "internal": True # Flag for internal message
+                        "internal": True, # Flag for internal message
+                        "broadcast_id": broadcast_id # Add broadcast ID
                     }
                 }
                 try:
                     # Use the team object from context to access the queue
                     await calling_team.message_queue.put((internal_message, None)) # None sender for internal
-                    logger.info(f"Queued internal message from {calling_model.name} within team {calling_team.name}")
-                    return {
-                        "success": True,
-                        "message": "Internal message queued successfully."
-                    }
+                    logger.info(f"Queued internal broadcast message (ID: {broadcast_id}) from {calling_model.name} within team {calling_team.name}")
+                    
+                    # Wait for the broadcast to be processed
+                    timeout_seconds = 30.0 # Configurable timeout
+                    logger.debug(f"Waiting for broadcast {broadcast_id} result (timeout: {timeout_seconds}s)")
+                    try:
+                        result = await asyncio.wait_for(future, timeout=timeout_seconds)
+                        logger.info(f"Received result for broadcast {broadcast_id}")
+                        return {
+                           "success": True,
+                           "message": "Broadcast processed.",
+                           "responses": result # Return the aggregated responses
+                        }
+                    except asyncio.TimeoutError:
+                        logger.warning(f"Timeout waiting for broadcast {broadcast_id} result.")
+                        # Clean up the pending future on timeout is handled in finally
+                        return {
+                            "success": False,
+                            "error": f"Timeout waiting for broadcast response (ID: {broadcast_id})"
+                        }
+                    except Exception as wait_e:
+                         logger.error(f"Error waiting for broadcast {broadcast_id} result: {wait_e}")
+                         return {"success": False, "error": f"Error waiting for broadcast: {wait_e}"}
+                        
                 except Exception as e:
                     logger.error(f"Error queueing internal message in team {calling_team.name}: {e}")
+                    # Ensure future is removed if queueing fails
+                    if broadcast_id in calling_team.pending_broadcasts:
+                         calling_team.pending_broadcasts.pop(broadcast_id, None)
                     return {
                         "success": False,
                         "error": f"Error queueing internal message: {e}"
                     }
+                finally:
+                    # Ensure future is removed if it still exists (e.g., on timeout or error)
+                    if broadcast_id in calling_team.pending_broadcasts:
+                         calling_team.pending_broadcasts.pop(broadcast_id, None)
+                         logger.debug(f"Cleaned up pending future {broadcast_id} in finally block.")
             else:
                 # Communicate with another (different) team
                 logger.debug(f"Initiating inter-team communication from {calling_team.name} to {target_name}")
