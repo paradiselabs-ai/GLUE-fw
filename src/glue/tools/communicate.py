@@ -45,32 +45,61 @@ class CommunicateTool:
             "required": ["target_type", "target_name", "message"]
         }
         
-    async def execute(self, target_type: str, target_name: str, message: str) -> Dict[str, Any]:
+    async def execute(self, target_type: str, target_name: str, message: str, **kwargs) -> Dict[str, Any]:
         """Execute the communication tool.
         
         Args:
             target_type: Type of target to communicate with (model or team)
             target_name: Name of the target model or team
             message: Message to send to the target
+            **kwargs: Expected to contain 'calling_model' (str) and 'calling_team' (str)
             
         Returns:
             Dictionary with the result of the communication
         """
-        # Get the calling model and team
-        calling_model = None
-        calling_team = None
+        # Get the calling model and team from kwargs
+        calling_model_name = kwargs.get('calling_model')
+        calling_team_name = kwargs.get('calling_team')
         
-        # This will be set by the Team.process_message method
-        if hasattr(self, '_current_context'):
-            calling_model = self._current_context.get('model')
-            calling_team = self._current_context.get('team')
-        
-        if not calling_model or not calling_team:
+        # Retrieve app context if not already set (needed to find team/model objects)
+        if not self.app:
+            # This is a fallback, ideally app context should be set during tool initialization
+            logger.warning("CommunicateTool: App context not set during init. Trying to get globally.")
+            # This assumes a way to get the global app instance, which might not be reliable
+            # Replace with a proper context injection mechanism if possible
+            try:
+                # Example: Accessing a hypothetical global app instance (replace if needed)
+                from .globals import get_current_app # Hypothetical
+                self.app = get_current_app() 
+            except ImportError:
+                logger.error("Could not get app context for CommunicateTool.")
+                self.app = None # Ensure it remains None if import fails
+
+        if not self.app:
+             return {
+                "success": False,
+                "error": "CommunicateTool failed: Application context is missing."
+             }
+
+        # Validate context
+        if not calling_model_name or not calling_team_name:
+            logger.error(f"CommunicateTool failed: Missing calling_model ({calling_model_name}) or calling_team ({calling_team_name}) in kwargs.")
             return {
                 "success": False,
-                "error": "Could not determine calling model or team"
+                "error": "Could not determine calling model or team context from arguments."
             }
+        
+        # Find the actual team and model objects using the app context
+        calling_team = self.app.teams.get(calling_team_name)
+        if not calling_team:
+            logger.error(f"CommunicateTool failed: Calling team '{calling_team_name}' not found in app.")
+            return {"success": False, "error": f"Calling team '{calling_team_name}' not found."}
             
+        calling_model = calling_team.models.get(calling_model_name)
+        if not calling_model:
+            logger.error(f"CommunicateTool failed: Calling model '{calling_model_name}' not found in team '{calling_team_name}'.")
+            return {"success": False, "error": f"Calling model '{calling_model_name}' not found."}
+
         logger.info(f"Model {calling_model.name} in team {calling_team.name} is communicating with {target_type} {target_name}")
         
         if target_type == "model":

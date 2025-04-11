@@ -14,8 +14,12 @@ import asyncio
 import argparse
 import logging
 import re
+import uuid
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
+from rich import print
+from rich.console import Console
+from rich.syntax import Syntax
 
 # Import framework modules
 # Use direct imports to avoid circular imports
@@ -31,6 +35,9 @@ from glue.cliHelpers import (
     get_interactive_help_text,
     format_agent_interactions
 )
+
+# Import new utilities
+from .utils.json_utils import extract_json, JSON_EXTRACT_REGEX
 
 # Re-export functions for test compatibility
 async def interactive_session(app: 'GlueApp'):
@@ -191,6 +198,7 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         True if successful, False otherwise
     """
     logger = logging.getLogger("glue.run_app")
+    console = Console()
     
     try:
         # Check if file exists
@@ -265,7 +273,7 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
             return True
         
         # Non-interactive mode
-        if input_text:
+        elif input_text:
             logger.info(f"Running non-interactive agentic workflow with initial input: {input_text}")
             current_input = input_text
             max_turns = 10 # Set a limit to prevent infinite loops
@@ -279,67 +287,124 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
 
                 # Get response from the app
                 response_content = await app.run(current_input) 
-                final_response = response_content # Store the latest response
+                final_response = response_content # Store the latest response for potential final output
                 logger.debug(f"Raw response from app run: {response_content[:500]}...") # Log partial response
 
-                # Check for tool call in the response
-                tool_call_found = False
+                # --- Always process the latest response_content for tool calls --- 
+                tool_calls_found_in_response = False
+                tool_results_for_next_turn = []
+
                 if isinstance(response_content, str):
-                    # Use regex to find JSON block, potentially wrapped in markdown or standalone
-                    json_match = re.search(r'```json\s*({.*?})\s*```|({.*})', response_content, re.DOTALL)
-                    
-                    if json_match:
-                        json_string = json_match.group(1) if json_match.group(1) else json_match.group(2)
-                        logger.info("Potential tool call detected in response.")
+                    # Use re.finditer to find all potential JSON blocks in the response
+                    for match in JSON_EXTRACT_REGEX.finditer(response_content):
+                        json_string = match.group(1) or match.group(2)
+                        if not json_string:
+                            continue
+                            
                         try:
-                            tool_call_data = json.loads(json_string)
+                            tool_call_data = json.loads(json_string.strip())
                             if isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
                                 tool_name = tool_call_data["tool_name"]
                                 arguments = tool_call_data["arguments"]
-                                logger.info(f"Executing tool call: {tool_name} with args {arguments}")
-                                tool_call_found = True
+                                tool_call_id = f"call_{uuid.uuid4()}" 
+                                logger.info(f"Detected tool call in response: {tool_name} (ID: {tool_call_id}) with args {arguments}")
+                                tool_calls_found_in_response = True # Mark that we found at least one valid call
 
-                                # --- Execute Tool --- 
-                                # We need a way for the runner to execute tools defined in the app
-                                # Placeholder: Assume app has a method `execute_tool(tool_name, arguments)`
-                                # This needs to be implemented in GlueApp
-                                if hasattr(app, 'execute_tool') and callable(app.execute_tool):
-                                    tool_result = await app.execute_tool(tool_name, arguments)
-                                    logger.info(f"Tool {tool_name} executed. Result: {tool_result}")
-                                    # Format result for next turn input (e.g., as JSON string)
-                                    current_input = json.dumps({"tool_name": tool_name, "result": tool_result})
-                                else:
-                                    logger.error(f"App does not have execute_tool method. Cannot execute tool {tool_name}.")
-                                    # Prepare error message for next turn
-                                    current_input = json.dumps({"tool_name": tool_name, "error": "Tool execution failed: App cannot execute tools."}) 
+                                # --- Execute Tool with Error Handling --- 
+                                tool_result_message = None
+                                try:
+                                    if hasattr(app, 'execute_tool') and callable(app.execute_tool):
+                                        tool_result = await app.execute_tool(tool_name, arguments)
+                                        logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
+                                        # Format result message
+                                        tool_result_message = {
+                                            "role": "tool", 
+                                            "tool_call_id": tool_call_id, 
+                                            "name": tool_name, 
+                                            "content": str(tool_result) # Ensure content is string
+                                        }
+                                    else:
+                                        logger.error(f"App cannot execute tool {tool_name} (ID: {tool_call_id}).")
+                                        error_content = f"Tool execution failed: App cannot execute tool '{tool_name}'."
+                                        tool_result_message = {
+                                            "role": "tool", 
+                                            "tool_call_id": tool_call_id, 
+                                            "name": tool_name, 
+                                            "content": error_content,
+                                            "is_error": True
+                                        }
+                                except Exception as e:
+                                    logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
+                                    error_content = f"Error executing tool '{tool_name}': {e}"
+                                    tool_result_message = {
+                                        "role": "tool", 
+                                        "tool_call_id": tool_call_id, 
+                                        "name": tool_name, 
+                                        "content": error_content,
+                                        "is_error": True
+                                    }
+                                
+                                # Add the result/error message to the list for the next turn's input
+                                if tool_result_message:
+                                    tool_results_for_next_turn.append(tool_result_message)
 
                             else:
-                                logger.debug("Parsed JSON, but not a valid tool call format.")
-                        except json.JSONDecodeError as e:
-                            logger.warning(f"Failed to decode potential JSON tool call: {e}")
-                        except Exception as e:
-                             logger.error(f"Error processing potential tool call: {e}", exc_info=True)
+                                # Parsed JSON, but not a valid tool call format
+                                logger.debug(f"Ignored JSON block (not tool call format): {json_string[:100]}...")
 
-                # If no tool call was found or executed, break the loop
-                if not tool_call_found:
-                    logger.info("No further tool call detected. Ending agentic loop.")
+                        except json.JSONDecodeError:
+                            # Ignore blocks that are not valid JSON
+                            logger.debug(f"Ignored non-JSON block found by regex: {json_string[:100]}...")
+                        except Exception as e:
+                             logger.error(f"Error processing potential tool call block: {e}", exc_info=True)
+                    # --- End of loop through matches --- 
+
+                else:
+                    logger.debug("Response was not a string, skipping tool call check.")
+
+                # --- Prepare for next turn or break --- 
+                if tool_calls_found_in_response:
+                    # If tool calls were found in the *latest response*, 
+                    # format their results as the input for the next turn.
+                    current_input = json.dumps(tool_results_for_next_turn)
+                    # Continue the loop
+                else:
+                    # If no tool calls were found in the *latest response*, 
+                    # then this response is the final answer. Break the loop.
+                    logger.info("No tool calls found in the latest response. Ending agentic loop.")
                     break
             
-            # Check if loop ended due to max turns
+            # --- After the loop --- 
             if turn_count >= max_turns:
                  logger.warning(f"Agentic loop reached maximum turns ({max_turns}). Returning last response.")
 
-            # Print the final response (either last model response or error)
-            print(final_response)
+            # Print the final response
+            console.print("\n[bold green]Final Response:[/bold green]")
+            if isinstance(final_response, str):
+                 # Check if the final response itself contains JSON (e.g., if loop ended on error)
+                 final_json = extract_json(final_response)
+                 if final_json:
+                     json_str = json.dumps(final_json, indent=2)
+                     syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
+                     console.print(syntax)
+                 else:
+                     console.print(final_response)
+            elif isinstance(final_response, (dict, list)):
+                 json_str = json.dumps(final_response, indent=2)
+                 syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
+                 console.print(syntax)
+            else:
+                 console.print(str(final_response))
+                 
             return True
         else:
             logger.error("No input provided for non-interactive mode")
-            print("Error: No input provided for non-interactive mode")
+            console.print("[bold red]Error:[/bold red] No input provided for non-interactive mode")
             return False
         
     except Exception as e:
-        logger.error(f"Error running application: {str(e)}", exc_info=True)
-        print(f"Error running application: {str(e)}")
+        logger.error(f"Error running application: {e}", exc_info=True)
+        console.print(f"[bold red]Error running application:[/bold red] {e}")
         return False
 
 async def run_interactive_session(app: GlueApp) -> None:
@@ -349,79 +414,73 @@ async def run_interactive_session(app: GlueApp) -> None:
         app: The GLUE application to run
     """
     logger = logging.getLogger("glue.interactive")
+    console = Console()
     
-    print("[DEBUG] Entered run_interactive_session()")
-    print("\nType 'exit' or 'quit' to end the session")
-    print("Type 'help' for a list of commands")
+    # Assume app.setup() has already been called by run_app
     
+    console.print(f"[bold green]Interactive session started with {app.name}. Type 'quit' or 'exit' to end.[/bold green]")
+    console.print("Enter your message below:")
+
     while True:
         try:
-            # Get user input
-            user_input = input("\n> ")
+            user_input = await asyncio.to_thread(console.input, "> ")
             
-            # Check for exit command
-            if user_input.lower() in ["exit", "quit"]:
-                print("Ending session")
+            if user_input.lower() in ["quit", "exit"]:
+                console.print("[bold yellow]Exiting interactive session.[/bold yellow]")
                 break
                 
-            # Check for help command
-            elif user_input.lower() == "help":
-                print("\nAvailable commands:")
-                print("  help - Show this help message")
-                print("  exit, quit - End the session")
-                print("  tools - List available tools")
-                print("  clear - Clear the conversation history")
+            if not user_input:
                 continue
-                
-            # Check for tools command
-            elif user_input.lower() == "tools":
-                display_available_tools(app)
-                continue
-                
-            # Check for clear command
-            elif user_input.lower() == "clear":
-                # Clear conversation history
-                # Implementation depends on how history is stored in the app
-                print("Conversation history cleared")
-                continue
-                
-            # Process regular input
-            logger.info(f"Processing user input: {user_input}")
-            response_content = await app.run(user_input)
 
-            # --- BEGIN INTERACTIVE SIMULATED TOOL CALL HANDLING ---
-            import json
+            logger.info(f"User input: {user_input}")
             
-            # Use regex to find JSON block, potentially wrapped in markdown or standalone
-            # Pattern tries to find ```json ... ``` block first, then a standalone { ... }
-            json_match = re.search(r'```json\s*({.*?})\s*```|({.*})', response_content, re.DOTALL)
+            # Run the application with the user input
+            console.print("[italic cyan]Processing...[/italic cyan]")
+            response = await app.run(user_input)
             
-            if json_match:
-                # Extract the JSON string from the first or second capturing group
-                json_string = json_match.group(1) if json_match.group(1) else json_match.group(2)
-                logger.debug(f"Interactive loop extracted potential JSON tool call: {json_string}")
-                
-                # Attempt to parse and format the JSON for pretty printing
-                try:
-                    parsed_json = json.loads(json_string)
-                    pretty_json = json.dumps(parsed_json, indent=2)
-                    print(f"\n[TOOL CALL DETECTED]\n{pretty_json}")
-                except json.JSONDecodeError:
-                    # If parsing fails, just print the raw extracted string
-                    logger.warning(f"Could not parse extracted JSON for pretty printing. Raw string: {json_string[:200]}...")
-                    print(f"\n[POTENTIAL TOOL CALL (Raw)]\n{json_string}")
+            # Format and print the response
+            console.print(f"\n[bold magenta]{app.name}:[/bold magenta]")
+            
+            if isinstance(response, str):
+                 # Check for JSON tool call using the utility function
+                 tool_call_data = extract_json(response)
+                 
+                 if tool_call_data:
+                     logger.info(f"Detected JSON in response (likely tool call): {tool_call_data}")
+                     # Pretty print the detected JSON
+                     json_str = json.dumps(tool_call_data, indent=2)
+                     syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
+                     console.print("[bold yellow]Detected Tool Call:[/bold yellow]")
+                     console.print(syntax)
+                     # Print the rest of the response text if any
+                     # (This assumes the JSON is the primary content if found)
+                     # A more sophisticated approach might try to print text around the JSON
+                     # For now, if JSON is found, we primarily display that.
+                 else:
+                     # If no JSON found, print the raw string response
+                     console.print(response)
+                     
+            elif isinstance(response, dict) or isinstance(response, list):
+                 # Pretty print dictionaries or lists
+                 json_str = json.dumps(response, indent=2)
+                 syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
+                 console.print(syntax)
             else:
-                 # No JSON block found, print the response as is
-                 logger.debug("No JSON block found in response.")
-                 print(f"\n{response_content}")
-            # --- END INTERACTIVE SIMULATED TOOL CALL HANDLING ---
-                
+                 # Print any other type of response as string
+                 console.print(str(response))
+
+            console.print("\nEnter your message below:")
+            
         except KeyboardInterrupt:
-            print("\nSession interrupted")
+            console.print("\n[bold yellow]Interrupted. Exiting session.[/bold yellow]")
             break
         except Exception as e:
-            logger.error(f"Error in interactive session: {str(e)}", exc_info=True)
-            print(f"Error: {str(e)}")
+            logger.error(f"Error during interactive session: {e}", exc_info=True)
+            console.print(f"[bold red]An error occurred: {e}[/bold red]")
+            # Optionally, continue the loop or break
+            # continue 
+
+    logger.info("Interactive session ended.")
 
 def display_available_tools(app: GlueApp) -> None:
     """Display the available tools in the GLUE application.

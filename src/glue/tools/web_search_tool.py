@@ -7,6 +7,7 @@ to search the web for information.
 import logging
 from typing import Dict, List, Any, Optional, Union
 from enum import Enum
+import os
 
 from .tool_base import Tool, ToolConfig, ToolPermission
 from .providers.search_base import SearchProvider, SearchResponse
@@ -49,6 +50,22 @@ class WebSearchTool(Tool):
         
         super().__init__(name, description, config)
         
+        # Explicitly define input parameters for LLM schema generation
+        # Overrides introspection of _execute if Tool base class respects this
+        self.inputs = {
+            "query": {
+                "type": str,
+                "description": "The search query string.",
+                "required": True
+            },
+            "max_results": {
+                "type": int,
+                "description": "Maximum number of results to return.",
+                "required": False,
+                "default": 5
+            }
+        }
+        
         # Convert string to enum if needed
         if isinstance(provider_type, str):
             try:
@@ -68,6 +85,26 @@ class WebSearchTool(Tool):
         self.provider_config = provider_config or {}
         self.provider: Optional[SearchProvider] = None
     
+    # Override to provide the correct schema to the LLM
+    # def _get_input_parameters(self) -> Dict[str, Any]:
+    #     """Return the explicit input schema for this tool."""
+    #     return {
+    #         "query": {
+    #             "type": str, # Use type object, not string
+    #             "description": "The search query string.",
+    #             "required": True,
+    #             "optional": False, # Explicitly mark as not optional
+    #             "default": None
+    #         },
+    #         "max_results": {
+    #             "type": int,
+    #             "description": "Maximum number of results to return.",
+    #             "required": False,
+    #             "optional": True, # Explicitly mark as optional
+    #             "default": 5
+    #         }
+    #     }
+    
     async def initialize(self, instance_data: Optional[Dict[str, Any]] = None) -> None:
         """
         Initialize the tool and create the appropriate search provider.
@@ -82,29 +119,41 @@ class WebSearchTool(Tool):
             # Call the parent initialize method
             await super().initialize(instance_data)
     
-    async def _execute(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _execute(self, query: str, num_results: Optional[int] = 5, **kwargs) -> Dict[str, Any]:
         """
         Execute a web search.
         
         Args:
-            input_data: Dictionary containing 'query' and optional 'max_results'
+            query: The search query string.
+            num_results: The maximum number of results to return (default 5).
+            **kwargs: Additional keyword arguments (ignored).
             
         Returns:
             Dictionary containing the search results
             
         Raises:
-            ValueError: If the query is missing or the provider is not initialized
+            ValueError: If the provider is not initialized or query is invalid.
         """
         if not self.provider:
             raise ValueError("Search provider not initialized")
         
-        query = input_data.get("query")
+        # Validate query (already typed as str)
         if not query:
-            raise ValueError("Search query is required")
+            raise ValueError("Search query cannot be empty.")
         
-        max_results = input_data.get("max_results", 5)
+        # Validate max_results (use num_results parameter)
+        max_results = num_results if num_results is not None else 5 # Use default if None
+        try:
+            max_results = int(max_results)
+            if max_results <= 0:
+                 logger.warning(f"num_results must be positive. Using default 5.")
+                 max_results = 5
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid num_results value: {num_results}. Using default 5.")
+            max_results = 5
         
-        # Execute the search
+        # Execute the search using the direct parameters
+        logger.debug(f"Executing web search for '{query}' with max_results={max_results}")
         response = await self.provider.search(query, max_results)
         
         # Return the response as a dictionary
@@ -121,10 +170,16 @@ class WebSearchTool(Tool):
         if not isinstance(self.provider_type, SearchProviderType):
             raise ValueError(f"Unsupported provider type: {self.provider_type}")
             
-        # Check for API key
+        # Check for API key - First from config, then environment
         api_key = self.provider_config.get("api_key")
         if not api_key:
-            raise ValueError(f"API key is required for {self.provider_type} provider")
+            # Try getting from environment variable if not in config
+            logger.debug(f"API key not found in provider_config for {self.provider_type}. Checking environment variable SERP_API_KEY...")
+            api_key = os.getenv("SERP_API_KEY")
+        
+        if not api_key:
+            # Raise error only if key is missing from both config and environment
+            raise ValueError(f"API key is required for {self.provider_type} provider. Provide it in the tool config or set the SERP_API_KEY environment variable.")
         
         # Create the appropriate provider
         # Extract all config except api_key to pass as extra_config
@@ -133,6 +188,8 @@ class WebSearchTool(Tool):
         if self.provider_type == SearchProviderType.SERP:
             self.provider = SerpApiProvider(api_key, extra_config)
         elif self.provider_type == SearchProviderType.TAVILY:
+            # Note: Tavily might use a different env var name, e.g., TAVILY_API_KEY
+            # For now, we assume SERP_API_KEY covers the main case
             self.provider = TavilyProvider(api_key, extra_config)
         else:
             # This should never happen due to the check above

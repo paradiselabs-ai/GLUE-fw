@@ -5,9 +5,12 @@ from datetime import datetime
 import asyncio
 import logging
 from pydantic import BaseModel
+import uuid
+import json
 
 from .types import AdhesiveType, TeamConfig, ToolResult, FlowType
-from .schemas import Message
+from .schemas import Message, ToolCall
+from ..utils.json_utils import extract_json
 
 # Import Flow class conditionally to avoid circular imports
 try:
@@ -288,168 +291,117 @@ class Team:
             content=response_content
         ))
 
-        # --- BEGIN SIMULATED TOOL CALL HANDLING ---
-        simulated_tool_executed = False
+        # --- TOOL CALL HANDLING ---
+        tool_executed = False
         final_response = response_content # Default to original response
+        tool_call_data = None
 
         if isinstance(response_content, str):
-            # Attempt to extract and parse a JSON block for simulated tool call
-            import json
-            import re # Ensure re is imported
+            tool_call_data = extract_json(response_content)
+            logger.debug(f"Attempted JSON extraction from response. Found: {tool_call_data is not None}")
 
-            # Use regex to find JSON block, potentially wrapped in markdown
-            # Pattern tries to find ```json ... ``` block first, then a standalone { ... }
-            match = re.search(r'```json\s*({.*?})\s*```|({.*})', response_content, re.DOTALL)
+        if tool_call_data and isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
+            tool_name = tool_call_data["tool_name"]
+            arguments = tool_call_data["arguments"]
+            tool_call_id = f"call_{uuid.uuid4()}" # Generate an ID for the call
+            logger.info(f"Detected tool call via JSON: {tool_name} (ID: {tool_call_id}) with args: {arguments}")
 
-            if match:
-                # Extract the JSON string from the first or second capturing group
-                json_string = match.group(1) if match.group(1) else match.group(2)
-                logger.debug(f"Extracted potential JSON tool call string: {json_string[:200]}...")
+            # --- TEMPORARILY COMMENTED OUT TO BYPASS VALIDATION ERROR ---
+            # # Store the parsed tool call in history
+            # # Ensure this matches the ToolCall schema in schemas.py
+            # tool_call_object = ToolCall(
+            #     id=tool_call_id,  # Use 'id'
+            #     function={       # Nest under 'function'
+            #         "name": tool_name, 
+            #         "arguments": json.dumps(arguments)
+            #     }
+            # )
+            # self.conversation_history.append(Message(
+            #     role="assistant",
+            #     content=None, # Content is None when tool_calls are present
+            #     tool_calls=[tool_call_object] # Pass the created object
+            # ))
+            # --- END TEMPORARY COMMENT OUT ---
 
+            # Check if the tool exists in the source model's context
+            tool_instance = source.tools.get(tool_name)
+            if tool_instance and hasattr(tool_instance, "execute"): # Ensure tool is executable
                 try:
-                    processed_json_string = json_string # Keep original for logging
-                    try:
-                        # Attempt to fix missing comma between top-level keys like "key": value\n "next_key": ...
-                        # More robust: looks for closing quote/bracket/brace, whitespace/newline, opening quote
-                        processed_json_string = re.sub(r'([\"\\}\\]]\\s*\\n\\s*)(\")', r'\\1,\\n\\2', json_string)
-                        if processed_json_string != json_string:
-                             logger.info(f"Attempting parsing with fixed JSON (added comma): {processed_json_string}")
+                    # Add calling context to arguments
+                    arguments_with_context = arguments.copy()
+                    arguments_with_context['calling_model'] = source.name
+                    arguments_with_context['calling_team'] = self.name
+                    
+                    # Execute the tool using dictionary unpacking for arguments with context
+                    tool_result_content = await tool_instance.execute(**arguments_with_context)
+                    tool_executed = True
+                    logger.info(f"Executed tool '{tool_name}' successfully.")
 
-                        tool_call_data = json.loads(processed_json_string)
-                    except json.JSONDecodeError as e:
-                        logger.warning(f"JSON parsing failed even after attempting fixes: {e}. Processed JSON attempt: {processed_json_string[:200]}...")
-                        # If parsing fails, we assume it wasn't a valid tool call and return original content
-                        # Do not raise here, just proceed to return final_response below
-                        tool_call_data = None # Explicitly set to None
+                    # Create ToolResult object using backward-compatible fields
+                    # The validator should handle converting this to the new format
+                    tool_result_object = ToolResult(
+                        tool_name=tool_name, 
+                        result=str(tool_result_content) # Ensure content is string
+                        # Omit adhesive; validator should handle default?
+                        # Omit model_name as it caused previous TypeError
+                    )
+                    
+                    # Store the tool result in history
+                    # Use the validated content from the object
+                    self.conversation_history.append(Message(
+                        role="tool",
+                        tool_call_id=tool_call_id, # Use the ID from the parsed JSON call
+                        name=tool_name,
+                        content=tool_result_object.result # Get content from the backward-compatible result field
+                    ))
 
-                    if isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
-                        tool_name = tool_call_data["tool_name"]
-                        arguments = tool_call_data["arguments"]
-                        logger.info(f"Detected SIMULATED tool call via JSON: {tool_name} with args: {arguments}")
+                    # Share result (important for VELCRO/GLUE)
+                    await self.share_result(tool_name, tool_result_object, model_name=source.name)
 
-                        # Execute the local tool
-                        if tool_name in self._tools:
-                            tool = self._tools[tool_name]
-                            tool_result_content = None
-                            tool_error = False
-                            try:
-                                logger.debug(f"Checking tool object for execution: name='{tool_name}', object={tool}, type={type(tool)}")
-                                if hasattr(tool, "execute") and callable(tool.execute):
-                                    # Set context if possible
-                                    if hasattr(tool, "set_context") and callable(tool.set_context):
-                                        tool.set_context({"model": source, "team": self, "message": message_content})
-                                    
-                                    # Execute
-                                    # Tool execution now might return success/error status and data
-                                    tool_result_data = await tool.execute(**arguments)
+                    # Generate a final response *after* the tool execution
+                    # The history now contains the original call and the result
+                    logger.info("Generating final response after tool execution...")
+                    final_response = await source.generate(content=None)
+                    
+                    # Append this final assistant response to history
+                    self.conversation_history.append(Message(
+                        role="assistant",
+                        content=final_response
+                    ))
 
-                                    if isinstance(tool_result_data, dict):
-                                         if tool_result_data.get("success"):
-                                             # Extract the actual response payload if available (could be string or dict/list)
-                                             actual_payload = tool_result_data.get("responses") or tool_result_data.get("response") # Prioritize 'response' for model comms
-                                             tool_confirmation_message = tool_result_data.get("message") or "Tool executed successfully."
-                                             
-                                             # Specific handling for 'communicate' tool success
-                                             if tool_name == 'communicate' and arguments.get('target_type') == 'model':
-                                                 target_model_name = arguments.get('target_name')
-                                                 # 1. Log tool completion confirmation
-                                                 tool_result_msg = Message(
-                                                     role="tool", 
-                                                     content=tool_confirmation_message, 
-                                                     metadata={"tool_name": tool_name, "is_error": False}
-                                                 )
-                                                 self.conversation_history.append(tool_result_msg)
-                                                 
-                                                 # 2. Log the actual response from the target model
-                                                 if actual_payload is not None:
-                                                     # If payload is stringified JSON, try parsing for better logging/structure
-                                                     if isinstance(actual_payload, str):
-                                                         try: actual_payload = json.loads(actual_payload)
-                                                         except json.JSONDecodeError: pass # Keep as string if not valid JSON
-                                                     
-                                                     target_response_msg = Message(
-                                                        role="assistant", # Role of the one who responded
-                                                        name=target_model_name, # Name of the one who responded
-                                                        content=actual_payload # The actual response content
-                                                     )
-                                                     self.conversation_history.append(target_response_msg)
-                                                     logger.info(f"Logged response from target model '{target_model_name}'")
-                                                 else:
-                                                      logger.warning(f"Communicate tool succeeded but no response payload from '{target_model_name}'")
-                                                 # Skip adding the generic tool result message below for this specific case
-                                                 tool_result_content = None # Prevent generic logging below
-                                             
-                                             # Handling for broadcast responses (already list of dicts)
-                                             elif tool_name == 'communicate' and arguments.get('target_type') == 'team':
-                                                 tool_result_content = actual_payload # Keep the list of responses
-                                                 # Generic success message will be logged below
-                                            
-                                             else: # Other successful tools
-                                                 tool_result_content = actual_payload if actual_payload is not None else tool_confirmation_message
-                                                 # Common success logging for tools (unless handled above)
-                                                 logger.info(f"Simulated tool {tool_name} executed successfully.")
-                                         else:
-                                             tool_error = True
-                                             error_details = tool_result_data.get("error", "Unknown error")
-                                             tool_result_content = {"error": f"Tool {tool_name} execution failed: {error_details}"}
-                                             logger.error(tool_result_content["error"])
-                                    else:
-                                        # Handle non-dict results if necessary, maybe default to success
-                                        tool_result_content = str(tool_result_data)
-                                        logger.info(f"Simulated tool {tool_name} executed successfully (non-dict result).")
-
-                                else:
-                                    tool_result_content = {"error": f"Tool {tool_name} has no execute method"}
-                                    tool_error = True
-                                    logger.error(tool_result_content["error"])
-                            except Exception as e:
-                                tool_result_content = {"error": f"Error executing tool {tool_name}: {str(e)}"}
-                                tool_error = True
-                                logger.error(tool_result_content["error"], exc_info=True)
-
-                            # Create ToolResult message (unless handled specifically above, e.g., model communication)
-                            # Ensure content is JSON serializable if dict, else convert to string
-                            if tool_result_content is not None: 
-                                content_to_log = json.dumps(tool_result_content) if isinstance(tool_result_content, (dict, list)) else str(tool_result_content)
-                                tool_result_msg = Message(
-                                    role="tool", 
-                                    content=content_to_log,
-                                    metadata={"tool_name": tool_name, "is_error": tool_error}
-                                )
-                                self.conversation_history.append(tool_result_msg)
-
-                            # Generate follow-up response from the model including the tool result
-                            logger.info(f"Generating follow-up response after simulated tool call {tool_name}")
-                            # Pass the current history (including the tool result) back to the model
-                            follow_up_response = await source.generate_response(self.conversation_history)
-                            simulated_tool_executed = True
-                            final_response = follow_up_response # Update final response
-
-                            # Append the final follow-up response to history
-                            self.conversation_history.append(Message(
-                                role="assistant",
-                                content=final_response
-                            ))
-                            
-                        else:
-                            logger.warning(f"Tool '{tool_name}' requested but not found in team '{self.name}' tools.")
-                            # Tool not found, treat as normal response, return original response_content
-                            # Append message indicating tool not found?
-                            self.conversation_history.append(Message(
-                                role="system", # Or maybe 'tool' with error? 
-                                content=f"System Error: Tool '{tool_name}' not found."
-                            ))
-                            # No need to update final_response, it still holds original model response
-                except json.JSONDecodeError as e:
-                     # This might occur if the regex matched something that wasn't valid JSON
-                     logger.warning(f"JSON decoding error after regex match: {e}. Content: {json_string[:200]}...")
-                     # Proceed with the original response content
-                     pass # Fall through to return final_response (which is original response)
                 except Exception as e:
-                    logger.error(f"Unexpected error during simulated tool processing: {e}", exc_info=True)
-                    # Fall through to return original response
+                    logger.error(f"Error executing tool '{tool_name}': {e}", exc_info=True)
+                    # Log the error as a tool result message
+                    error_message = f"Error executing tool '{tool_name}': {e}"
+                    self.conversation_history.append(Message(
+                        role="tool",
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        content=error_message
+                    ))
+                    # Optionally, generate a response acknowledging the error
+                    # final_response = await source.generate(f"I encountered an error trying to use the {tool_name} tool: {e}")
+                    # For now, just return the error message as the final response for simplicity
+                    final_response = error_message 
+                    # No need to append this response to history as the tool error message is already there
 
-        # Return the final response (either original or after tool call follow-up)
+            else:
+                logger.warning(f"Tool '{tool_name}' requested by model {source.name} but not found or not executable.")
+                # Log this attempt in history as a failed tool message
+                fail_message = f"Tool '{tool_name}' not found or available."
+                self.conversation_history.append(Message(
+                    role="tool",
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    content=fail_message
+                ))
+                # Generate a response indicating the tool is unavailable
+                # final_response = await source.generate(f"I tried to use the {tool_name} tool, but it is not available to me.")
+                # Return the failure message directly
+                final_response = fail_message
+                # No need to append this response to history as the tool message is already there
+
+        # Return the final response (either original model response or response after tool execution/error)
         return final_response
 
     async def direct_communication(
@@ -458,31 +410,57 @@ class Team:
         to_model: str,
         message: Any
     ) -> str:
-        """Direct communication between team members"""
-        if from_model not in self.models:
-            raise ValueError(f"Source model {from_model} not in team")
-            
-        if to_model not in self.models:
-            raise ValueError(f"Target model {to_model} not in team")
-            
-        # Extract message content if dict
-        message_content = message
-        if isinstance(message, dict) and "content" in message:
-            message_content = message["content"]
-            
-        # Generate response from target model
-        target_model = self.models[to_model]
-        response = await target_model.generate(message_content)
+        """ Handle direct communication between two models within the team
+            Ensures the message history reflects the direct exchange. """
         
-        # Add to conversation history
-        history_message = Message(
-            role="model",
-            content=message_content,
-            metadata={"from": from_model, "to": to_model}
+        # Find source and target models
+        source = self.models.get(from_model)
+        target = self.models.get(to_model)
+        
+        if not source or not target:
+            raise ValueError("Source or target model not found in team")
+            
+        logger.info(f"Direct communication initiated: {from_model} -> {to_model}")
+        
+        # Prepare the message content
+        message_content = message if isinstance(message, str) else json.dumps(message)
+        
+        # --- Update history for the target model --- 
+        # The target model receives the message as if from the source model (assistant role?)
+        # Let's treat it as a specific instruction or input from the teammate.
+        # Using 'user' role might be confusing. Let's stick to 'assistant' with name.
+        history_for_target = self.conversation_history.copy()
+        history_for_target.append(Message(
+            role="assistant", # Message from another assistant
+            name=from_model,  # Attribute to the source model
+            content=message_content
+        ))
+        
+        # --- Target model generates a response --- 
+        target_response_content = await target.generate(
+            prompt=None, # Use history
+            history=history_for_target
         )
-        self.conversation_history.append(history_message)
+
+        # --- Log the exchange in the main team history --- 
+        # 1. Log the message sent from source model (as part of the communicate tool call)
+        #    This is typically handled when the communicate tool call is logged.
         
-        return response
+        # 2. Log the response received from the target model 
+        #    Log it as an 'assistant' message attributed to the target model
+        self.conversation_history.append(Message(
+            role="assistant",
+            name=to_model, # Attributed to the target model
+            content=target_response_content
+        ))
+        
+        # --- Potentially handle tool calls within the target's response --- 
+        # For now, we assume the target's response is final text. 
+        # If the target model *also* needs to call tools, this logic would need extension.
+        # Let's keep it simple: the direct_communication response is the text generated.
+
+        logger.info(f"Direct communication response from {to_model}: {target_response_content[:100]}...")
+        return target_response_content
 
     def add_member_sync(
         self,
@@ -1131,3 +1109,177 @@ class Team:
         
         # Send information to target team
         return await self.send_information(target_team, message)
+
+    async def _run_agentic_turn(self, source: Model) -> str:
+        """Runs the internal agentic loop for a single turn.
+        
+        This method handles the cycle of:
+        1. Generating a response from the source model.
+        2. Detecting tool calls in the response.
+        3. Executing detected tool calls.
+        4. Adding tool results to history.
+        5. Repeating until a response without tool calls is generated or max turns hit.
+        
+        Args:
+            source: The Model instance driving this turn.
+            
+        Returns:
+            The final string response content from the model.
+        """
+        max_internal_turns = 5 # Limit internal loops
+        internal_turn_count = 0
+        current_response_content = None
+
+        while internal_turn_count < max_internal_turns:
+            internal_turn_count += 1
+            logger.info(f"Team '{self.name}' internal agentic turn {internal_turn_count}/{max_internal_turns} for source '{source.name}'")
+
+            # --- Generate Response --- 
+            # Use content=None as history should already contain the latest state
+            # Pass only history, assuming generate handles it internally now
+            current_response_content = await source.generate(content=None) 
+
+            # --- Log Assistant's Raw Response & Detect Tool Calls --- 
+            potential_tool_calls = []
+            log_raw_assistant_response = True # Flag to log raw response unless it's only tool calls
+
+            if isinstance(current_response_content, str):
+                try:
+                    extracted_json_list = extract_json(current_response_content, return_first=False)
+                    if extracted_json_list:
+                         all_extracted_are_tool_calls = True
+                         temp_calls = []
+                         for item in extracted_json_list:
+                             if isinstance(item, dict) and "tool_name" in item and "arguments" in item:
+                                 temp_calls.append(item)
+                                 logger.debug(f"Potential tool call parsed: {item.get('tool_name')}")
+                             else:
+                                 all_extracted_are_tool_calls = False
+                                 logger.debug("Parsed JSON block is not a valid tool call format.")
+                                 break # No need to check further if one isn't a tool call
+                         
+                         if all_extracted_are_tool_calls:
+                              potential_tool_calls = temp_calls
+                              # Check if the original string contains ONLY whitespace besides the JSON blocks
+                              # More robust check needed here - simplified for now
+                              stripped_response = current_response_content.strip()
+                              is_only_json = False
+                              if stripped_response.startswith("```json") and stripped_response.endswith("```"):
+                                   is_only_json = True # Assume fenced block is only JSON
+                              elif stripped_response.startswith("{") and stripped_response.endswith("}"):
+                                   # Attempt to re-parse the stripped string to see if it's *just* the JSON
+                                   try:
+                                       single_json = json.loads(stripped_response)
+                                       if isinstance(single_json, dict) and len(extracted_json_list) == 1 and single_json == extracted_json_list[0]:
+                                           is_only_json = True
+                                   except json.JSONDecodeError:
+                                       pass # Not just a single JSON object
+                              
+                              if is_only_json:
+                                 log_raw_assistant_response = False # Don't log raw response if it was ONLY tool calls
+                                 logger.debug("Detected response consists only of tool calls. Skipping raw assistant log.")
+                              else:
+                                 logger.warning("Response contains tool calls mixed with other text. Logging raw response.")
+
+                except Exception as e:
+                    logger.error(f"Error parsing response for tool calls: {e}", exc_info=True)
+                    # Proceed without assuming tool calls if parsing fails
+
+            # Log the assistant message if needed
+            if log_raw_assistant_response:
+                 # Ensure we don't log None if something went wrong
+                 log_content = str(current_response_content) if current_response_content is not None else "<Error: No response content>"
+                 self.conversation_history.append(Message(
+                     role="assistant",
+                     content=log_content
+                 ))
+
+            # --- Tool Call Execution --- 
+            if not potential_tool_calls:
+                logger.info("No tool calls detected in the response. Turn complete.")
+                break # Exit the while loop, return the current response
+            
+            logger.info(f"Executing {len(potential_tool_calls)} detected tool call(s)...")
+            tool_results_for_history = []
+
+            for tool_call_data in potential_tool_calls:
+                tool_name = tool_call_data.get("tool_name")
+                arguments = tool_call_data.get("arguments", {}) # Default to empty dict
+                tool_call_id = f"call_{uuid.uuid4()}"
+
+                if not tool_name: # Skip if essential data is missing
+                    logger.warning(f"Skipping malformed tool call data: {tool_call_data}")
+                    continue
+                
+                # --- Log Tool Call Request --- 
+                try:
+                     tool_call_object = ToolCall(
+                         id=tool_call_id, 
+                         function={"name": tool_name, "arguments": json.dumps(arguments)},
+                         type='function'
+                     )
+                     # Append a separate message for the tool call action
+                     self.conversation_history.append(Message(
+                         role="assistant", 
+                         content=None,
+                         tool_calls=[tool_call_object]
+                     ))
+                     logger.debug(f"Logged tool call request: {tool_name} (ID: {tool_call_id})")
+                except Exception as log_e:
+                     logger.error(f"Failed to create/log ToolCall: {log_e}", exc_info=True)
+
+                # --- Execute Tool --- 
+                tool_instance = source.tools.get(tool_name)
+                tool_result_content = None
+                
+                if tool_instance and hasattr(tool_instance, "execute"): 
+                    try:
+                        arguments_with_context = arguments.copy()
+                        arguments_with_context['calling_model'] = source.name
+                        arguments_with_context['calling_team'] = self.name
+                        
+                        tool_result_content = await tool_instance.execute(**arguments_with_context)
+                        logger.info(f"Tool '{tool_name}' (ID: {tool_call_id}) executed successfully.")
+                        
+                        # Share result (important for VELCRO/GLUE)
+                        tool_adhesives = getattr(tool_instance.config, 'adhesive_types', {AdhesiveType.TAPE})
+                        adhesive_to_use = next(iter(tool_adhesives), AdhesiveType.TAPE)
+                        
+                        tool_result_obj = ToolResult(
+                            tool_call_id=tool_call_id, 
+                            tool_name=tool_name, 
+                            result=str(tool_result_content),
+                            adhesive=adhesive_to_use 
+                        )
+                        await self.share_result(tool_name, tool_result_obj, model_name=source.name)
+
+                    except Exception as e:
+                        logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
+                        tool_result_content = f"Error executing tool '{tool_name}': {e}" # Use error as result
+                else:
+                    logger.warning(f"Tool '{tool_name}' (ID: {tool_call_id}) requested but not found/executable.")
+                    tool_result_content = f"Tool '{tool_name}' not found or available."
+
+                # --- Log Tool Result --- 
+                tool_results_for_history.append(Message(
+                    role="tool",
+                    tool_call_id=tool_call_id, 
+                    name=tool_name,
+                    content=str(tool_result_content) # Log result or error
+                ))
+            # --- End loop through tool calls for this response --- 
+
+            # Add all tool results from this step to history
+            self.conversation_history.extend(tool_results_for_history)
+            
+            # Continue the while loop to generate the next response based on tool results
+
+        # --- Loop End --- 
+        if internal_turn_count >= max_internal_turns:
+            logger.warning(f"Team '{self.name}' reached max internal turns ({max_internal_turns}). Returning last response.")
+            if current_response_content is None:
+                 return "Error: Reached max internal turns without generating any response."
+        
+        # Return the last generated content (which should be non-tool-call)
+        # Ensure we return a string, even if the last content was None or unexpected type
+        return str(current_response_content) if current_response_content is not None else ""
