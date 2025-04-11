@@ -420,7 +420,7 @@ async def run_interactive_session(app: GlueApp) -> None:
     
     console.print(f"[bold green]Interactive session started with {app.name}. Type 'quit' or 'exit' to end.[/bold green]")
     console.print("Enter your message below:")
-
+    
     while True:
         try:
             user_input = await asyncio.to_thread(console.input, "> ")
@@ -431,7 +431,7 @@ async def run_interactive_session(app: GlueApp) -> None:
                 
             if not user_input:
                 continue
-
+                
             logger.info(f"User input: {user_input}")
             
             # Run the application with the user input
@@ -470,7 +470,7 @@ async def run_interactive_session(app: GlueApp) -> None:
                  console.print(str(response))
 
             console.print("\nEnter your message below:")
-            
+                
         except KeyboardInterrupt:
             console.print("\n[bold yellow]Interrupted. Exiting session.[/bold yellow]")
             break
