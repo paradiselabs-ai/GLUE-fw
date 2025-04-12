@@ -251,7 +251,8 @@ class Team:
         # Store in history
         message = Message(
             role="model" if source_model else "system",
-            content=message_content
+            content=message_content,
+            name=source_model if source_model else None
         )
         self.conversation_history.append(message)
         
@@ -423,7 +424,8 @@ class Team:
                 
                 self.conversation_history.append(Message(
                     role="model",
-                    content=follow_up_response
+                    content=follow_up_response,
+                    name=source_model
                 ))
                 
                 # Return the combined response
@@ -432,7 +434,8 @@ class Team:
         # Store the original response in history
         response_message = Message(
             role="model",
-            content=response if isinstance(response, str) else str(response)
+            content=response if isinstance(response, str) else str(response),
+            name=source_model
         )
         self.conversation_history.append(response_message)
         
@@ -464,6 +467,7 @@ class Team:
         history_message = Message(
             role="model",
             content=message_content,
+            name=from_model,
             metadata={"from": from_model, "to": to_model}
         )
         self.conversation_history.append(history_message)

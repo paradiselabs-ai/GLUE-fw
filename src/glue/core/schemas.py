@@ -109,6 +109,7 @@ class Message(BaseModel):
             "example": {
                 "role": "assistant",
                 "content": "I found the following information about the GLUE framework.",
+                "name": "Search Results",
                 "tool_calls": [],
                 "metadata": {"timestamp": "2025-03-14T13:45:30.123456"}
             }
@@ -117,6 +118,7 @@ class Message(BaseModel):
     
     role: str = Field(..., description="Role of the message sender (system, user, assistant)")
     content: str = Field(..., description="Content of the message")
+    name: Optional[str] = Field(None, description="Name for function messages")
     tool_calls: List[ToolCall] = Field(default_factory=list, description="Tool calls included in the message")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata about the message")
     

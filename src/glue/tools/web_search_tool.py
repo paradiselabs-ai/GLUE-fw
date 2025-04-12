@@ -5,6 +5,7 @@ This module implements a web search tool that can use different search providers
 to search the web for information.
 """
 import logging
+import os
 from typing import Dict, List, Any, Optional, Union
 from enum import Enum
 
@@ -121,29 +122,47 @@ class WebSearchTool(Tool):
         if not isinstance(self.provider_type, SearchProviderType):
             raise ValueError(f"Unsupported provider type: {self.provider_type}")
             
-        # Check for API key
-        api_key = self.provider_config.get("api_key")
+        # --- START MODIFICATION: Load API Key --- 
+        api_key = self.api_key # Start with potentially pre-configured key
+
         if not api_key:
-            raise ValueError(f"API key is required for {self.provider_type} provider")
+            # Determine environment variable name based on provider type
+            if self.provider_type == SearchProviderType.SERP:
+                env_var_name = "SERPAPI_API_KEY"
+            elif self.provider_type == SearchProviderType.TAVILY:
+                env_var_name = "TAVILY_API_KEY"
+            else:
+                # Should not happen due to the check above, but safeguard
+                raise ValueError(f"Logic error: Unknown provider type {self.provider_type} for API key lookup.")
+            
+            # Attempt to load from environment
+            api_key = os.getenv(env_var_name)
+            logger.info(f"Attempted to load API key from environment variable: {env_var_name}")
+
+        # Check if API key is available after checking config and environment
+        if not api_key:
+            raise ValueError(f"API key for {self.provider_type.value} provider is required. Set via config or environment variable {env_var_name}.")
+        # --- END MODIFICATION ---
         
-        # Create the appropriate provider
-        # Extract all config except api_key to pass as extra_config
-        extra_config = {k: v for k, v in self.provider_config.items() if k != "api_key"}
-        
+        # Create the provider instance
         if self.provider_type == SearchProviderType.SERP:
-            self.provider = SerpApiProvider(api_key, extra_config)
+            self.provider = SerpApiProvider(api_key, self.provider_config)
+            logger.info("Using SerpApiProvider")
         elif self.provider_type == SearchProviderType.TAVILY:
-            self.provider = TavilyProvider(api_key, extra_config)
-        else:
-            # This should never happen due to the check above
-            raise ValueError(f"Unsupported provider type: {self.provider_type}")
-        
-        logger.info(f"Created {self.provider_type} search provider")
-    
+            self.provider = TavilyProvider(api_key, self.provider_config)
+            logger.info("Using TavilyProvider")
+        # No else needed due to the check at the beginning
+
     async def cleanup(self) -> None:
         """Clean up the tool resources"""
         self.provider = None
         await super().cleanup()
+
+    async def execute(self, **kwargs):
+        """
+        Wrapper to accept keyword arguments and pass as dict to _execute().
+        """
+        return await self._execute(kwargs)
     
     def to_dict(self) -> Dict[str, Any]:
         """

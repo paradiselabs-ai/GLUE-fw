@@ -212,17 +212,40 @@ class GeminiProvider:
             
             for msg in messages:
                 # Handle different message formats
+                tool_name = None # Initialize tool_name for this message
                 if isinstance(msg, dict):
                     role = msg.get('role', 'user')
                     content = msg.get('content', '')
+                    tool_name = msg.get('name') # Get name if it's a dict
                 elif hasattr(msg, 'role') and hasattr(msg, 'content'):
                     role = msg.role
                     content = msg.content
+                    # Explicitly get name if it's an object with 'name' attribute
+                    if hasattr(msg, 'name'): 
+                        tool_name = msg.name 
                 else:
                     # Fallback for string or other types
                     role = 'user'
                     content = str(msg)
                 
+                # --- START FIX for role='function' ---
+                # If the role is 'function', it represents a tool result or error.
+                # Convert framework-generated 'function' role messages (especially errors)
+                # into 'user' role messages to inform the model about the outcome.
+                if role == "function":
+                    # Use the tool_name extracted earlier, default if None
+                    current_tool_name = tool_name if tool_name else 'unknown_tool'
+                    
+                    # Log if the name resolution failed
+                    if current_tool_name == 'unknown_tool':
+                         logger.error(f"Could not resolve tool name for function message: {msg}")
+
+                    role = "user" # Change role to 'user'
+                    # Prepend context to the content
+                    content = f"Note: Execution of tool '{current_tool_name}' resulted in: {content}"
+                    logger.warning(f"Converting 'function' role message for tool '{current_tool_name}' to 'user' role for Gemini API.")
+                # --- END FIX ---
+
                 # Special handling for system messages with Gemini
                 if role == "system":
                     has_system_message = True
@@ -232,7 +255,7 @@ class GeminiProvider:
                 
                 # Create a new message in the format expected by the Gemini API
                 gemini_message = {
-                    "role": role,
+                    "role": role, 
                     "parts": [{"text": content}]
                 }
                 
