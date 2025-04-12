@@ -16,12 +16,6 @@ from .flow import Flow
 from .schemas import ModelConfig, ToolConfig, MagnetConfig
 from ..magnetic.field import MagneticField
 
-# Import built-in tool classes
-from glue.tools.web_search_tool import WebSearchTool
-from glue.tools.file_handler_tool import FileHandlerTool
-from glue.tools.code_interpreter_tool import CodeInterpreterTool
-
-
 # Set up logging
 logger = logging.getLogger("glue.app")
 
@@ -223,21 +217,27 @@ class GlueApp:
                 # Instantiate built-in tool classes
                 if tool_name == "web_search":
                     try:
+                        from glue.tools.web_search_tool import WebSearchTool
                         tool_instance = WebSearchTool(**tool_config) if isinstance(tool_config, dict) else WebSearchTool()
                         self.tools[tool_name] = tool_instance
                     except Exception:
+                        from glue.tools.web_search_tool import WebSearchTool
                         self.tools[tool_name] = WebSearchTool()
                 elif tool_name == "file_handler":
                     try:
+                        from glue.tools.file_handler_tool import FileHandlerTool
                         tool_instance = FileHandlerTool(**tool_config) if isinstance(tool_config, dict) else FileHandlerTool()
                         self.tools[tool_name] = tool_instance
                     except Exception:
+                        from glue.tools.file_handler_tool import FileHandlerTool
                         self.tools[tool_name] = FileHandlerTool()
                 elif tool_name == "code_interpreter":
                     try:
+                        from glue.tools.code_interpreter_tool import CodeInterpreterTool
                         tool_instance = CodeInterpreterTool(**tool_config) if isinstance(tool_config, dict) else CodeInterpreterTool()
                         self.tools[tool_name] = tool_instance
                     except Exception:
+                        from glue.tools.code_interpreter_tool import CodeInterpreterTool
                         self.tools[tool_name] = CodeInterpreterTool()
                 else:
                     # For custom or unknown tools, just store the config for now
