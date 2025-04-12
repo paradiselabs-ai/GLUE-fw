@@ -39,117 +39,25 @@ from glue.cliHelpers import (
 # Import new utilities
 from .utils.json_utils import extract_json, JSON_EXTRACT_REGEX
 
-# Re-export functions for test compatibility
-async def interactive_session(app: 'GlueApp'):
-    """
-    Run an interactive session with the GLUE application.
-    
-    Args:
-        app: The GLUE application to run
-    """
-    print(f"\nStarting interactive session with {app.name}...")
-    print(get_interactive_help_text())
-    
-    while True:
-        try:
-            user_input = input("\n> ").strip()
-            
-            # Check for exit command
-            if user_input.lower() in ["exit", "quit", "/exit", "/quit"]:
-                print("Exiting interactive session.")
-                break
-                
-            # Parse as command if it starts with /
-            if user_input.startswith("/"):
-                command, args = parse_interactive_command(user_input)
-                
-                if command == "help":
-                    display_interactive_help()
-                elif command == "status":
-                    display_app_status(app)
-                elif command == "tools":
-                    display_available_tools(app)
-                elif command == "teams":
-                    display_team_structure(app)
-                else:
-                    print(f"Unknown command: {command}")
-            else:
-                # Process as regular input to the app
-                if user_input:
-                    # This would be handled by the app's input processing
-                    print("Processing input...")
-                    # Placeholder for actual app interaction
-                    print("Response would appear here.")
-        
-        except KeyboardInterrupt:
-            print("\nInterrupted. Use /exit to quit.")
-        except Exception as e:
-            print(f"Error: {e}")
-
-def display_app_status(app: 'GlueApp'):
-    """
-    Display the current status of the GLUE application.
-    
-    Args:
-        app: The GLUE application
-    """
-    print(f"\nApplication: {app.name}")
-    print(f"Models: {len(app.models)}")
-    print(f"Teams: {len(app.teams)}")
-    print(f"Tools: {len(app.tools)}")
-    print(f"Development mode: {app.config.get('development', False)}")
-    print(f"Sticky mode: {app.config.get('sticky', False)}")
-
-def display_team_structure(app: 'GlueApp'):
-    """
-    Display the team structure of the GLUE application.
-    
-    Args:
-        app: The GLUE application
-    """
-    print("\nTeam Structure:")
-    for team_name, team in app.teams.items():
-        print(f"\n[TEAM] {team_name}")
-        print(f"  Lead: {team.lead.name}")
-        if team.members:
-            print("  Members:")
-            for member in team.members:
-                print(f"    - {member.name}")
-        if team.tools:
-            print("  Tools:")
-            for tool in team.tools:
-                print(f"    - {tool.name}")
-
-def create_tool(name: str, description: str, tool_type: str = "basic"):
-    """
-    Create a new tool with the given name and description.
-    
-    Args:
-        name: Name of the tool
-        description: Description of the tool
-        tool_type: Type of tool to create
-        
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    print(f"Creating {tool_type} tool: {name}")
-    print(f"Description: {description}")
-    # Placeholder for actual tool creation
-    return True
-
-def list_tools():
-    """
-    List all available tools in the GLUE framework.
-    
-    Returns:
-        List of tool names
-    """
-    # Placeholder for actual tool listing
-    return ["web_search", "file_handler", "code_interpreter"]
-
-def display_interactive_help():
-    """Display help information for interactive mode."""
-    print(get_interactive_help_text())
+# Constants for tools
+AVAILABLE_TOOLS = {
+    "web_search": {
+        "description": "Search the web for information",
+        "parameters": {"query": "string"}
+    },
+    "file_handler": {
+        "description": "Read and write files",
+        "parameters": {"path": "string", "content": "string (optional)"}
+    },
+    "code_interpreter": {
+        "description": "Execute Python code",
+        "parameters": {"code": "string"}
+    },
+    "communicate": {
+        "description": "Communicate with other models or teams",
+        "parameters": {"target_type": "string", "target_name": "string", "message": "string"}
+    }
+}
 
 # Version information
 __version__ = "0.1.0-alpha"  # Updated for alpha release
@@ -314,15 +222,40 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                                 tool_result_message = None
                                 try:
                                     if hasattr(app, 'execute_tool') and callable(app.execute_tool):
-                                        tool_result = await app.execute_tool(tool_name, arguments)
-                                        logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
-                                        # Format result message
-                                        tool_result_message = {
-                                            "role": "tool", 
-                                            "tool_call_id": tool_call_id, 
-                                            "name": tool_name, 
-                                            "content": str(tool_result) # Ensure content is string
-                                        }
+                                        # Check if the tool actually exists and is a proper tool instance
+                                        if tool_name in app.tools:
+                                            tool = app.tools[tool_name]
+                                            # Check if the tool is a proper instance with an execute method
+                                            if hasattr(tool, 'execute') and callable(tool.execute):
+                                                tool_result = await app.execute_tool(tool_name, arguments)
+                                                logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
+                                                # Format result message
+                                                tool_result_message = {
+                                                    "role": "tool", 
+                                                    "tool_call_id": tool_call_id, 
+                                                    "name": tool_name, 
+                                                    "content": str(tool_result) # Ensure content is string
+                                                }
+                                            else:
+                                                logger.error(f"Tool {tool_name} exists but has no execute method. Tool might be a config dictionary, not an instance.")
+                                                error_content = f"Tool execution failed: '{tool_name}' is not properly initialized."
+                                                tool_result_message = {
+                                                    "role": "tool", 
+                                                    "tool_call_id": tool_call_id, 
+                                                    "name": tool_name, 
+                                                    "content": error_content,
+                                                    "is_error": True
+                                                }
+                                        else:
+                                            logger.error(f"Tool {tool_name} not found in app.tools.")
+                                            error_content = f"Tool execution failed: '{tool_name}' not found."
+                                            tool_result_message = {
+                                                "role": "tool", 
+                                                "tool_call_id": tool_call_id, 
+                                                "name": tool_name, 
+                                                "content": error_content,
+                                                "is_error": True
+                                            }
                                     else:
                                         logger.error(f"App cannot execute tool {tool_name} (ID: {tool_call_id}).")
                                         error_content = f"Tool execution failed: App cannot execute tool '{tool_name}'."
@@ -347,6 +280,83 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                                 # Add the result/error message to the list for the next turn's input
                                 if tool_result_message:
                                     tool_results_for_next_turn.append(tool_result_message)
+
+                            # Check for alternative format: {"tool_name": {...}}
+                            elif len(tool_call_data) == 1:
+                                tool_name = next(iter(tool_call_data.keys()))
+                                arguments = tool_call_data[tool_name]
+                                tool_call_id = f"call_{uuid.uuid4()}" # Generate an ID for the call
+                                
+                                # Verify this is a valid tool
+                                if hasattr(app, 'tools') and tool_name in app.tools:
+                                    logger.info(f"Detected alternative format tool call: {tool_name} (ID: {tool_call_id}) with args: {arguments}")
+                                    tool_calls_found_in_response = True # Mark that we found at least one valid call
+
+                                    # --- Execute Tool with Error Handling --- 
+                                    tool_result_message = None
+                                    try:
+                                        if hasattr(app, 'execute_tool') and callable(app.execute_tool):
+                                            # Check if the tool actually exists and is a proper tool instance
+                                            if tool_name in app.tools:
+                                                tool = app.tools[tool_name]
+                                                # Check if the tool is a proper instance with an execute method
+                                                if hasattr(tool, 'execute') and callable(tool.execute):
+                                                    tool_result = await app.execute_tool(tool_name, arguments)
+                                                    logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
+                                                    # Format result message
+                                                    tool_result_message = {
+                                                        "role": "tool", 
+                                                        "tool_call_id": tool_call_id, 
+                                                        "name": tool_name, 
+                                                        "content": str(tool_result) # Ensure content is string
+                                                    }
+                                                else:
+                                                    logger.error(f"Tool {tool_name} exists but has no execute method. Tool might be a config dictionary, not an instance.")
+                                                    error_content = f"Tool execution failed: '{tool_name}' is not properly initialized."
+                                                    tool_result_message = {
+                                                        "role": "tool", 
+                                                        "tool_call_id": tool_call_id, 
+                                                        "name": tool_name, 
+                                                        "content": error_content,
+                                                        "is_error": True
+                                                    }
+                                            else:
+                                                logger.error(f"Tool {tool_name} not found in app.tools.")
+                                                error_content = f"Tool execution failed: '{tool_name}' not found."
+                                                tool_result_message = {
+                                                    "role": "tool", 
+                                                    "tool_call_id": tool_call_id, 
+                                                    "name": tool_name, 
+                                                    "content": error_content,
+                                                    "is_error": True
+                                                }
+                                        else:
+                                            logger.error(f"App cannot execute tool {tool_name} (ID: {tool_call_id}).")
+                                            error_content = f"Tool execution failed: App cannot execute tool '{tool_name}'."
+                                            tool_result_message = {
+                                                "role": "tool", 
+                                                "tool_call_id": tool_call_id, 
+                                                "name": tool_name, 
+                                                "content": error_content,
+                                                "is_error": True
+                                            }
+                                    except Exception as e:
+                                        logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
+                                        error_content = f"Error executing tool '{tool_name}': {e}"
+                                        tool_result_message = {
+                                            "role": "tool", 
+                                            "tool_call_id": tool_call_id, 
+                                            "name": tool_name, 
+                                            "content": error_content,
+                                            "is_error": True
+                                        }
+                                    
+                                    # Add the result/error message to the list for the next turn's input
+                                    if tool_result_message:
+                                        tool_results_for_next_turn.append(tool_result_message)
+                                else:
+                                    # Not a valid tool call, log and ignore
+                                    logger.debug(f"Ignored alternative format JSON (not a valid tool): {json_string[:100]}...")
 
                             else:
                                 # Parsed JSON, but not a valid tool call format
@@ -1471,28 +1481,9 @@ def list_models():
         for model in models:
             print(f"  - {model}")
             
-def list_tools():
-    """List available tools."""
-    # Define available tools
-    AVAILABLE_TOOLS = {
-        "web_search": {
-            "description": "Search the web for information",
-            "parameters": {"query": "string"}
-        },
-        "file_handler": {
-            "description": "Read and write files",
-            "parameters": {"path": "string", "content": "string (optional)"}
-        },
-        "code_interpreter": {
-            "description": "Execute Python code",
-            "parameters": {"code": "string"}
-        },
-        "communicate": {
-            "description": "Communicate with other models or teams",
-            "parameters": {"target_type": "string", "target_name": "string", "message": "string"}
-        }
-    }
-    
+def display_tools():
+    """Display information about available tools to the console."""
+    # Use the global AVAILABLE_TOOLS constant
     print("Available tools:")
     for tool_name, tool_info in AVAILABLE_TOOLS.items():
         print(f"\n{tool_name}:")
@@ -1656,7 +1647,7 @@ def main():
                 forge_parser.print_help()
             
         elif args.command == "list-tools":
-            list_tools()
+            display_tools()
             
         elif args.command == "list-models":
             list_models()

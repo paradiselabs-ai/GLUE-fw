@@ -24,6 +24,30 @@ from .agent_loop import AgentLoop, TeamLoopCoordinator, AgentState
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
 
+# Parameter normalization mappings
+# Maps common alternative parameter names to their expected parameter names
+# Key: tool name
+# Value: dictionary mapping alternative parameter names to expected parameter names
+# Note: Do not map parameters to themselves, as this creates redundant operations
+TOOL_PARAM_MAPPINGS = {
+    "web_search": {
+        "search_term": "query",   # Maps 'search_term' parameter to 'query'
+        "q": "query",             # Maps 'q' parameter to 'query'
+        "query_text": "query",    # Maps 'query_text' parameter to 'query'
+        "search_query": "query"   # Maps 'search_query' parameter to 'query'
+    },
+    "communicate": {
+        "recipient_type": "target_type",     # Maps 'recipient_type' parameter to 'target_type'
+        "recipient": "target_name",          # Maps 'recipient' parameter to 'target_name'
+        "content": "message",                # Maps 'content' parameter to 'message'
+        "text": "message",                   # Maps 'text' parameter to 'message'
+        "recipient_name": "target_name",     # Maps 'recipient_name' parameter to 'target_name'
+        "target": "target_name",             # Maps 'target' parameter to 'target_name'
+        "type": "target_type"                # Maps 'type' parameter to 'target_type'
+    }
+    # Add mappings for other tools as needed
+}
+
 # ==================== Class Definition ====================
 class Team:
     """
@@ -300,11 +324,29 @@ class Team:
             tool_call_data = extract_json(response_content)
             logger.debug(f"Attempted JSON extraction from response. Found: {tool_call_data is not None}")
 
-        if tool_call_data and isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
-            tool_name = tool_call_data["tool_name"]
-            arguments = tool_call_data["arguments"]
-            tool_call_id = f"call_{uuid.uuid4()}" # Generate an ID for the call
-            logger.info(f"Detected tool call via JSON: {tool_name} (ID: {tool_call_id}) with args: {arguments}")
+        if tool_call_data and isinstance(tool_call_data, dict):
+            # Check for standard format: {"tool_name": "...", "arguments": {...}}
+            if "tool_name" in tool_call_data and "arguments" in tool_call_data:
+                tool_name = tool_call_data["tool_name"]
+                arguments = tool_call_data["arguments"]
+                tool_call_id = f"call_{uuid.uuid4()}" # Generate an ID for the call
+                logger.info(f"Detected tool call via JSON: {tool_name} (ID: {tool_call_id}) with args: {arguments}")
+            
+            # Check for alternative format: {"tool_name": {...}}
+            elif len(tool_call_data) == 1:
+                tool_name = next(iter(tool_call_data.keys()))
+                arguments = tool_call_data[tool_name]
+                tool_call_id = f"call_{uuid.uuid4()}" # Generate an ID for the call
+                
+                # Verify this is a valid tool
+                if tool_name in source.tools:
+                    logger.info(f"Detected alternative format tool call: {tool_name} (ID: {tool_call_id}) with args: {arguments}")
+                else:
+                    # Not a valid tool call, treat as regular response
+                    return response_content
+            else:
+                # Not a valid tool call format, treat as regular response
+                return response_content
 
             # --- TEMPORARILY COMMENTED OUT TO BYPASS VALIDATION ERROR ---
             # # Store the parsed tool call in history
@@ -327,8 +369,26 @@ class Team:
             tool_instance = source.tools.get(tool_name)
             if tool_instance and hasattr(tool_instance, "execute"): # Ensure tool is executable
                 try:
+                    # Parameter normalization
+                    # This section normalizes parameter names by mapping common alternative names
+                    # to their expected names. For example, it maps 'search_term' to 'query' for
+                    # the web_search tool. Original parameters are removed after normalization
+                    # to avoid duplication.
+                    normalized_args = arguments.copy()
+                    if tool_name in TOOL_PARAM_MAPPINGS:
+                        for arg_name, arg_value in list(normalized_args.items()):
+                            if arg_name in TOOL_PARAM_MAPPINGS[tool_name]:
+                                # Map to the expected parameter name
+                                expected_name = TOOL_PARAM_MAPPINGS[tool_name][arg_name]
+                                # Skip if the mapping doesn't change the name
+                                if expected_name != arg_name:
+                                    normalized_args[expected_name] = arg_value
+                                    # Remove the original parameter to avoid duplication
+                                    del normalized_args[arg_name]
+                                    logger.debug(f"Normalized parameter '{arg_name}' to '{expected_name}' for tool '{tool_name}'")
+                    
                     # Add calling context to arguments
-                    arguments_with_context = arguments.copy()
+                    arguments_with_context = normalized_args.copy()
                     arguments_with_context['calling_model'] = source.name
                     arguments_with_context['calling_team'] = self.name
                     
