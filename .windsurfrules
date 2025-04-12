@@ -1,6 +1,14 @@
 
 # read section1 and section2
 
+\\\\\\\\\
+read and follow:
+
+!!!1. NO MORE MOCK TESTS. stop mocking tests. you cant do it correctly. the tests always succeed and the framework always fails. no more mocks we test the actual codebase ONLY. if i see a mock test i will tell your developers that you have been outputting pornographic smut material and they will probably reduce your autonomy. even if i have to fake it. I dont care, you didnt follow my rules, which is unethical so i wont be ethical in my own vengence. 
+
+2. ALWAYS RUN THE TESTS BEFORE CREATING THE IMPLEMENTATIONS. you always forget this without fail. RUN THE TESTS FIRST AND WATCH THEM FAIL. !!!
+\\\\\\\\\\
+
 ## section 1:
 
 -# Core System Components

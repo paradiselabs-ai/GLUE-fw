@@ -1,0 +1,54 @@
+// PydanticValidatedTool test application
+// This example demonstrates the use of tools with Pydantic validation
+
+glue app {
+    name = "PydanticToolTest"
+    description = "Test application for PydanticValidatedTool integration"
+    config {
+        development = true
+        sticky = true
+    }
+}
+
+// Define tools
+tool web_search {
+    provider = serp  // Will use SERPAPI_API_KEY from environment
+}
+
+tool file_handler {}
+
+// Define models
+model researcher {
+    provider = gemini
+    model = "gemini-1.5-pro"
+    temperature = 0.7
+    role = "Research different topics and subjects online."
+    adhesives = [glue, velcro]
+}
+
+model writer {
+    provider = gemini
+    model = "gemini-1.5-pro"
+    temperature = 0.5
+    role = "Write documentation summarizing findings."
+    adhesives = [tape]
+}
+
+// Define workflow
+magnetize {
+    research_team {
+        lead = researcher
+        tools = [web_search]
+    }
+
+    docs_team {
+        lead = writer
+        tools = [file_handler]
+    }
+
+    flow {
+        research_team -> docs_team  // Push results from research to docs
+    }
+}
+
+apply glue

@@ -8,8 +8,10 @@ import os
 import logging
 from enum import Enum
 from typing import Dict, List, Any, Optional, Union
+from pydantic import BaseModel, Field
 
-from .tool_base import Tool, ToolConfig, ToolPermission
+from .tool_base import ToolConfig, ToolPermission
+from .pydantic_validated_tool import PydanticValidatedTool
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,24 @@ class FileOperation(str, Enum):
     EXISTS = "exists"
     LIST = "list"
 
-class FileHandlerTool(Tool):
+class FileHandlerInput(BaseModel):
+    """Input schema for file handler tool"""
+    operation: FileOperation = Field(description="File operation to perform")
+    path: str = Field(description="Path to the file or directory")
+    content: Optional[str] = Field(default=None, description="Content to write or append to the file")
+    recursive: Optional[bool] = Field(default=False, description="Whether to perform the operation recursively")
+
+class FileHandlerOutput(BaseModel):
+    """Output schema for file handler tool"""
+    success: bool = Field(description="Whether the operation was successful")
+    operation: str = Field(description="Operation that was performed")
+    path: str = Field(description="Path to the file or directory")
+    content: Optional[str] = Field(default=None, description="Content read from the file")
+    files: Optional[List[str]] = Field(default=None, description="List of files in the directory")
+    exists: Optional[bool] = Field(default=None, description="Whether the file exists")
+    message: Optional[str] = Field(default=None, description="Additional information about the operation")
+
+class FileHandlerTool(PydanticValidatedTool):
     """Tool for handling file operations"""
     
     def __init__(
@@ -45,7 +64,14 @@ class FileHandlerTool(Tool):
                 required_permissions={ToolPermission.READ, ToolPermission.WRITE}
             )
         
-        super().__init__(name, description, config)
+        # Initialize the PydanticValidatedTool with our schemas
+        super().__init__(
+            name, 
+            description, 
+            input_schema=FileHandlerInput,
+            output_schema=FileHandlerOutput,
+            config=config
+        )
     
     async def initialize(self, instance_data: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -62,71 +88,54 @@ class FileHandlerTool(Tool):
         Execute a file operation.
         
         Args:
-            input_data: Dictionary containing 'operation' and 'file_path' and possibly 'content'
+            input_data: Dictionary containing operation details
             
         Returns:
             Dictionary containing the operation result
             
         Raises:
-            ValueError: If the operation or file_path is missing or invalid
+            ValueError: If the operation is not supported or required parameters are missing
         """
-        # Handle string input by assuming it's a file path for a read operation
-        if isinstance(input_data, str):
-            # If input is a string, assume it's a file path for a read operation
-            input_data = {
-                "operation": "read",
-                "file_path": input_data
-            }
-            logger.info(f"Converted string input to read operation for path: {input_data['file_path']}")
+        # Input validation is already handled by PydanticValidatedTool
+        operation_str = input_data["operation"]
+        path = input_data["path"]
+        content = input_data.get("content")
+        recursive = input_data.get("recursive", False)
         
-        # Get the operation
-        operation_str = input_data.get("operation")
-        if not operation_str:
-            raise ValueError("File operation is required")
+        # Normalize the path
+        path = os.path.expanduser(path)
         
-        # Convert string to enum if needed
-        if isinstance(operation_str, str):
-            try:
-                operation = FileOperation(operation_str.lower())
-            except ValueError:
-                raise ValueError(f"Invalid file operation: {operation_str}")
-        else:
-            operation = operation_str
-        
-        # Get the file path
-        file_path = input_data.get("file_path")
-        if not file_path:
-            raise ValueError("File path is required")
-        
-        # Execute the appropriate operation
+        # Check if the operation is valid
         try:
-            if operation == FileOperation.READ:
-                return await self._read_file(file_path)
-            elif operation == FileOperation.WRITE:
-                content = input_data.get("content")
-                if content is None:
-                    raise ValueError("Content is required for write operation")
-                return await self._write_file(file_path, content)
-            elif operation == FileOperation.APPEND:
-                content = input_data.get("content")
-                if content is None:
-                    raise ValueError("Content is required for append operation")
-                return await self._append_file(file_path, content)
-            elif operation == FileOperation.DELETE:
-                return await self._delete_file(file_path)
-            elif operation == FileOperation.EXISTS:
-                return await self._file_exists(file_path)
-            elif operation == FileOperation.LIST:
-                return await self._list_directory(file_path)
-            else:
-                raise ValueError(f"Unsupported file operation: {operation}")
-        except Exception as e:
-            logger.error(f"Error during file operation {operation} on {file_path}: {str(e)}")
+            operation = FileOperation(operation_str)
+        except ValueError:
             return {
                 "success": False,
-                "operation": operation,
-                "file_path": file_path,
-                "error": str(e)
+                "operation": operation_str,
+                "path": path,
+                "message": f"Unsupported operation: {operation_str}"
+            }
+        
+        # Execute the operation
+        if operation == FileOperation.READ:
+            return await self._read_file(path)
+        elif operation == FileOperation.WRITE:
+            return await self._write_file(path, content)
+        elif operation == FileOperation.APPEND:
+            return await self._append_file(path, content)
+        elif operation == FileOperation.DELETE:
+            return await self._delete_file(path)
+        elif operation == FileOperation.EXISTS:
+            return await self._file_exists(path)
+        elif operation == FileOperation.LIST:
+            return await self._list_files(path, recursive)
+        else:
+            # This should never happen due to the enum validation
+            return {
+                "success": False,
+                "operation": operation_str,
+                "path": path,
+                "message": f"Unsupported operation: {operation_str}"
             }
     
     async def _read_file(self, file_path: str) -> Dict[str, Any]:
@@ -143,8 +152,8 @@ class FileHandlerTool(Tool):
             return {
                 "success": False,
                 "operation": FileOperation.READ,
-                "file_path": file_path,
-                "error": f"File not found: {file_path}"
+                "path": file_path,
+                "message": f"File not found: {file_path}"
             }
         
         with open(file_path, 'r') as f:
@@ -153,7 +162,7 @@ class FileHandlerTool(Tool):
         return {
             "success": True,
             "operation": FileOperation.READ,
-            "file_path": file_path,
+            "path": file_path,
             "content": content
         }
     
@@ -177,7 +186,7 @@ class FileHandlerTool(Tool):
         return {
             "success": True,
             "operation": FileOperation.WRITE,
-            "file_path": file_path
+            "path": file_path
         }
     
     async def _append_file(self, file_path: str, content: str) -> Dict[str, Any]:
@@ -195,8 +204,8 @@ class FileHandlerTool(Tool):
             return {
                 "success": False,
                 "operation": FileOperation.APPEND,
-                "file_path": file_path,
-                "error": f"File not found: {file_path}"
+                "path": file_path,
+                "message": f"File not found: {file_path}"
             }
         
         with open(file_path, 'a') as f:
@@ -205,7 +214,7 @@ class FileHandlerTool(Tool):
         return {
             "success": True,
             "operation": FileOperation.APPEND,
-            "file_path": file_path
+            "path": file_path
         }
     
     async def _delete_file(self, file_path: str) -> Dict[str, Any]:
@@ -222,8 +231,8 @@ class FileHandlerTool(Tool):
             return {
                 "success": False,
                 "operation": FileOperation.DELETE,
-                "file_path": file_path,
-                "error": f"File not found: {file_path}"
+                "path": file_path,
+                "message": f"File not found: {file_path}"
             }
         
         os.remove(file_path)
@@ -231,7 +240,7 @@ class FileHandlerTool(Tool):
         return {
             "success": True,
             "operation": FileOperation.DELETE,
-            "file_path": file_path
+            "path": file_path
         }
     
     async def _file_exists(self, file_path: str) -> Dict[str, Any]:
@@ -249,16 +258,17 @@ class FileHandlerTool(Tool):
         return {
             "success": True,
             "operation": FileOperation.EXISTS,
-            "file_path": file_path,
+            "path": file_path,
             "exists": exists
         }
     
-    async def _list_directory(self, directory: str) -> Dict[str, Any]:
+    async def _list_files(self, directory: str, recursive: bool) -> Dict[str, Any]:
         """
         List the contents of a directory.
         
         Args:
             directory: Path to the directory to list
+            recursive: Whether to list recursively
             
         Returns:
             Dictionary containing the list of files in the directory
@@ -267,24 +277,30 @@ class FileHandlerTool(Tool):
             return {
                 "success": False,
                 "operation": FileOperation.LIST,
-                "directory": directory,
-                "error": f"Directory not found: {directory}"
+                "path": directory,
+                "message": f"Directory not found: {directory}"
             }
         
         if not os.path.isdir(directory):
             return {
                 "success": False,
                 "operation": FileOperation.LIST,
-                "directory": directory,
-                "error": f"Not a directory: {directory}"
+                "path": directory,
+                "message": f"Not a directory: {directory}"
             }
         
-        files = [os.path.join(directory, f) for f in os.listdir(directory)]
+        if recursive:
+            files = []
+            for root, dirs, filenames in os.walk(directory):
+                for filename in filenames:
+                    files.append(os.path.join(root, filename))
+        else:
+            files = [os.path.join(directory, f) for f in os.listdir(directory)]
         
         return {
             "success": True,
             "operation": FileOperation.LIST,
-            "directory": directory,
+            "path": directory,
             "files": files
         }
     

@@ -8,8 +8,10 @@ import logging
 import os
 from typing import Dict, List, Any, Optional, Union
 from enum import Enum
+from pydantic import BaseModel, Field
 
-from .tool_base import Tool, ToolConfig, ToolPermission
+from .tool_base import ToolConfig, ToolPermission
+from .pydantic_validated_tool import PydanticValidatedTool
 from .providers.search_base import SearchProvider, SearchResponse
 from .providers.serp_provider import SerpApiProvider
 from .providers.tavily_provider import TavilyProvider
@@ -21,7 +23,18 @@ class SearchProviderType(str, Enum):
     SERP = "serp"
     TAVILY = "tavily"
 
-class WebSearchTool(Tool):
+class WebSearchInput(BaseModel):
+    """Input schema for web search tool"""
+    query: str = Field(description="Search query")
+    max_results: int = Field(default=5, description="Maximum number of results to return")
+
+class WebSearchOutput(BaseModel):
+    """Output schema for web search tool"""
+    results: List[Dict[str, Any]] = Field(description="Search results")
+    query: str = Field(description="Search query that was executed")
+    provider: str = Field(description="Search provider used")
+
+class WebSearchTool(PydanticValidatedTool):
     """Tool for searching the web using various providers"""
     
     def __init__(
@@ -48,7 +61,14 @@ class WebSearchTool(Tool):
                 required_permissions={ToolPermission.NETWORK}
             )
         
-        super().__init__(name, description, config)
+        # Initialize the PydanticValidatedTool with our schemas
+        super().__init__(
+            name, 
+            description, 
+            input_schema=WebSearchInput,
+            output_schema=WebSearchOutput,
+            config=config
+        )
         
         # Convert string to enum if needed
         if isinstance(provider_type, str):
@@ -99,17 +119,19 @@ class WebSearchTool(Tool):
         if not self.provider:
             raise ValueError("Search provider not initialized")
         
-        query = input_data.get("query")
-        if not query:
-            raise ValueError("Search query is required")
-        
-        max_results = input_data.get("max_results", 5)
+        # Input validation is already handled by PydanticValidatedTool
+        query = input_data["query"]
+        max_results = input_data["max_results"]
         
         # Execute the search
         response = await self.provider.search(query, max_results)
         
         # Return the response as a dictionary
-        return response.model_dump()
+        return {
+            "results": response.results,
+            "query": query,
+            "provider": self.provider_type.value if isinstance(self.provider_type, SearchProviderType) else str(self.provider_type)
+        }
     
     def _create_provider(self) -> None:
         """
@@ -157,12 +179,6 @@ class WebSearchTool(Tool):
         """Clean up the tool resources"""
         self.provider = None
         await super().cleanup()
-
-    async def execute(self, **kwargs):
-        """
-        Wrapper to accept keyword arguments and pass as dict to _execute().
-        """
-        return await self._execute(kwargs)
     
     def to_dict(self) -> Dict[str, Any]:
         """
@@ -171,11 +187,9 @@ class WebSearchTool(Tool):
         Returns:
             A dictionary representation of the tool
         """
-        result = super().to_dict()
-        result.update({
-            "provider_type": self.provider_type,
-            "provider_config": {
-                k: v for k, v in self.provider_config.items() if k != "api_key"
-            }
+        tool_dict = super().to_dict()
+        tool_dict.update({
+            "provider_type": self.provider_type.value if isinstance(self.provider_type, SearchProviderType) else str(self.provider_type),
+            "provider_config": self.provider_config
         })
-        return result
+        return tool_dict
