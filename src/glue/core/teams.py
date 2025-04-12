@@ -663,6 +663,54 @@ class Team:
             
         return {}
 
+    async def try_establish_relationship(self, target_team: str) -> Dict[str, Any]:
+        """Attempt to automatically establish a relationship with another team.
+        
+        Args:
+            target_team: Name of the target team
+            
+        Returns:
+            Dict with success status, relationship type if established, and error message if failed
+        """
+        result = {
+            "success": False,
+            "relationship_type": None,
+            "error": None
+        }
+        
+        # Check if we already have a relationship
+        if target_team in self.relationships:
+            result["success"] = True
+            result["relationship_type"] = self.relationships[target_team]
+            return result
+        
+        # Try to find a flow and establish relationship
+        if hasattr(self, 'outgoing_flows') and self.outgoing_flows:
+            # First check outgoing flows
+            for flow in self.outgoing_flows:
+                if hasattr(flow, 'target') and flow.target.name == target_team:
+                    # Found outgoing flow, establish bidirectional relationship
+                    self.relationships[target_team] = FlowType.BIDIRECTIONAL.value
+                    result["success"] = True
+                    result["relationship_type"] = FlowType.BIDIRECTIONAL.value
+                    logger.info(f"Automatically established BIDIRECTIONAL relationship with team {target_team} based on existing flow")
+                    return result
+            
+        # If we have incoming flows, check those too
+        if hasattr(self, 'incoming_flows') and self.incoming_flows:
+            for flow in self.incoming_flows:
+                if hasattr(flow, 'source') and flow.source.name == target_team:
+                    # Found incoming flow, establish bidirectional relationship
+                    self.relationships[target_team] = FlowType.BIDIRECTIONAL.value
+                    result["success"] = True
+                    result["relationship_type"] = FlowType.BIDIRECTIONAL.value
+                    logger.info(f"Automatically established BIDIRECTIONAL relationship with team {target_team} based on existing flow")
+                    return result
+        
+        # No flows found, can't establish relationship
+        result["error"] = f"No flows exist between team {self.name} and {target_team}"
+        return result
+
     def get_shared_results(self) -> Dict[str, ToolResult]:
         """Get shared tool results"""
         return self.shared_results
@@ -941,15 +989,16 @@ class Team:
                 # Log any errors but keep processing
                 logger.error(f"Error in message processing loop for team {self.name}: {e}")
                 
-    async def send_information(self, target_team: str, content: Any) -> bool:
+    async def send_information(self, target_team: str, content: Any) -> Union[bool, Dict[str, Any]]:
         """Send information to another team.
         
         Args:
             target_team: Name of the target team
             content: Content to send
-            
+                
         Returns:
-            True if the information was sent successfully, False otherwise
+            True if the information was sent successfully, 
+            or dict with error information if failed
         """
         logger.info(f"Team {self.name} attempting to send information to team {target_team}")
 
@@ -980,40 +1029,62 @@ class Team:
                 logger.info(f"Queued internal message within team {self.name}")
                 return True
             except Exception as e:
-                logger.error(f"Error queueing internal message in team {self.name}: {e}")
-                return False
+                error_msg = f"Error queueing internal message in team {self.name}: {e}"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
 
-        # --- Existing Inter-Team Communication Logic ---
-        # Check if we have a relationship with the target team
+        # --- Inter-Team Communication Logic ---
+        # Check if we have a relationships attribute
         if not hasattr(self, 'relationships'):
-            logger.warning(f"Team {self.name} has no relationships attribute")
-            return False
+            error_msg = f"Team {self.name} has no relationships attribute configured"
+            logger.warning(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "suggestion": "Make sure the team is properly initialized with relationships support"
+            }
             
         logger.debug(f"Team {self.name} has relationships: {self.relationships}")
         
+        # Try to establish a relationship if one doesn't exist
         if target_team not in self.relationships:
             logger.warning(f"No relationship with team {target_team}")
             
-            # If no relationship exists but we have outgoing flows, try to establish one
-            if hasattr(self, 'outgoing_flows') and self.outgoing_flows:
-                for flow in self.outgoing_flows:
-                    if flow.target.name == target_team:
-                        logger.info(f"Found flow to team {target_team}, establishing relationship")
-                        self.relationships[target_team] = FlowType.BIDIRECTIONAL.value
-                        break
-            else:
-                return False
+            # Try to establish a relationship automatically
+            relationship_result = await self.try_establish_relationship(target_team)
             
+            if not relationship_result["success"]:
+                error_msg = f"No relationship with team {target_team} and could not establish one automatically: {relationship_result['error']}"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "suggestion": f"Add a flow between {self.name} and {target_team} in your GLUE configuration"
+                }
+        
         # Check if the relationship allows sending
         relationship = self.relationships.get(target_team)
         if relationship not in [FlowType.PUSH.value, FlowType.BIDIRECTIONAL.value]:
-            logger.warning(f"Relationship {relationship} with team {target_team} doesn't allow sending")
-            return False
+            error_msg = f"Relationship {relationship} with team {target_team} doesn't allow sending"
+            logger.warning(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "suggestion": f"Change the relationship type to PUSH or BIDIRECTIONAL in your GLUE configuration"
+            }
             
         # Find the appropriate flow
         if not hasattr(self, 'outgoing_flows'):
-            logger.warning(f"Team {self.name} has no outgoing_flows attribute")
-            return False
+            error_msg = f"Team {self.name} has no outgoing_flows attribute"
+            logger.warning(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "suggestion": "Make sure the team is properly initialized with flow support"
+            }
             
         logger.debug(f"Team {self.name} has outgoing flows to: {[flow.target.name for flow in self.outgoing_flows if hasattr(flow, 'target')]}")
         
@@ -1043,13 +1114,22 @@ class Team:
                     logger.info(f"Sent information from team {self.name} to {target_team}")
                     return True
                 except Exception as e:
-                    logger.error(f"Error sending message from team {self.name} to {target_team}: {e}")
-                    return False
+                    error_msg = f"Error sending message from team {self.name} to {target_team}: {e}"
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
                 
-        logger.warning(f"No outgoing flow found from team {self.name} to {target_team}")
-        return False
+        error_msg = f"No outgoing flow found from team {self.name} to {target_team}"
+        logger.warning(error_msg)
+        return {
+            "success": False,
+            "error": error_msg,
+            "suggestion": f"Define a flow from {self.name} to {target_team} in your GLUE configuration"
+        }
         
-    async def receive_information(self, source_team: str, content: Any) -> bool:
+    async def receive_information(self, source_team: str, content: Any) -> Union[bool, Dict[str, Any]]:
         """Receive information from another team.
         
         Args:
@@ -1057,18 +1137,35 @@ class Team:
             content: Content to receive
             
         Returns:
-            True if the information was received successfully, False otherwise
+            True if the information was received successfully, 
+            or dict with error information if failed
         """
         # Check if we have a relationship with the source team
         if source_team not in self.relationships:
-            logger.warning(f"No relationship with team {source_team}")
-            return False
+            error_msg = f"No relationship with team {source_team}"
+            logger.warning(error_msg)
+            
+            # Try to establish a relationship automatically
+            relationship_result = await self.try_establish_relationship(source_team)
+            
+            if not relationship_result["success"]:
+                error_msg = f"No relationship with team {source_team} and could not establish one automatically: {relationship_result['error']}"
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "suggestion": f"Add a flow between {self.name} and {source_team} in your GLUE configuration"
+                }
             
         # Check if the relationship allows receiving
         relationship = self.relationships[source_team]
         if relationship not in [FlowType.PULL.value, FlowType.BIDIRECTIONAL.value]:
-            logger.warning(f"Relationship {relationship} with team {source_team} doesn't allow receiving")
-            return False
+            error_msg = f"Relationship {relationship} with team {source_team} doesn't allow receiving"
+            logger.warning(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "suggestion": f"Change the relationship type to PULL or BIDIRECTIONAL in your GLUE configuration"
+            }
             
         # Create message
         message = {
@@ -1081,9 +1178,17 @@ class Team:
         }
         
         # Process the message
-        await self.message_queue.put((message, None))
-        logger.info(f"Received information in team {self.name} from {source_team}")
-        return True
+        try:
+            await self.message_queue.put((message, None))
+            logger.info(f"Received information in team {self.name} from {source_team}")
+            return True
+        except Exception as e:
+            error_msg = f"Error processing received message from {source_team}: {e}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg
+            }
         
     async def set_relationship(self, team_name: str, relationship: str) -> None:
         """Set relationship with another team.
