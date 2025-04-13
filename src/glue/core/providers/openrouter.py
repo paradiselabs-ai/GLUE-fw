@@ -159,7 +159,7 @@ class OpenrouterProvider:
         # Create the tool simulation instructions
         tool_simulation_instructions = "\n\n## ACTION REQUIRED: TOOL USE VIA JSON\n"
         tool_simulation_instructions += "This model interface does not support native tool calls. **Your ability to use tools depends entirely on following the specific format below.**\n\n"
-        tool_simulation_instructions += "To execute a tool, you **MUST** respond with **ONLY** a single valid JSON object formatted **EXACTLY** like this, and **NOTHING ELSE**:\n\n"
+        tool_simulation_instructions += "To execute a tool, you **MUST** respond with **ONLY** a single valid JSON object formatted **EXACTLY** like this:\n\n"
         tool_simulation_instructions += "```json\n"
         tool_simulation_instructions += "{\n"
         tool_simulation_instructions += '  "tool_name": "<name_of_tool>",\n'
@@ -168,11 +168,10 @@ class OpenrouterProvider:
         tool_simulation_instructions += "```\n\n"
         tool_simulation_instructions += "Replace `<name_of_tool>` with the exact name of the tool you want to execute from the list below.\n"
         tool_simulation_instructions += "Replace `<parameters_object>` with a valid JSON object containing the arguments for the tool (e.g., `{\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello!\"}`).\n\n"
-        tool_simulation_instructions += "**CRITICAL REMINDER:** Your *entire* response **MUST** be **ONLY** this JSON object when calling a tool. START your response immediately with `{` and end it immediately with `}`. No other text, explanation, or formatting before or after the JSON is allowed.\n"
-        tool_simulation_instructions += "- **DO NOT** write any text like 'Okay, here is the tool call:' before the JSON.\n"
-        tool_simulation_instructions += "- **DO NOT** include any introductory text, explanation, or markdown formatting around the JSON.\n"
-        tool_simulation_instructions += "- **DO NOT** use any other JSON format (like `{\"type\": \"function\", ...}`). Use **ONLY** the `{\"tool_name\": ..., \"arguments\": ...}` structure.\n"
-        tool_simulation_instructions += "- If you are not calling a tool, respond normally with text.\n\n"
+        tool_simulation_instructions += "**CRITICAL REQUIREMENT:** Your response **MUST** start *immediately* with the opening curly brace `{` of the JSON object. The very first character of your output must be `{`.\n"
+        tool_simulation_instructions += "- End your response immediately with the closing curly brace `}`.\n"
+        tool_simulation_instructions += "- No other text, explanation, or formatting before or after the JSON is permitted.\n"
+        tool_simulation_instructions += "- Failure to start with `{` means the tool call will **fail**.\n"
 
         tool_simulation_instructions += "Available tools:\n"
         for tool in tools:

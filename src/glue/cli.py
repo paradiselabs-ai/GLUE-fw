@@ -288,12 +288,24 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                                             if hasattr(tool, 'execute') and callable(tool.execute):
                                                 tool_result = await app.execute_tool(tool_name, arguments)
                                                 logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
-                                                # Format result message
+                                                
+                                                # --- Format result message --- 
+                                                content_for_llm = str(tool_result) # Default to stringified result
+                                                # Check if result is a dict from communicate tool (or similar)
+                                                if isinstance(tool_result, dict) and 'success' in tool_result and 'response' in tool_result:
+                                                    if tool_result['success']:
+                                                        content_for_llm = tool_result['response']
+                                                    else:
+                                                        # Keep error details
+                                                        content_for_llm = f"Tool execution failed: {tool_result.get('response', 'Unknown error')}"
+                                                elif tool_result is None:
+                                                     content_for_llm = "Tool executed successfully with no return value."
+
                                                 tool_result_message = {
                                                     "role": "tool", 
                                                     "tool_call_id": tool_call_id, 
                                                     "name": tool_name, 
-                                                    "content": str(tool_result) # Ensure content is string
+                                                    "content": content_for_llm
                                                 }
                                             else:
                                                 logger.error(f"Tool {tool_name} exists but has no execute method. Tool might be a config dictionary, not an instance.")

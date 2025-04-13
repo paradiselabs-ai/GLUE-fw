@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger("agent_communication")
 
 # Uncomment to enable debug logging
-# logging.getLogger("agent_communication").setLevel(logging.DEBUG)
+logging.getLogger("agent_communication").setLevel(logging.DEBUG)
 
 async def wait_for_response(team, source_team_name, timeout=15):
     """Wait for a response from another team.

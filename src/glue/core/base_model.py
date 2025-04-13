@@ -535,17 +535,7 @@ class BaseModel:
             
             if behavior_descriptions:
                  prompt_parts.append("\n".join(behavior_descriptions))
-        
-        # Add tool information
-        if self.tools:
-            prompt_parts.append("\n## Available Tools")
-            for name, tool in self.tools.items():
-                # Get tool description
-                description = getattr(tool, 'description', 'No description available')
-                
-                # Add tool information
-                prompt_parts.append(f"- **{name}**: {description}")
-        
+
         # Add response guidelines
         prompt_parts.append("""
 ## Response Guidelines
@@ -563,7 +553,7 @@ class BaseModel:
 To use the available tools:
 - If you support native tool calling (e.g., function calling), use that method. Provide all required parameters as specified in the tool description.
 - In some situations, you might be instructed to use a specific format (e.g., a JSON object or a specific code block) to trigger a tool call. Follow those instructions precisely if provided.
-- Always refer to the "Available Tools" section for names, descriptions, and parameters.
+- Always refer to the "Available Tools" section (added when tools are available) for names, descriptions, and parameters.
 """)
 
         # Join all parts
