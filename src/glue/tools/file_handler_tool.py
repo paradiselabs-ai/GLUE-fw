@@ -25,6 +25,28 @@ class FileOperation(str, Enum):
 class FileHandlerTool(Tool):
     """Tool for handling file operations"""
     
+    description = "Read, write, or list files/directories in the workspace"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "Action to perform (read, write, list_dir)",
+                "enum": ["read", "write", "list_dir"]
+            },
+            "path": {
+                "type": "string",
+                "description": "Path to the file or directory relative to the workspace root"
+            },
+            "content": {
+                "type": "string",
+                "description": "Content to write (only required for write action)"
+            }
+        },
+        "required": ["action", "path"]
+        # 'content' is conditionally required, handled in execute logic
+    }
+
     def __init__(
         self,
         name: str = "file_handler",

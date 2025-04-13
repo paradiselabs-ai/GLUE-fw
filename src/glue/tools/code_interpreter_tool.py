@@ -29,6 +29,18 @@ class CodeLanguage(str, Enum):
 class CodeInterpreterTool(Tool):
     """Tool for executing code in various languages"""
     
+    description = "Execute Python code in a sandboxed environment"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "code": {
+                "type": "string",
+                "description": "The Python code string to execute"
+            }
+        },
+        "required": ["code"]
+    }
+    
     def __init__(
         self,
         name: str = "code_interpreter",

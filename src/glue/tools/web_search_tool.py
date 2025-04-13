@@ -24,6 +24,18 @@ class SearchProviderType(str, Enum):
 class WebSearchTool(Tool):
     """Tool for searching the web using various providers"""
     
+    description = "Search the web for information using Serp API"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query string"
+            }
+        },
+        "required": ["query"]
+    }
+    
     def __init__(
         self,
         name: str = "web_search",

@@ -235,7 +235,7 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                             console.print(response_content)
                     else:
                         # Handle non-string responses if necessary (e.g., raw tool call objects)
-                        console.print(str(response_content)) # Fallback
+                        console.print(str(response_content))
                         logger.warning(f"Received non-string response: {type(response_content)}")
 
                     # --- Append Assistant Response to History ---
@@ -251,22 +251,31 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                 # --- Process potential tool calls in the response ---
                 tool_calls_found_in_response = False
                 tool_results_for_next_turn = [] # Store results for this turn
+                processed_json_blocks = set() # Track processed JSON to avoid duplicates
 
                 if isinstance(response_content, str):
-                    # Use re.finditer to find all potential JSON blocks in the response
-                    for match in JSON_EXTRACT_REGEX.finditer(response_content):
-                        json_string = match.group(1) or match.group(2)
-                        if not json_string:
-                            continue
-                            
+                    # Regex specifically looking for the {"tool_name": ..., "arguments": ...} structure
+                    # Allows optional whitespace around JSON and captures the JSON block
+                    tool_call_json_regex = re.compile(r"^\s*(\{\s*\"tool_name\"\s*:\s*\".*?\"\s*,\s*\"arguments\"\s*:\s*\{.*?\}\s*\})\s*$", re.DOTALL | re.MULTILINE)
+                    
+                    potential_tool_call_match = tool_call_json_regex.search(response_content)
+                    
+                    if potential_tool_call_match:
+                        json_string = potential_tool_call_match.group(1)
+                        # Check if we already processed this exact block (less likely with UUID but possible)
+                        if json_string in processed_json_blocks:
+                            continue 
+                        processed_json_blocks.add(json_string)
+                        
                         try:
                             tool_call_data = json.loads(json_string.strip())
+                            # Double-check structure just in case regex was too broad
                             if isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
                                 tool_name = tool_call_data["tool_name"]
                                 arguments = tool_call_data["arguments"]
                                 tool_call_id = f"call_{uuid.uuid4()}" 
-                                logger.info(f"Detected tool call in response: {tool_name} (ID: {tool_call_id}) with args {arguments}")
-                                tool_calls_found_in_response = True # Mark that we found at least one valid call
+                                logger.info(f"Extracted simulated tool call: {tool_name} (ID: {tool_call_id}) with args {arguments}")
+                                tool_calls_found_in_response = True
 
                                 # --- Execute Tool with Error Handling --- 
                                 tool_result_message = None
@@ -289,136 +298,33 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                                             else:
                                                 logger.error(f"Tool {tool_name} exists but has no execute method. Tool might be a config dictionary, not an instance.")
                                                 error_content = f"Tool execution failed: '{tool_name}' is not properly initialized."
-                                                tool_result_message = {
-                                                    "role": "tool", 
-                                                    "tool_call_id": tool_call_id, 
-                                                    "name": tool_name, 
-                                                    "content": error_content,
-                                                    "is_error": True
-                                                }
+                                                tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
                                         else:
                                             logger.error(f"Tool {tool_name} not found in app.tools.")
                                             error_content = f"Tool execution failed: '{tool_name}' not found."
-                                            tool_result_message = {
-                                                "role": "tool", 
-                                                "tool_call_id": tool_call_id, 
-                                                "name": tool_name, 
-                                                "content": error_content,
-                                                "is_error": True
-                                            }
+                                            tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
                                     else:
                                         logger.error(f"App cannot execute tool {tool_name} (ID: {tool_call_id}).")
                                         error_content = f"Tool execution failed: App cannot execute tool '{tool_name}'."
-                                        tool_result_message = {
-                                            "role": "tool", 
-                                            "tool_call_id": tool_call_id, 
-                                            "name": tool_name, 
-                                            "content": error_content,
-                                            "is_error": True
-                                        }
+                                        tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
                                 except Exception as e:
                                     logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
                                     error_content = f"Error executing tool '{tool_name}': {e}"
-                                    tool_result_message = {
-                                        "role": "tool", 
-                                        "tool_call_id": tool_call_id, 
-                                        "name": tool_name, 
-                                        "content": error_content,
-                                        "is_error": True
-                                    }
+                                    tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
                                 
                                 # Add the result/error message to the list for the next turn's input
                                 if tool_result_message:
                                     tool_results_for_next_turn.append(tool_result_message)
-
-                            # Check for alternative format: {"tool_name": {...}}
-                            elif len(tool_call_data) == 1:
-                                tool_name = next(iter(tool_call_data.keys()))
-                                arguments = tool_call_data[tool_name]
-                                tool_call_id = f"call_{uuid.uuid4()}" # Generate an ID for the call
-                                
-                                # Verify this is a valid tool
-                                if hasattr(app, 'tools') and tool_name in app.tools:
-                                    logger.info(f"Detected alternative format tool call: {tool_name} (ID: {tool_call_id}) with args: {arguments}")
-                                    tool_calls_found_in_response = True # Mark that we found at least one valid call
-
-                                    # --- Execute Tool with Error Handling --- 
-                                    tool_result_message = None
-                                    try:
-                                        if hasattr(app, 'execute_tool') and callable(app.execute_tool):
-                                            # Check if the tool actually exists and is a proper tool instance
-                                            if tool_name in app.tools:
-                                                tool = app.tools[tool_name]
-                                                # Check if the tool is a proper instance with an execute method
-                                                if hasattr(tool, 'execute') and callable(tool.execute):
-                                                    tool_result = await app.execute_tool(tool_name, arguments)
-                                                    logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
-                                                    # Format result message
-                                                    tool_result_message = {
-                                                        "role": "tool", 
-                                                        "tool_call_id": tool_call_id, 
-                                                        "name": tool_name, 
-                                                        "content": str(tool_result) # Ensure content is string
-                                                    }
-                                                else:
-                                                    logger.error(f"Tool {tool_name} exists but has no execute method. Tool might be a config dictionary, not an instance.")
-                                                    error_content = f"Tool execution failed: '{tool_name}' is not properly initialized."
-                                                    tool_result_message = {
-                                                        "role": "tool", 
-                                                        "tool_call_id": tool_call_id, 
-                                                        "name": tool_name, 
-                                                        "content": error_content,
-                                                        "is_error": True
-                                                    }
-                                            else:
-                                                logger.error(f"Tool {tool_name} not found in app.tools.")
-                                                error_content = f"Tool execution failed: '{tool_name}' not found."
-                                                tool_result_message = {
-                                                    "role": "tool", 
-                                                    "tool_call_id": tool_call_id, 
-                                                    "name": tool_name, 
-                                                    "content": error_content,
-                                                    "is_error": True
-                                                }
-                                        else:
-                                            logger.error(f"App cannot execute tool {tool_name} (ID: {tool_call_id}).")
-                                            error_content = f"Tool execution failed: App cannot execute tool '{tool_name}'."
-                                            tool_result_message = {
-                                                "role": "tool", 
-                                                "tool_call_id": tool_call_id, 
-                                                "name": tool_name, 
-                                                "content": error_content,
-                                                "is_error": True
-                                            }
-                                    except Exception as e:
-                                        logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
-                                        error_content = f"Error executing tool '{tool_name}': {e}"
-                                        tool_result_message = {
-                                            "role": "tool", 
-                                            "tool_call_id": tool_call_id, 
-                                            "name": tool_name, 
-                                            "content": error_content,
-                                            "is_error": True
-                                        }
-                                    
-                                    # Add the result/error message to the list for the next turn's input
-                                    if tool_result_message:
-                                        tool_results_for_next_turn.append(tool_result_message)
-                                else:
-                                    # Not a valid tool call, log and ignore
-                                    logger.debug(f"Ignored alternative format JSON (not a valid tool): {json_string[:100]}...")
-
                             else:
-                                # Parsed JSON, but not a valid tool call format
-                                logger.debug(f"Ignored JSON block (not tool call format): {json_string[:100]}...")
-
+                                # Parsed JSON, but not the specific tool call format we looked for
+                                logger.debug(f"JSON found but not the expected tool call format: {json_string[:100]}...")
                         except json.JSONDecodeError:
-                            # Ignore blocks that are not valid JSON
-                            logger.debug(f"Ignored non-JSON block found by regex: {json_string[:100]}...")
+                            # Regex matched, but it wasn't valid JSON after all?
+                            logger.debug(f"Regex matched potential JSON, but failed to parse: {json_string[:100]}...")
                         except Exception as e:
                              logger.error(f"Error processing potential tool call block: {e}", exc_info=True)
-                    # --- End of loop through matches --- 
-
+                    else:
+                         logger.debug("No specific tool call JSON block found in response string.")
                 else:
                     logger.debug("Response was not a string, skipping tool call check.")
 
