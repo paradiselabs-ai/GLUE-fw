@@ -29,6 +29,9 @@ class OpenrouterProvider:
     including free models that are perfect for testing during development.
     """
     
+    # Class-level cache of models that don't support tool use
+    _models_without_tool_support = set()
+    
     def __init__(self, model):
         """Initialize a new OpenRouter provider.
         
@@ -39,6 +42,12 @@ class OpenrouterProvider:
         self.client = None
         self._simulated_instructions_added_this_request = False
         self._initialize_client()
+        
+    @classmethod
+    def clear_capability_cache(cls):
+        """Clear the cached model capabilities."""
+        cls._models_without_tool_support.clear()
+        logger.info("Cleared model capability cache")
     
     def _initialize_client(self):
         """Initialize the OpenRouter client."""
@@ -132,6 +141,59 @@ class OpenrouterProvider:
             logger.warning("python-dotenv not installed, cannot load .env file")
         
         return None
+        
+    def _add_simulated_tool_use_instructions(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]]) -> None:
+        """Add simulated tool use instructions to the messages.
+        
+        Args:
+            messages: List of messages to modify
+            tools: List of tools to include in the instructions
+        """
+        # Find the system message if it exists
+        system_msg_idx = None
+        for i, msg in enumerate(messages):
+            if msg.get('role') == 'system':
+                system_msg_idx = i
+                break
+        
+        # Create the tool simulation instructions
+        tool_simulation_instructions = "\n\n## ACTION REQUIRED: TOOL USE VIA JSON\n"
+        tool_simulation_instructions += "This model interface doesn't support native tool calls. To execute a tool, you MUST respond with ONLY a valid JSON object formatted EXACTLY like this, and nothing else:\n\n"
+        tool_simulation_instructions += "```json\n"
+        tool_simulation_instructions += "{\n"
+        tool_simulation_instructions += "  \"tool_name\": \"<name_of_tool>\",\n"
+        tool_simulation_instructions += "  \"arguments\": { <parameters_object> }\n"
+        tool_simulation_instructions += "}\n"
+        tool_simulation_instructions += "```\n\n"
+        tool_simulation_instructions += "Replace `<name_of_tool>` with the exact name of the tool you want to execute.\n"
+        tool_simulation_instructions += "Replace `<parameters_object>` with a valid JSON object containing the arguments for the tool (e.g., `{\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello!\"}`).\n"
+        tool_simulation_instructions += "**CRITICAL: Your entire response must be ONLY this JSON object when calling a tool. Do not include any other text, explanation, or markdown formatting around the JSON.** If you are not calling a tool, respond normally.\n\n"
+
+        tool_simulation_instructions += "Available tools:\n"
+        for tool in tools:
+            tool_name = tool.get('name', 'unknown_tool')
+            tool_description = tool.get('description', 'No description available.')
+            tool_desc = f"- {tool_name}: {tool_description}\n"
+            parameters_schema = tool.get('parameters')
+            if isinstance(parameters_schema, dict) and 'properties' in parameters_schema:
+                tool_desc += "  Parameters:\n"
+                props = parameters_schema.get('properties', {})
+                required_params = parameters_schema.get('required', [])
+                for param_name, param_info in props.items():
+                    if isinstance(param_info, dict):
+                        req_marker = " (required)" if param_name in required_params else ""
+                        param_type = param_info.get('type', 'any')
+                        param_desc = param_info.get('description', '')
+                        tool_desc += f"    - {param_name}{req_marker} ({param_type}): {param_desc}\n"
+                    else:
+                        tool_desc += f"    - {param_name}: (details unavailable)\n"
+            tool_simulation_instructions += tool_desc
+        
+        # Add the instructions to the system message or create a new one
+        if system_msg_idx is not None:
+            messages[system_msg_idx]['content'] += tool_simulation_instructions
+        else:
+            messages.insert(0, {"role": "system", "content": tool_simulation_instructions})
     
     async def generate_response(
         self, 
@@ -180,7 +242,33 @@ class OpenrouterProvider:
         
         # Add tools if provided
         tools_originally_present = bool(tools) # Track if tools were passed initially
-        if tools:
+        
+        # Get the model name for cache lookup
+        model_name = api_params["model"]
+        
+        # Check if this model is known to not support tool use
+        model_in_cache = model_name in self._models_without_tool_support
+        
+        # If tools are provided and the model is in the cache as not supporting tool use,
+        # skip the initial API call and go straight to simulated tool use
+        if tools and model_in_cache:
+            logger.info(f"Model {model_name} is known to not support tool use. Using simulated tool use instructions directly.")
+            # Skip adding tools to API params
+            if "tools" in api_params:
+                api_params.pop("tools")
+            if "tool_choice" in api_params:
+                api_params.pop("tool_choice")
+                
+            # Add simulated tool use instructions to the system message
+            self._add_simulated_tool_use_instructions(openrouter_messages, tools)
+            
+            # Update the messages in the API params
+            api_params["messages"] = openrouter_messages
+            
+            # Set the flag indicating instructions were added
+            self._simulated_instructions_added_this_request = True
+        elif tools:
+            # If tools are provided and the model is not in the cache, add them to the API params
             api_params["tools"] = tools
             api_params["tool_choice"] = "auto"
         
@@ -208,57 +296,22 @@ class OpenrouterProvider:
             # Check the specific error, if tools were originally present, AND if instructions haven't been added yet
             if tools_originally_present and "No endpoints found that support tool use" in str(e) and not self._simulated_instructions_added_this_request:
                 logger.warning(
-                    f"Model {self.model.model_name} does not support tool use on OpenRouter. "
+                    f"Model {model_name} does not support tool use on OpenRouter. "
                     f"Retrying with simulated tool use instructions."
                 )
+                
+                # Add the model to the cache of models without tool support
+                if model_name not in self._models_without_tool_support:
+                    self._models_without_tool_support.add(model_name)
+                    logger.info(f"Added model {model_name} to the cache of models without tool support")
+                
                 # Remove tool parameters for the retry
                 api_params.pop("tools", None)
                 api_params.pop("tool_choice", None)
                 
-                # Add simulated tool use instructions to the system message
-                system_msg_idx = None
-                for i, msg in enumerate(openrouter_messages):
-                    if msg.get('role') == 'system':
-                        system_msg_idx = i
-                        break
+                # Add simulated tool use instructions
+                self._add_simulated_tool_use_instructions(openrouter_messages, tools)
                 
-                tool_simulation_instructions = "\n\n## ACTION REQUIRED: TOOL USE VIA JSON\n"
-                tool_simulation_instructions += "This model interface doesn't support native tool calls. To execute a tool, you MUST respond with ONLY a valid JSON object formatted EXACTLY like this, and nothing else:\n\n"
-                tool_simulation_instructions += "```json\n"
-                tool_simulation_instructions += "{\n"
-                tool_simulation_instructions += "  \"tool_name\": \"<name_of_tool>\",\n"
-                tool_simulation_instructions += "  \"arguments\": { <parameters_object> }\n"
-                tool_simulation_instructions += "}\n"
-                tool_simulation_instructions += "```\n\n"
-                tool_simulation_instructions += "Replace `<name_of_tool>` with the exact name of the tool you want to execute.\n"
-                tool_simulation_instructions += "Replace `<parameters_object>` with a valid JSON object containing the arguments for the tool (e.g., `{\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello!\"}`).\n"
-                tool_simulation_instructions += "**CRITICAL: Your entire response must be ONLY this JSON object when calling a tool. Do not include any other text, explanation, or markdown formatting around the JSON.** If you are not calling a tool, respond normally.\n\n"
-
-                tool_simulation_instructions += "Available tools:\n"
-                for tool in tools:
-                    tool_name = tool.get('name', 'unknown_tool')
-                    tool_description = tool.get('description', 'No description available.')
-                    tool_desc = f"- {tool_name}: {tool_description}\n"
-                    parameters_schema = tool.get('parameters')
-                    if isinstance(parameters_schema, dict) and 'properties' in parameters_schema:
-                        tool_desc += "  Parameters:\n"
-                        props = parameters_schema.get('properties', {})
-                        required_params = parameters_schema.get('required', [])
-                        for param_name, param_info in props.items():
-                            if isinstance(param_info, dict):
-                                req_marker = " (required)" if param_name in required_params else ""
-                                param_type = param_info.get('type', 'any')
-                                param_desc = param_info.get('description', '')
-                                tool_desc += f"    - {param_name}{req_marker} ({param_type}): {param_desc}\n"
-                            else:
-                                tool_desc += f"    - {param_name}: (details unavailable)\n"
-                    tool_simulation_instructions += tool_desc
-                
-                if system_msg_idx is not None:
-                    openrouter_messages[system_msg_idx]['content'] += tool_simulation_instructions
-                else:
-                    openrouter_messages.insert(0, {"role": "system", "content": tool_simulation_instructions})
-
                 # Set the flag indicating instructions were added
                 self._simulated_instructions_added_this_request = True
                 
