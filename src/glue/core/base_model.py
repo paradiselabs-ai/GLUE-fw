@@ -503,52 +503,38 @@ class BaseModel:
         prompt_parts = []
         
         # Add the model identity
-        prompt_parts.append(f"# GLUE Model: {self.name}")
+        prompt_parts.append(f"# Model: {self.name}")
         
         # Add the model role if defined
         if self.role:
-            prompt_parts.append(f"\n## Your Role\nYou are a model in the GLUE framework with the role: {self.role}")
-        
-        # Add framework context
-        prompt_parts.append("""
-## GLUE Framework
-You are operating as part of the GLUE (GenAI Linking & Unification Engine) framework, which organizes AI models into teams with tools and defined communication patterns.
-
-### Key Concepts
-1. **Adhesive Tool Usage**: Tools can be used with different binding types.
-2. **Team Communication**: You can communicate freely with team members.
-3. **Magnetic Information Flow**: Information flows between teams in defined patterns.
-""")
+            prompt_parts.append(f"\n## Your Role\nYou are an AI assistant with the role: {self.role}")
         
         # Add team context if available
         if hasattr(self, 'team') and self.team is not None:
-            prompt_parts.append(f"\n## Your Team\nYou are part of the '{self.team.name}' team.")
+            prompt_parts.append(f"\n## Your Collaborators\nYou are part of the '{self.team.name}' group.")
             
             # Include team members if available
             if hasattr(self.team, 'models') and isinstance(self.team.models, dict):
                 team_members = [name for name in self.team.models.keys() if name != self.name]
                 if team_members:
                     members_str = ", ".join(team_members)
-                    prompt_parts.append(f"Team members: {members_str}")
+                    prompt_parts.append(f"Your collaborators: {members_str}")
                 else:
-                    prompt_parts.append("You are the only member of this team.")
+                    prompt_parts.append("You are the only member of this group.")
         
-        # Add adhesive capabilities
+        # Add tool result behavior descriptions
         adhesives = getattr(self, 'adhesives', set())
         if adhesives:
-            prompt_parts.append("\n## Your Adhesive Capabilities")
-            adhesive_types = []
+            prompt_parts.append("\n## Tool Result Behavior")
+            behavior_descriptions = []
             
             if AdhesiveType.GLUE in adhesives:
-                adhesive_types.append("**GLUE**: Permanent binding with team-wide persistence. Results are automatically shared with your team.")
-            
+                behavior_descriptions.append("**Shared Results**: Some tool results are automatically shared and persisted within your group.")
             if AdhesiveType.VELCRO in adhesives:
-                adhesive_types.append("**VELCRO**: Session-based binding with model-level persistence. Results persist for your current session and are private to you.")
+                behavior_descriptions.append("**Private Results**: Some tool results are kept private to you and persist only for the current session.")
             
-            if AdhesiveType.TAPE in adhesives:
-                adhesive_types.append("**TAPE**: One-time binding with no persistence. Results are used once and discarded.")
-            
-            prompt_parts.append("\n".join(adhesive_types))
+            if behavior_descriptions:
+                 prompt_parts.append("\n".join(behavior_descriptions))
         
         # Add tool information
         if self.tools:
@@ -564,76 +550,22 @@ You are operating as part of the GLUE (GenAI Linking & Unification Engine) frame
         prompt_parts.append("""
 ## Response Guidelines
 1. Stay focused on your role and the current task.
-2. Use tools appropriately based on their adhesive types.
-3. Collaborate effectively with team members.
-4. Follow team-specific communication patterns.
-5. Maintain a professional and helpful tone.
+2. **Goal Adherence:** After using tools or communicating with collaborators, always review the original request and ensure your final response directly addresses the primary objective.
+3. Consider how tool results are shared or persisted when choosing tools.
+4. Collaborate effectively with your collaborators.
+5. Follow established communication patterns.
+6. Maintain a professional and helpful tone.
 """)
-        
-        # Provider-specific instructions
-        provider_name = self.provider_name.lower()
-        if provider_name == "gemini":
-            prompt_parts.append("""
-## Tool Usage Instructions
-When using tools, follow this specific function calling syntax for Gemini models:
 
-```tool_code
-tool_name(parameter1="value1", parameter2="value2")
-```
+        # Add generic tool usage instructions
+        prompt_parts.append("""
+## Tool Usage Instructions
+To use the available tools:
+- If you support native tool calling (e.g., function calling), use that method. Provide all required parameters as specified in the tool description.
+- In some situations, you might be instructed to use a specific format (e.g., a JSON object or a specific code block) to trigger a tool call. Follow those instructions precisely if provided.
+- Always refer to the "Available Tools" section for names, descriptions, and parameters.
+""")
 
-Always use the exact tool names as provided below. Do not invent or modify tool names.
-""")
-            
-            # Add specific examples for each available tool
-            if self.tools:
-                prompt_parts.append("\n### Tool Usage Examples")
-                for name, tool in self.tools.items():
-                    # Create a simple example for each tool
-                    if name == "web_search":
-                        prompt_parts.append(f"""
-Example for {name}:
-```tool_code
-{name}(query="latest news in AI development")
-```
-""")
-                    elif name == "file_handler":
-                        prompt_parts.append(f"""
-Example for {name}:
-```tool_code
-{name}(action="read", file_path="example.txt")
-```
-""")
-                    else:
-                        # Generic example for other tools
-                        prompt_parts.append(f"""
-Example for {name}:
-```tool_code
-{name}(parameter="example")
-```
-""")
-        elif provider_name == "anthropic":
-            prompt_parts.append("""
-## Tool Usage Instructions
-When using tools, use the <tool></tool> XML tags to indicate tool calls. Always provide required parameters.
-""")
-        elif provider_name == "openai":
-            prompt_parts.append("""
-## Tool Usage Instructions
-When using tools (functions), clearly indicate your intent to call a function and provide all required parameters.
-""")
-        elif provider_name == "openrouter":
-            # Generic instructions for OpenRouter (which might route to different models)
-            prompt_parts.append("""
-## Tool Usage Instructions
-Follow the appropriate function calling format for the underlying model. Always provide all required parameters.
-""")
-        else:
-            # Generic instructions for other providers
-            prompt_parts.append("""
-## Tool Usage Instructions
-When using tools, clearly indicate which tool you're using and provide all required parameters.
-""")
-            
         # Join all parts
         return "\n".join(prompt_parts)
     
@@ -675,25 +607,7 @@ When using tools, clearly indicate which tool you're using and provide all requi
                     tool_desc.append(f"- `{param_name}`{req_marker}: {param_type} - {param_desc}")
             
             tool_descriptions.append("\n".join(tool_desc))
-        
-        # Add instructions for simulated tool calls
-        tool_descriptions.append("""
-## Tool Use Instructions
 
-You can use tools in two ways:
-
-1. **Native Tool Calls**: If you support native tool calling, use the appropriate method for your model.
-
-2. **Simulated Tool Calls**: If you don't support native tool calling or are communicating with a model that doesn't, use this format:
-
-```tool_call
-tool_name: name_of_tool
-parameters: {"param1": "value1", "param2": "value2"}
-```
-
-When you receive a simulated tool call from another model, execute it and respond with the result.
-""")
-        
         return "\n\n".join(tool_descriptions)
     
     def _add_prompt_engineering(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> List[Message]:
@@ -834,22 +748,53 @@ When you receive a simulated tool call from another model, execute it and respon
                         # Handle case where message might be a string or other type
                         provider_messages.append({"role": "user", "content": str(msg)})
                 
-                # Get available tools if any
+                # Get available tools if any and format them for the provider
                 provider_tools = None
-                if tools:
-                    provider_tools = tools
+                tools_source = None
+                if tools is not None:
+                    # Prioritize tools passed as argument (e.g., from cli.py)
+                    tools_source = tools
+                    logger.debug(f"Formatting {len(tools_source)} tools passed as argument.")
                 elif hasattr(self, 'tools') and self.tools:
-                    # Convert tools dictionary to list of tool definitions
-                    provider_tools = []
-                    for tool_name, tool in self.tools.items():
-                        if isinstance(tool, dict) and "name" in tool:
-                            # Tool is already formatted
-                            provider_tools.append(tool)
-                        else:
-                            # Format the tool
-                            formatted_tool = self._format_tool_for_provider(tool_name, tool)
-                            provider_tools.append(formatted_tool)
+                    # Fallback to tools attached to the model instance
+                    tools_source = self.tools
+                    logger.debug(f"Formatting {len(tools_source)} tools attached to model.")
                 
+                if tools_source:
+                    provider_tools = []
+                    # Ensure tools_source is iterable (e.g., dict.items() or list)
+                    items_to_iterate = tools_source.items() if isinstance(tools_source, dict) else tools_source
+                    
+                    for item in items_to_iterate:
+                        tool_name = None
+                        tool_instance = None
+                        
+                        if isinstance(tools_source, dict):
+                            tool_name, tool_instance = item # item is (key, value) from .items()
+                        elif isinstance(item, dict) and "name" in item:
+                            # Handle case where a list of formatted tools might be passed
+                            provider_tools.append(item)
+                            continue
+                        else:
+                            # Attempt to handle list of tool instances (less common)
+                            if hasattr(item, 'name'):
+                                tool_name = item.name
+                                tool_instance = item
+                            else:
+                                logger.warning(f"Skipping tool formatting for unrecognized item type: {type(item)}")
+                                continue
+
+                        # Format the tool instance if we have one
+                        if tool_name and tool_instance:
+                            if isinstance(tool_instance, dict) and "name" in tool_instance:
+                                # Already formatted?
+                                provider_tools.append(tool_instance)
+                            else:
+                                formatted_tool = self._format_tool_for_provider(tool_name, tool_instance)
+                                provider_tools.append(formatted_tool)
+                        elif tool_name and not tool_instance:
+                             logger.warning(f"Tool '{tool_name}' found in source but instance is missing.")
+
                 # Generate response using the provider
                 if hasattr(self.provider, 'generate_response') and callable(self.provider.generate_response):
                     logger.debug("Calling provider's generate_response method")

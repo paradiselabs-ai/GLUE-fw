@@ -158,16 +158,21 @@ class OpenrouterProvider:
         
         # Create the tool simulation instructions
         tool_simulation_instructions = "\n\n## ACTION REQUIRED: TOOL USE VIA JSON\n"
-        tool_simulation_instructions += "This model interface doesn't support native tool calls. To execute a tool, you MUST respond with ONLY a valid JSON object formatted EXACTLY like this, and nothing else:\n\n"
+        tool_simulation_instructions += "This model interface does not support native tool calls. **Your ability to use tools depends entirely on following the specific format below.**\n\n"
+        tool_simulation_instructions += "To execute a tool, you **MUST** respond with **ONLY** a single valid JSON object formatted **EXACTLY** like this, and **NOTHING ELSE**:\n\n"
         tool_simulation_instructions += "```json\n"
         tool_simulation_instructions += "{\n"
-        tool_simulation_instructions += "  \"tool_name\": \"<name_of_tool>\",\n"
-        tool_simulation_instructions += "  \"arguments\": { <parameters_object> }\n"
+        tool_simulation_instructions += '  "tool_name": "<name_of_tool>",\n'
+        tool_simulation_instructions += '  "arguments": { <parameters_object> }\n'
         tool_simulation_instructions += "}\n"
         tool_simulation_instructions += "```\n\n"
-        tool_simulation_instructions += "Replace `<name_of_tool>` with the exact name of the tool you want to execute.\n"
-        tool_simulation_instructions += "Replace `<parameters_object>` with a valid JSON object containing the arguments for the tool (e.g., `{\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello!\"}`).\n"
-        tool_simulation_instructions += "**CRITICAL: Your entire response must be ONLY this JSON object when calling a tool. Do not include any other text, explanation, or markdown formatting around the JSON.** If you are not calling a tool, respond normally.\n\n"
+        tool_simulation_instructions += "Replace `<name_of_tool>` with the exact name of the tool you want to execute from the list below.\n"
+        tool_simulation_instructions += "Replace `<parameters_object>` with a valid JSON object containing the arguments for the tool (e.g., `{\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello!\"}`).\n\n"
+        tool_simulation_instructions += "**CRITICAL REMINDER:** Your *entire* response **MUST** be **ONLY** this JSON object when calling a tool. START your response immediately with `{` and end it immediately with `}`. No other text, explanation, or formatting before or after the JSON is allowed.\n"
+        tool_simulation_instructions += "- **DO NOT** write any text like 'Okay, here is the tool call:' before the JSON.\n"
+        tool_simulation_instructions += "- **DO NOT** include any introductory text, explanation, or markdown formatting around the JSON.\n"
+        tool_simulation_instructions += "- **DO NOT** use any other JSON format (like `{\"type\": \"function\", ...}`). Use **ONLY** the `{\"tool_name\": ..., \"arguments\": ...}` structure.\n"
+        tool_simulation_instructions += "- If you are not calling a tool, respond normally with text.\n\n"
 
         tool_simulation_instructions += "Available tools:\n"
         for tool in tools:

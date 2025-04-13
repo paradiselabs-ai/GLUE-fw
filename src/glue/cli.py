@@ -188,19 +188,69 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
             turn_count = 0
             final_response = None
 
+            # Determine the lead model (assuming the first team's lead is the entry point)
+            if not app.teams:
+                logger.error("No teams defined in the application.")
+                console.print("[bold red]Error: No teams defined.[/bold red]")
+                return False
+            # Get the first team name (requires Python 3.7+ for insertion order)
+            # TODO: Allow specifying the entry point team/model via config or argument
+            first_team_name = next(iter(app.teams))
+            if not hasattr(app.teams[first_team_name], 'lead') or not app.teams[first_team_name].lead:
+                 logger.error(f"Lead model not found for the first team '{first_team_name}'. Check team config.")
+                 console.print(f"[bold red]Error: Lead model not found for team '{first_team_name}'.[/bold red]")
+                 return False
+            lead_model = app.teams[first_team_name].lead # Use the lead attribute
+            logger.info(f"Using lead model '{lead_model.name}' from team '{first_team_name}' as entry point.")
+
+            messages = [{"role": "user", "content": current_input}] # Initialize messages list
+
             while turn_count < max_turns:
                 turn_count += 1
-                logger.info(f"Agentic Loop Turn {turn_count}/{max_turns}")
-                logger.debug(f"Input for turn {turn_count}: {current_input}")
+                logger.info(f"--- Agent Turn {turn_count} ---")
+                console.print(f"[dim]--- Turn {turn_count} ---[/dim]")
 
-                # Get response from the app
-                response_content = await app.run(current_input) 
-                final_response = response_content # Store the latest response for potential final output
-                logger.debug(f"Raw response from app run: {response_content[:500]}...") # Log partial response
+                # --- Generate response ---
+                response_content = None
+                try:
+                    logger.debug(f"Calling model {lead_model.name} with {len(messages)} messages.") # Use lead_model variable
+                    # Ensure messages are passed correctly
+                    # Pass app.tools which should contain all initialized tools
+                    response_content = await lead_model.generate_response(messages=messages, tools=app.tools) # Use lead_model variable
+                    logger.debug(f"Raw response from model: {response_content}")
+                    
+                    # Display assistant thinking/response
+                    console.print(f"[bold yellow]{lead_model.name}:[/bold yellow]") # Use lead_model variable
+                    if isinstance(response_content, str):
+                        # Check if the response contains JSON and print appropriately
+                        potential_json = extract_json(response_content)
+                        if potential_json:
+                            json_str = json.dumps(potential_json, indent=2)
+                            syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
+                            console.print(syntax)
+                            # Also log the full string if it contains more than just JSON
+                            if response_content.strip() != json_str:
+                                logger.debug(f"Response string contained non-JSON parts: {response_content}")
+                        else:
+                            console.print(response_content)
+                    else:
+                        # Handle non-string responses if necessary (e.g., raw tool call objects)
+                        console.print(str(response_content)) # Fallback
+                        logger.warning(f"Received non-string response: {type(response_content)}")
 
-                # --- Always process the latest response_content for tool calls --- 
+                    # --- Append Assistant Response to History ---
+                    # Append regardless of tool calls, representing the model's thought/output
+                    if response_content is not None:
+                         messages.append({"role": "assistant", "content": str(response_content)}) # Ensure content is string
+
+                except Exception as e:
+                    logger.error(f"Error during model generation: {e}", exc_info=True)
+                    console.print(f"[bold red]Error during model generation: {e}[/bold red]")
+                    break # Exit loop on generation error
+
+                # --- Process potential tool calls in the response ---
                 tool_calls_found_in_response = False
-                tool_results_for_next_turn = []
+                tool_results_for_next_turn = [] # Store results for this turn
 
                 if isinstance(response_content, str):
                     # Use re.finditer to find all potential JSON blocks in the response
@@ -372,18 +422,22 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                 else:
                     logger.debug("Response was not a string, skipping tool call check.")
 
-                # --- Prepare for next turn or break --- 
+                # --- Append Tool Results and Decide Next Step ---
                 if tool_calls_found_in_response:
-                    # If tool calls were found in the *latest response*, 
-                    # format their results as the input for the next turn.
-                    current_input = json.dumps(tool_results_for_next_turn)
-                    # Continue the loop
+                    if tool_results_for_next_turn:
+                        logger.info(f"Adding {len(tool_results_for_next_turn)} tool results to conversation history.")
+                        messages.extend(tool_results_for_next_turn) # Append tool results to messages list
+                        # Loop continues automatically
+                    else:
+                         logger.warning("Tool calls were detected in response, but no results were generated/appended.")
+                         # Decide how to handle this: maybe break or log error? For now, let it continue.
+                    continue # Continue to the next turn
                 else:
-                    # If no tool calls were found in the *latest response*, 
-                    # then this response is the final answer. Break the loop.
+                    # No tool calls in the latest response, this is the final answer
                     logger.info("No tool calls found in the latest response. Ending agentic loop.")
-                    break
-            
+                    final_response = response_content # Store the final response
+                    break # Exit the loop
+
             # --- After the loop --- 
             if turn_count >= max_turns:
                  logger.warning(f"Agentic loop reached maximum turns ({max_turns}). Returning last response.")
