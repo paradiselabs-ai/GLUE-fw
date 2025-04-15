@@ -20,10 +20,14 @@ from typing import List, Dict, Any, Optional, Union
 from rich import print
 from rich.console import Console
 from rich.syntax import Syntax
+from rich.prompt import Prompt
 
 # Import framework modules
 # Use direct imports to avoid circular imports
-from glue.core import GlueApp, AdhesiveType
+from glue.core.app import GlueApp
+from glue.core.types import AdhesiveType
+from glue.core.agent_loop import AgentLoop, AgentState
+from glue.core.teams import Team
 from glue.dsl import GlueDSLParser, GlueLexer
 from glue.tools import SimpleBaseTool, register_tool
 
@@ -37,7 +41,7 @@ from glue.cliHelpers import (
 )
 
 # Import new utilities
-from .utils.json_utils import extract_json, JSON_EXTRACT_REGEX
+from .utils.json_utils import extract_json
 
 # Constants for tools
 AVAILABLE_TOOLS = {
@@ -94,12 +98,12 @@ def format_component_name(name: str, component_type: str = "component") -> tuple
     return dir_name, module_name, class_name
 
 # ==================== Application Functions ====================
-async def run_app(config_file: str, interactive: bool = False, input_text: str = None) -> bool:
+async def run_app(config_file: str, mode: str = "non-interactive", input_text: str = None) -> bool:
     """Run a GLUE application from a configuration file.
     
     Args:
         config_file: Path to the GLUE configuration file
-        interactive: Whether to run in interactive mode
+        mode: Execution mode ("interactive" or "non-interactive")
         input_text: Input text to process (for non-interactive mode)
         
     Returns:
@@ -162,231 +166,69 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         # Build the application
         logger.info("Building GLUE application")
         
-        # Create a new GlueApp instance with the parsed config
-        app = GlueApp(config=ast)
+        # Create a new GlueApp instance with the parsed config and mode
+        app = GlueApp(config=ast, mode=mode)
         
         # Setup the app first
-        print("[DEBUG] Before app.setup()")
-        await app.setup()
-        print("[DEBUG] After app.setup()")
+        # print("[DEBUG] Before app.setup()") # Keep debug prints?
+        await app.setup() # Assume setup handles passing mode down to teams
+        # print("[DEBUG] After app.setup()")
         
         # Display available tools if in interactive mode
-        if interactive:
+        if mode == "interactive":
             display_available_tools(app)
             logger.info("Starting interactive session")
             print(f"\nStarting interactive session with {app.name}")
-            print("[DEBUG] Before run_interactive_session()")
+            # print("[DEBUG] Before run_interactive_session()")
             await run_interactive_session(app)
-            print("[DEBUG] After run_interactive_session()")
+            # print("[DEBUG] After run_interactive_session()")
             return True
         
         # Non-interactive mode
         elif input_text:
-            logger.info(f"Running non-interactive agentic workflow with initial input: {input_text}")
-            current_input = input_text
-            max_turns = 10 # Set a limit to prevent infinite loops
-            turn_count = 0
-            final_response = None
-
-            # Determine the lead model (assuming the first team's lead is the entry point)
-            if not app.teams:
+            logger.info(f"Running non-interactive workflow with initial input: {input_text}")
+            # Find entry point team/lead
+            entry_team = None
+            entry_lead = None
+            if app.teams:
+                first_team_name = next(iter(app.teams))
+                entry_team = app.teams[first_team_name]
+                if hasattr(entry_team, 'lead') and entry_team.lead:
+                    entry_lead = entry_team.lead
+                else:
+                    logger.error(f"Lead model not found for entry team '{first_team_name}'.")
+                    console.print("[bold red]Error: Lead model not found for entry team.[/bold red]")
+                    return False
+            else:
                 logger.error("No teams defined in the application.")
                 console.print("[bold red]Error: No teams defined.[/bold red]")
                 return False
-            # Get the first team name (requires Python 3.7+ for insertion order)
-            # TODO: Allow specifying the entry point team/model via config or argument
-            first_team_name = next(iter(app.teams))
-            if not hasattr(app.teams[first_team_name], 'lead') or not app.teams[first_team_name].lead:
-                 logger.error(f"Lead model not found for the first team '{first_team_name}'. Check team config.")
-                 console.print(f"[bold red]Error: Lead model not found for team '{first_team_name}'.[/bold red]")
-                 return False
-            lead_model = app.teams[first_team_name].lead # Use the lead attribute
-            logger.info(f"Using lead model '{lead_model.name}' from team '{first_team_name}' as entry point.")
 
-            messages = [{"role": "user", "content": current_input}] # Initialize messages list
-
-            while turn_count < max_turns:
-                turn_count += 1
-                logger.info(f"--- Agent Turn {turn_count} ---")
-                console.print(f"[dim]--- Turn {turn_count} ---[/dim]")
-
-                # --- Generate response ---
-                response_content = None
-                try:
-                    logger.debug(f"Calling model {lead_model.name} with {len(messages)} messages.") # Use lead_model variable
-                    # Ensure messages are passed correctly
-                    # Pass app.tools which should contain all initialized tools
-                    response_content = await lead_model.generate_response(messages=messages, tools=app.tools) # Use lead_model variable
-                    logger.debug(f"Raw response from model: {response_content}")
-                    
-                    # Display assistant thinking/response
-                    console.print(f"[bold yellow]{lead_model.name}:[/bold yellow]") # Use lead_model variable
-                    if isinstance(response_content, str):
-                        # Check if the response contains JSON and print appropriately
-                        potential_json = extract_json(response_content)
-                        if potential_json:
-                            json_str = json.dumps(potential_json, indent=2)
-                            syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                            console.print(syntax)
-                            # Also log the full string if it contains more than just JSON
-                            if response_content.strip() != json_str:
-                                logger.debug(f"Response string contained non-JSON parts: {response_content}")
-                        else:
-                            console.print(response_content)
-                    else:
-                        # Handle non-string responses if necessary (e.g., raw tool call objects)
-                        console.print(str(response_content))
-                        logger.warning(f"Received non-string response: {type(response_content)}")
-
-                    # --- Append Assistant Response to History ---
-                    # Append regardless of tool calls, representing the model's thought/output
-                    if response_content is not None:
-                         messages.append({"role": "assistant", "content": str(response_content)}) # Ensure content is string
-
-                except Exception as e:
-                    logger.error(f"Error during model generation: {e}", exc_info=True)
-                    console.print(f"[bold red]Error during model generation: {e}[/bold red]")
-                    break # Exit loop on generation error
-
-                # --- Process potential tool calls in the response ---
-                tool_calls_found_in_response = False
-                tool_results_for_next_turn = [] # Store results for this turn
-                processed_json_blocks = set() # Track processed JSON to avoid duplicates
-
-                if isinstance(response_content, str):
-                    # Regex specifically looking for the {"tool_name": ..., "arguments": ...} structure
-                    # Allows optional whitespace around JSON and captures the JSON block
-                    tool_call_json_regex = re.compile(r"^\s*(\{\s*\"tool_name\"\s*:\s*\".*?\"\s*,\s*\"arguments\"\s*:\s*\{.*?\}\s*\})\s*$", re.DOTALL | re.MULTILINE)
-                    
-                    potential_tool_call_match = tool_call_json_regex.search(response_content)
-                    
-                    if potential_tool_call_match:
-                        json_string = potential_tool_call_match.group(1)
-                        # Check if we already processed this exact block (less likely with UUID but possible)
-                        if json_string in processed_json_blocks:
-                            continue 
-                        processed_json_blocks.add(json_string)
-                        
-                        try:
-                            tool_call_data = json.loads(json_string.strip())
-                            # Double-check structure just in case regex was too broad
-                            if isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
-                                tool_name = tool_call_data["tool_name"]
-                                arguments = tool_call_data["arguments"]
-                                tool_call_id = f"call_{uuid.uuid4()}" 
-                                logger.info(f"Extracted simulated tool call: {tool_name} (ID: {tool_call_id}) with args {arguments}")
-                                tool_calls_found_in_response = True
-
-                                # --- Execute Tool with Error Handling --- 
-                                tool_result_message = None
-                                try:
-                                    if hasattr(app, 'execute_tool') and callable(app.execute_tool):
-                                        # Check if the tool actually exists and is a proper tool instance
-                                        if tool_name in app.tools:
-                                            tool = app.tools[tool_name]
-                                            # Check if the tool is a proper instance with an execute method
-                                            if hasattr(tool, 'execute') and callable(tool.execute):
-                                                tool_result = await app.execute_tool(tool_name, arguments)
-                                                logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
-                                                
-                                                # --- Format result message --- 
-                                                content_for_llm = str(tool_result) # Default to stringified result
-                                                # Check if result is a dict from communicate tool (or similar)
-                                                if isinstance(tool_result, dict) and 'success' in tool_result and 'response' in tool_result:
-                                                    if tool_result['success']:
-                                                        content_for_llm = tool_result['response']
-                                                    else:
-                                                        # Keep error details
-                                                        content_for_llm = f"Tool execution failed: {tool_result.get('response', 'Unknown error')}"
-                                                elif tool_result is None:
-                                                     content_for_llm = "Tool executed successfully with no return value."
-
-                                                tool_result_message = {
-                                                    "role": "tool", 
-                                                    "tool_call_id": tool_call_id, 
-                                                    "name": tool_name, 
-                                                    "content": content_for_llm
-                                                }
-                                            else:
-                                                logger.error(f"Tool {tool_name} exists but has no execute method. Tool might be a config dictionary, not an instance.")
-                                                error_content = f"Tool execution failed: '{tool_name}' is not properly initialized."
-                                                tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
-                                        else:
-                                            logger.error(f"Tool {tool_name} not found in app.tools.")
-                                            error_content = f"Tool execution failed: '{tool_name}' not found."
-                                            tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
-                                    else:
-                                        logger.error(f"App cannot execute tool {tool_name} (ID: {tool_call_id}).")
-                                        error_content = f"Tool execution failed: App cannot execute tool '{tool_name}'."
-                                        tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
-                                except Exception as e:
-                                    logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
-                                    error_content = f"Error executing tool '{tool_name}': {e}"
-                                    tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
-                                
-                                # Add the result/error message to the list for the next turn's input
-                                if tool_result_message:
-                                    tool_results_for_next_turn.append(tool_result_message)
-                            else:
-                                # Parsed JSON, but not the specific tool call format we looked for
-                                logger.debug(f"JSON found but not the expected tool call format: {json_string[:100]}...")
-                        except json.JSONDecodeError:
-                            # Regex matched, but it wasn't valid JSON after all?
-                            logger.debug(f"Regex matched potential JSON, but failed to parse: {json_string[:100]}...")
-                        except Exception as e:
-                             logger.error(f"Error processing potential tool call block: {e}", exc_info=True)
-                    else:
-                         logger.debug("No specific tool call JSON block found in response string.")
+            # How to start the non-interactive flow?
+            # Option A: Call a method on the App like app.run_non_interactive(input_text)
+            # Option B: Directly interact with the entry_team/entry_lead loop
+            # Let's assume an app method for better encapsulation
+            if hasattr(app, 'run_non_interactive'):
+                final_response = await app.run_non_interactive(input_text)
+                # Display final response
+                if final_response:
+                    console.print("\n[bold green]Final Response:[/bold green]")
+                    console.print(final_response)
                 else:
-                    logger.debug("Response was not a string, skipping tool call check.")
-
-                # --- Append Tool Results and Decide Next Step ---
-                if tool_calls_found_in_response:
-                    if tool_results_for_next_turn:
-                        logger.info(f"Adding {len(tool_results_for_next_turn)} tool results to conversation history.")
-                        messages.extend(tool_results_for_next_turn) # Append tool results to messages list
-                        # Loop continues automatically
-                    else:
-                         logger.warning("Tool calls were detected in response, but no results were generated/appended.")
-                         # Decide how to handle this: maybe break or log error? For now, let it continue.
-                    continue # Continue to the next turn
-                else:
-                    # No tool calls in the latest response, this is the final answer
-                    logger.info("No tool calls found in the latest response. Ending agentic loop.")
-                    final_response = response_content # Store the final response
-                    break # Exit the loop
-
-            # --- After the loop --- 
-            if turn_count >= max_turns:
-                 logger.warning(f"Agentic loop reached maximum turns ({max_turns}). Returning last response.")
-
-            # Print the final response
-            console.print("\n[bold green]Final Response:[/bold green]")
-            if isinstance(final_response, str):
-                 # Check if the final response itself contains JSON (e.g., if loop ended on error)
-                 final_json = extract_json(final_response)
-                 if final_json:
-                     json_str = json.dumps(final_json, indent=2)
-                     syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                     console.print(syntax)
-                 else:
-                     console.print(final_response)
-            elif isinstance(final_response, (dict, list)):
-                 json_str = json.dumps(final_response, indent=2)
-                 syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                 console.print(syntax)
+                    console.print("\n[bold yellow]Workflow completed, but no final response generated.[/bold yellow]")
+                return True
             else:
-                 console.print(str(final_response))
-                 
-            return True
+                logger.error("Application does not support run_non_interactive method yet.")
+                console.print("[bold red]Error: Non-interactive mode not fully implemented.[/bold red]")
+                return False
         else:
-            logger.error("No input provided for non-interactive mode")
-            console.print("[bold red]Error:[/bold red] No input provided for non-interactive mode")
+            logger.error("Input text required for non-interactive mode")
+            print("Error: Input text must be provided using --input for non-interactive mode.")
             return False
         
     except Exception as e:
-        logger.error(f"Error running application: {e}", exc_info=True)
-        console.print(f"[bold red]Error running application:[/bold red] {e}")
+        logger.error(f"Error running GLUE application: {e}", exc_info=True)
+        print(f"\n[bold red]An unexpected error occurred:[/bold red] {e}")
         return False
 
 async def run_interactive_session(app: GlueApp) -> None:
@@ -397,70 +239,144 @@ async def run_interactive_session(app: GlueApp) -> None:
     """
     logger = logging.getLogger("glue.interactive")
     console = Console()
+    console.print("Type '/help' for commands, '/quit' to exit.")
+
+    # Find the entry point team/lead
+    entry_team: Optional[Team] = None
+    entry_lead_loop: Optional[AgentLoop] = None
+    if app.teams:
+        first_team_name = next(iter(app.teams))
+        entry_team = app.teams[first_team_name]
+        if entry_team.lead:
+             lead_loop_id = f"{entry_team.name}-lead-{entry_team.lead.name}"
+             # Ensure loops are created
+             if not entry_team.loop_coordinator or not entry_team.agent_loops:
+                 logger.info("Creating agent loops before interactive session.")
+                 await entry_team.create_agent_loops()
+                 
+             if lead_loop_id in entry_team.agent_loops:
+                 entry_lead_loop = entry_team.agent_loops[lead_loop_id]
+             else:
+                 logger.error(f"Lead loop {lead_loop_id} not found after creation!")
+        else:
+            logger.error(f"Entry team '{first_team_name}' has no lead defined.")
     
-    # Assume app.setup() has already been called by run_app
-    
-    console.print(f"[bold green]Interactive session started with {app.name}. Type 'quit' or 'exit' to end.[/bold green]")
-    console.print("Enter your message below:")
+    if not entry_lead_loop:
+         console.print("[bold red]Error: Cannot start interactive session. Entry point lead model/loop not found.[/bold red]")
+         return
+
+    # --- Main Interactive Loop ---
+    is_running = False # Flag to track if a task is active
+    active_task_id = None
     
     while True:
+        prompt_message = "GLUE> "
+        current_lead_state = entry_lead_loop.get_status().get("state")
+        
+        # Check if the system is waiting for clarification (Placeholder check)
+        # A more robust way would involve specific messages or states
+        if is_running and current_lead_state == AgentState.WAITING: # Crude check
+            # Check if team lead is waiting for user input - needs better signalling
+            # For now, assume any WAITING state might need clarification if task is active
+            prompt_message = "[bold yellow]Clarification Needed> [/bold yellow] " # Change prompt
+            console.print("[yellow]The system is paused, awaiting clarification. Enter your query or type '/status' to check.[/yellow]")
+        elif is_running:
+             prompt_message = f"GLUE (Running Task {active_task_id})> "
+             # Add periodic status check/update display here?
+             # console.print(f"[dim]Lead state: {current_lead_state}[/dim]") # Example status
+             
         try:
-            user_input = await asyncio.to_thread(console.input, "> ")
-            
-            if user_input.lower() in ["quit", "exit"]:
-                console.print("[bold yellow]Exiting interactive session.[/bold yellow]")
-                break
-                
-            if not user_input:
-                continue
-                
-            logger.info(f"User input: {user_input}")
-            
-            # Run the application with the user input
-            console.print("[italic cyan]Processing...[/italic cyan]")
-            response = await app.run(user_input)
-            
-            # Format and print the response
-            console.print(f"\n[bold magenta]{app.name}:[/bold magenta]")
-            
-            if isinstance(response, str):
-                 # Check for JSON tool call using the utility function
-                 tool_call_data = extract_json(response)
-                 
-                 if tool_call_data:
-                     logger.info(f"Detected JSON in response (likely tool call): {tool_call_data}")
-                     # Pretty print the detected JSON
-                     json_str = json.dumps(tool_call_data, indent=2)
-                     syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                     console.print("[bold yellow]Detected Tool Call:[/bold yellow]")
-                     console.print(syntax)
-                     # Print the rest of the response text if any
-                     # (This assumes the JSON is the primary content if found)
-                     # A more sophisticated approach might try to print text around the JSON
-                     # For now, if JSON is found, we primarily display that.
-                 else:
-                     # If no JSON found, print the raw string response
-                     console.print(response)
-                     
-            elif isinstance(response, dict) or isinstance(response, list):
-                 # Pretty print dictionaries or lists
-                 json_str = json.dumps(response, indent=2)
-                 syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                 console.print(syntax)
-            else:
-                 # Print any other type of response as string
-                 console.print(str(response))
-
-            console.print("\nEnter your message below:")
-                
+            user_input = Prompt.ask(prompt_message)
         except KeyboardInterrupt:
-            console.print("\n[bold yellow]Interrupted. Exiting session.[/bold yellow]")
+            console.print("\nExiting...")
+            break # Exit on Ctrl+C
+        except EOFError:
+            console.print("\nExiting...")
+            break # Exit on Ctrl+D
+
+        user_input = user_input.strip()
+        if not user_input:
+            continue
+                
+        # --- Handle Commands --- 
+        if user_input.lower() == "/quit":
+            console.print("Exiting interactive session.")
+            # Terminate loops gracefully?
+            if entry_team and entry_team.loop_coordinator:
+                 await entry_team.terminate_agent_loops(reason="user_quit")
             break
-        except Exception as e:
-            logger.error(f"Error during interactive session: {e}", exc_info=True)
-            console.print(f"[bold red]An error occurred: {e}[/bold red]")
-            # Optionally, continue the loop or break
-            # continue 
+        elif user_input.lower() == "/help":
+            console.print(get_interactive_help_text()) # Assuming this helper exists
+            continue
+        elif user_input.lower().startswith("/status"):
+            # Display status of lead and agents
+            if entry_team:
+                console.print(f"[bold]Status for Team: {entry_team.name}[/bold]")
+                status = entry_team.get_agent_status() # Get all statuses
+                console.print(json.dumps(status, indent=2))
+            else:
+                console.print("[yellow]No active team to get status from.[/yellow]")
+            continue
+        elif user_input.lower().startswith("/pause"):
+             # --- User initiated pause/clarification --- 
+             if not is_running:
+                 console.print("[yellow]No task is currently running to pause.[/yellow]")
+                 continue
+                 
+             # Ensure there is text after /pause
+             if len(user_input) <= len("/pause") or not user_input[len("/pause"):].strip():
+                 console.print("[yellow]Usage: /pause <your query for clarification>[/yellow]")
+                 continue
+                 
+             query = user_input[len("/pause"):].strip()
+                  
+             console.print(f"Broadcasting pause query: {query}")
+             # Use the team's broadcast method
+             if entry_team:
+                 await entry_team.broadcast_pause_query(query)
+             else:
+                  logger.error("Cannot broadcast pause, no entry_team found.")
+             continue # Wait for system to potentially enter HOLD/WAITING
+
+        # --- Handle Regular Input (Task Submission or Clarification Response) ---
+        if is_running and current_lead_state == AgentState.WAITING:
+            # Assume this input is the clarification
+            console.print(f"Sending clarification: {user_input}")
+            # How to send this back? Needs a specific mechanism.
+            # Option: Send message to lead loop via team queue?
+            clarification_msg = {
+                 "type": "user_clarification",
+                 "content": user_input,
+                 "task_id": active_task_id
+            }
+            if entry_team:
+                 await entry_team.message_queue.put({"target_loop_id": entry_lead_loop.agent_id, "content": clarification_msg})
+                 # Assume lead loop handles this message type
+            else:
+                 logger.error("Cannot send clarification, no entry_team found.")
+            # The system should resume after lead processes clarification
+            
+        elif not is_running:
+            # Assume this is a new task submission
+            console.print(f"Starting new task with input: {user_input}")
+            is_running = True
+            active_task_id = f"interactive_{str(uuid.uuid4())[:8]}"
+            
+            # Define the initial task data for the lead
+            initial_task_data = {
+                "task_id": active_task_id,
+                "goal": user_input,
+                "adhesive": AdhesiveType.GLUE, # Default to Glue for final interactive output?
+                "metadata": {"interactive_session": True}
+            }
+            
+            # Start the lead loop in the background
+            # We don't await here, allowing the UI loop to continue
+            asyncio.create_task(entry_lead_loop.start(task_data=initial_task_data))
+            console.print(f"Task {active_task_id} started in background.")
+            
+        else: # Input while running but not waiting for clarification
+            console.print("[yellow]A task is already running. Use /pause <query> or wait for completion/clarification prompt.[/yellow]")
 
     logger.info("Interactive session ended.")
 
@@ -1517,130 +1433,128 @@ def main():
     """Main CLI entry point"""
     # Set up argument parser
     parser = argparse.ArgumentParser(
-        description="GLUE Framework CLI - GenAI Linking & Unification Engine"
+        description="GLUE Framework CLI - GenAI Linking & Unification Engine",
+        formatter_class=argparse.RawTextHelpFormatter 
     )
     
+    # --- Common Arguments --- 
+    # Ensure verbose is defined *before* subparsers
+    parser.add_argument("-v", "--verbose", action="count", default=0, 
+                          help="Increase verbosity level (-v, -vv, -vvv).")
+    
     # Create subparsers for commands
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
     
     # Run command
-    run_parser = subparsers.add_parser("run", help="Run a GLUE application")
-    run_parser.add_argument("config", help="Path to GLUE config file")
-    run_parser.add_argument("--input", "-i", help="Input text for the app")
-    run_parser.add_argument("--interactive", "-I", action="store_true", 
-                         help="Run in interactive mode")
-    run_parser.add_argument("--verbose", "-v", action="store_true",
-                         help="Enable verbose logging")
-    run_parser.add_argument("--env", "-e", help="Path to .env file")
-    
-    # New command
-    new_parser = subparsers.add_parser("new", help="Create a new GLUE project")
-    new_parser.add_argument("project", help="Project name")
-    new_parser.add_argument("--template", "-t", 
-                          choices=["basic", "research", "chat", "agent"],
-                          default="basic",
-                          help="Project template to use")
+    run_parser = subparsers.add_parser("run", help="Run a GLUE application from a config file.")
+    run_parser.add_argument("config_file", help="Path to the GLUE configuration file (.glue or .json).")
+    run_parser.add_argument("--mode", choices=['interactive', 'non-interactive'], default='non-interactive', 
+                            help="Execution mode (default: non-interactive)." )
+    run_parser.add_argument("--input", help="Initial input text for non-interactive mode.")
+    # Add verbose argument redundantly to run subparser as a workaround
+    run_parser.add_argument("-v", "--verbose", action="count", default=0, 
+                            help="Increase verbosity level (defined globally too)." )
     
     # Forge command (for creating custom components)
-    forge_parser = subparsers.add_parser("forge", help="Create custom components with AI assistance")
-    forge_subparsers = forge_parser.add_subparsers(dest="forge_type", help="Type of component to forge")
+    forge_parser = subparsers.add_parser("forge", help="Create new GLUE components (tools, models, etc.).")
+    forge_parser.add_argument("component_type", choices=['tool', 'mcp', 'api'], help="Type of component to forge.")
+    forge_parser.add_argument("name", help="Name of the component to forge.")
+    forge_parser.add_argument("-d", "--description", default="", help="Description for the component.")
     
-    # Forge tool
-    forge_tool_parser = forge_subparsers.add_parser("tool", help="Create a custom tool")
-    forge_tool_parser.add_argument("name", help="Tool name")
-    forge_tool_parser.add_argument("--description", "-d", required=True, help="Tool description")
-    forge_tool_parser.add_argument("--template", "-t", 
-                                choices=["basic", "api", "data"],
-                                default="basic",
-                                help="Tool template to use")
-    
-    # Forge MCP
-    forge_mcp_parser = forge_subparsers.add_parser("mcp", help="Create a custom MCP integration")
-    forge_mcp_parser.add_argument("name", help="MCP name")
-    forge_mcp_parser.add_argument("--description", "-d", required=True, help="MCP description")
-    
-    # Forge API
-    forge_api_parser = forge_subparsers.add_parser("api", help="Create a custom API integration")
-    forge_api_parser.add_argument("name", help="API name")
-    forge_api_parser.add_argument("--description", "-d", required=True, help="API description")
-    
-    # List tools command
-    subparsers.add_parser("list-tools", help="List available tools")
-    
-    # List models command
-    subparsers.add_parser("list-models", help="List available models")
+    # Init command
+    init_parser = subparsers.add_parser("init", help="Initialize a new GLUE project in the current directory.")
+    init_parser.add_argument("project_name", nargs="?", default=os.path.basename(os.getcwd()), 
+                             help="Name for the new project (default: current directory name).")
+    init_parser.add_argument("--template", default="basic", help="Project template to use (default: basic).")
     
     # Validate command
-    validate_parser = subparsers.add_parser("validate", help="Validate a GLUE file")
-    validate_parser.add_argument("file", help="Path to GLUE file to validate")
+    validate_parser = subparsers.add_parser("validate", help="Validate a GLUE configuration file.")
+    validate_parser.add_argument("config_file", help="Path to the GLUE configuration file to validate.")
+    
+    # List command
+    list_parser = subparsers.add_parser("list", help="List available components.")
+    list_parser.add_argument("component", choices=['models', 'tools'], help="Component type to list.")
     
     # Version command
-    subparsers.add_parser("version", help="Show GLUE version")
+    subparsers.add_parser("version", help="Show GLUE framework version.")
     
-    # Parse arguments
     args = parser.parse_args()
     
     # Set up logging
-    log_level = logging.DEBUG if getattr(args, 'verbose', False) else logging.INFO
-    logger = setup_logging(log_level)
+    log_level = logging.WARNING
+    if args.verbose == 1:
+        log_level = logging.INFO
+    elif args.verbose >= 2:
+        log_level = logging.DEBUG
+    setup_logging(log_level)
+    logger = logging.getLogger("glue.cli")
+    
+    logger.debug(f"CLI arguments received: {args}")
     
     # Process commands
+    exit_code = 0
     try:
         if args.command == "run":
-            # Load environment variables if specified
-            if args.env:
-                from dotenv import load_dotenv
-                load_dotenv(args.env)
-            elif os.path.exists(DEFAULT_ENV_FILE):
-                # Load default .env file if it exists
-                from dotenv import load_dotenv
-                load_dotenv(DEFAULT_ENV_FILE)
+            if not args.config_file:
+                parser.error("The 'run' command requires a configuration file path.")
+            if args.mode == 'non-interactive' and not args.input:
+                parser.error("The 'run' command in non-interactive mode requires --input text.")
             
-            # Run the application
-            asyncio.run(run_app(args.config, args.interactive, args.input))
-            
-        elif args.command == "new":
-            create_new_project(args.project, args.template)
+            success = asyncio.run(run_app(args.config_file, mode=args.mode, input_text=args.input))
+            exit_code = 0 if success else 1
             
         elif args.command == "forge":
-            if not args.forge_type:
-                # Run interactive forge command if no subcommand is specified
-                run_forge_command()
-            elif args.forge_type == "tool":
-                import re  # Import here to avoid unnecessary import
-                forge_tool(args.name, args.description, args.template)
-            elif args.forge_type == "mcp":
-                import re  # Import here to avoid unnecessary import
+            # Placeholder for forge logic
+            print(f"Forging {args.component_type}: {args.name}")
+            if args.component_type == 'tool':
+                forge_tool(args.name, args.description)
+            elif args.component_type == 'mcp':
                 forge_mcp(args.name, args.description)
-            elif args.forge_type == "api":
-                import re  # Import here to avoid unnecessary import
+            elif args.component_type == 'api':
                 forge_api(args.name, args.description)
             else:
-                forge_parser.print_help()
-            
-        elif args.command == "list-tools":
-            display_tools()
-            
-        elif args.command == "list-models":
-            list_models()
+                print("Unknown component type to forge.")
+                exit_code = 1
+                
+        elif args.command == "init":
+            create_new_project(args.project_name, args.template)
             
         elif args.command == "validate":
-            validate_glue_file(args.file)
+            if not args.config_file:
+                parser.error("The 'validate' command requires a configuration file path.")
+            if validate_glue_file(args.config_file):
+                print(f"[green]Validation successful: {args.config_file}[/green]")
+            else:
+                print(f"[red]Validation failed for: {args.config_file}[/red]")
+                exit_code = 1
+                
+        elif args.command == "list":
+            if args.component == "models":
+                list_models()
+            elif args.component == "tools":
+                display_tools()
+            else:
+                parser.error("Invalid component type for list command.")
             
         elif args.command == "version":
-            print(f"GLUE Framework version {__version__}")
+            print(f"GLUE Framework Version: {__version__}")
+            
+        elif args.config_file: # Default action if config file is provided without command
+            # Default to running in non-interactive mode if input is provided, else interactive?
+            # Let's require explicit 'run' command for clarity.
+            print("Please use the 'run' command to execute a configuration file.")
+            parser.print_help()
+            exit_code = 1
             
         else:
-            # If no command or unrecognized command, show help
             parser.print_help()
             
-    except KeyboardInterrupt:
-        print("\nOperation cancelled by user")
-        sys.exit(0)
     except Exception as e:
-        logger.error(f"Error executing command: {str(e)}", exc_info=True)
-        print(f"Error: {str(e)}")
-        sys.exit(1)
+        logger.error(f"An error occurred during command execution: {e}", exc_info=True)
+        print(f"\n[bold red]An unexpected error occurred:[/bold red] {e}")
+        exit_code = 1
+        
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()
