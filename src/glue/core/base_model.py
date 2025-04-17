@@ -15,6 +15,7 @@ import asyncio
 from enum import Enum
 
 from .types import Message, ToolResult, AdhesiveType
+from .few_shot_tool_calling import add_few_shot_examples
 
 # Set up logging
 logger = logging.getLogger("glue.core.base_model")
@@ -673,6 +674,13 @@ To use the available tools:
                         else:
                             msg.content += "\n\n" + tool_description
                         break
+        
+        # Add few-shot examples for tool calls if enabled
+        few_shot_enabled = self.config.get('few_shot_tool_calling', {}).get('enabled', False)
+        if few_shot_enabled and tools:
+            few_shot_config = self.config.get('few_shot_tool_calling', {})
+            formatted_messages = add_few_shot_examples(formatted_messages, tools, few_shot_config)
+            logger.info(f"Added few-shot examples for {len(tools)} tools using {few_shot_config}")
         
         return formatted_messages
     
