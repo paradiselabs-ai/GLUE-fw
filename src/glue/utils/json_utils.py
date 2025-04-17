@@ -1,98 +1,80 @@
 import re
 import json
 from typing import Optional, Dict, Any
-import logging
 
-# Configure logging for the utility
-logger = logging.getLogger(__name__)
-
-# Regex specifically for fenced JSON blocks (```json ... ``` or ``` ... ```)
-# Prioritizes these as they are more likely the intended tool call output
-FENCED_JSON_REGEX = re.compile(r"```(?:json)?\s*(\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\})\s*```", re.DOTALL)
-
-# Regex for potentially bare JSON object (less prioritized)
-# Improved to handle basic nesting
-BARE_JSON_REGEX = re.compile(r"(\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\})", re.DOTALL)
+# Improved regex to find JSON block
+# This handles basic nested structures better with a non-greedy approach
+# It matches from the first opening brace to the last closing brace
+JSON_EXTRACT_REGEX = re.compile(
+    r"```(?:json)?\s*(\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\})\s*```|(\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\})", 
+    re.DOTALL
+)
 
 def extract_json(text: str) -> Optional[Dict[str, Any]]:
     """
     Extracts a JSON object (dictionary) from a string.
-    Prioritizes JSON fenced with ```json ... ``` or ``` ... ```.
-    If no valid fenced JSON is found, it looks for the largest valid bare JSON object.
-    Returns only dictionaries, ignores lists or primitives.
-
+    Handles JSON provided either as a bare object {...} or fenced
+    with ```json ... ``` or ``` ... ```.
+    Has improved handling of nested JSON structures.
+    
     Args:
         text: The string possibly containing a JSON object.
-
+    
     Returns:
         The extracted dictionary if valid JSON is found, otherwise None.
     """
-    if not isinstance(text, str) or not text:
-        logger.debug("extract_json received non-string or empty input.")
+    if not text:
         return None
-
-    logger.debug(f"Attempting to extract JSON from text: {text[:500]}...")
-
-    # 1. Prioritize fenced JSON blocks
-    fenced_matches = FENCED_JSON_REGEX.findall(text)
-    if fenced_matches:
-        logger.debug(f"Found {len(fenced_matches)} potential fenced JSON blocks.")
-        for match_str in reversed(fenced_matches):
-            try:
-                # Clean potential leading/trailing whitespace within the captured string
-                json_str_cleaned = match_str.strip()
-                data = json.loads(json_str_cleaned)
-                if isinstance(data, dict):
-                    logger.debug(f"Successfully parsed fenced JSON: {data}")
-                    return data
-                else:
-                    logger.debug(f"Fenced block parsed, but was not a dict: {type(data)}")
-            except json.JSONDecodeError as e:
-                logger.debug(f"Failed to parse potential fenced JSON block: {e}. Content: {match_str[:100]}...")
-        logger.debug("None of the fenced blocks yielded a valid JSON dictionary.")
-
-    # 2. If no valid fenced JSON found, look for bare JSON objects
-    # Find all potential bare JSON objects
-    bare_matches = BARE_JSON_REGEX.findall(text)
-    if bare_matches:
-        logger.debug(f"Found {len(bare_matches)} potential bare JSON objects. Will try parsing the longest first.")
-        # Sort by length descending - largest valid JSON is often the intended one
-        bare_matches.sort(key=len, reverse=True)
-        for match_str in bare_matches:
-            try:
-                json_str_cleaned = match_str.strip()
-                # Basic sanity check for balanced braces before attempting full parse
-                if json_str_cleaned.count('{') != json_str_cleaned.count('}'):
-                    logger.debug(f"Skipping bare match due to unbalanced braces: {json_str_cleaned[:100]}...")
+        
+    # First try the improved regex for better nested structure handling
+    match = JSON_EXTRACT_REGEX.search(text)
+    if not match:
+        # As a fallback for complex cases, try a simple approach:
+        # Find the first { and then try to parse progressively larger substrings
+        start_idx = text.find('{')
+        if start_idx >= 0:
+            for end_idx in range(len(text), start_idx, -1):
+                try:
+                    substr = text[start_idx:end_idx]
+                    if substr.count('{') != substr.count('}'):
+                        continue  # Skip unbalanced braces
+                    data = json.loads(substr)
+                    if isinstance(data, dict):
+                        return data
+                except json.JSONDecodeError:
                     continue
-                data = json.loads(json_str_cleaned)
-                if isinstance(data, dict):
-                    logger.debug(f"Successfully parsed bare JSON: {data}")
-                    return data
-                else:
-                    logger.debug(f"Bare JSON parsed, but was not a dict: {type(data)}")
-            except json.JSONDecodeError as e:
-                logger.debug(f"Failed to parse potential bare JSON: {e}. Content: {match_str[:100]}...")
-        logger.debug("None of the bare JSON matches yielded a valid dictionary.")
-
-    # 3. Fallback: Simple first '{' to last '}' - less reliable
-    # This is kept as a last resort but is less likely to be correct with messy input
+        return None
+        
+    # The regex has two capturing groups: one for fenced JSON, one for bare.
+    # Extract the content from whichever group matched.
+    json_str = match.group(1) or match.group(2)
+    if not json_str:
+        return None
+        
     try:
-        first_brace = text.find('{')
-        last_brace = text.rfind('}')
-        if 0 <= first_brace < last_brace:
-            potential_json = text[first_brace : last_brace + 1]
-            logger.debug(f"Fallback: trying first {{ to last }}: {potential_json[:100]}...")
-            data = json.loads(potential_json)
-            if isinstance(data, dict):
-                 logger.debug(f"Successfully parsed fallback JSON: {data}")
-                 return data
+        # Clean potential leading/trailing whitespace within the captured string
+        json_str_cleaned = json_str.strip()
+        data = json.loads(json_str_cleaned)
+        if isinstance(data, dict):
+            return data
+        else:
+            # Ensure we only return dictionaries, not lists or primitives
+            return None
     except json.JSONDecodeError:
-        logger.debug("Fallback first/last brace parsing failed.")
-        pass # Ignore if this fails
-
-    logger.debug("Could not extract any valid JSON dictionary from the text.")
-    return None
+        # If regex match failed to provide valid JSON, try the fallback approach
+        start_idx = text.find('{')
+        if start_idx >= 0:
+            for end_idx in range(len(text), start_idx, -1):
+                try:
+                    substr = text[start_idx:end_idx]
+                    if substr.count('{') != substr.count('}'):
+                        continue  # Skip unbalanced braces
+                    data = json.loads(substr)
+                    if isinstance(data, dict):
+                        return data
+                except json.JSONDecodeError:
+                    continue
+        return None
 
 # Example usage (for testing/demonstration)
 if __name__ == '__main__':

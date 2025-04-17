@@ -522,38 +522,38 @@ class BaseModel:
                 else:
                     prompt_parts.append("You are the only member of this group.")
         
-        # Add response guidelines
-        prompt_parts.append("""
-## Response Guidelines
-1. **Role Focus:** Stay focused on your assigned role and the current task.
-2. **Goal Adherence:** After using tools or communicating with collaborators, always review the original request and ensure your final response directly addresses the primary objective.
-3. **Tool Awareness:** Consider how tool results are shared (e.g., via 'glue') or persisted (e.g., via 'velcro') when choosing tools.
-4. **Collaboration:** Collaborate effectively with your team members.
-5. **Communication:** Follow established communication patterns when interacting with others.
-6. **Tone:** Maintain a professional and helpful tone.
-""")
-
-        # Add tool result behavior descriptions if applicable
+        # Add tool result behavior descriptions
         adhesives = getattr(self, 'adhesives', set())
         if adhesives:
             prompt_parts.append("\n## Tool Result Behavior")
             behavior_descriptions = []
             
             if AdhesiveType.GLUE in adhesives:
-                behavior_descriptions.append("**Shared Results (Glue Adhesive):** Some tool results are automatically shared and persisted within your group.")
+                behavior_descriptions.append("**Shared Results**: Some tool results are automatically shared and persisted within your group.")
             if AdhesiveType.VELCRO in adhesives:
-                behavior_descriptions.append("**Private Results (Velcro Adhesive):** Some tool results are kept private to you and persist only for the current session.")
+                behavior_descriptions.append("**Private Results**: Some tool results are kept private to you and persist only for the current session.")
             
             if behavior_descriptions:
                  prompt_parts.append("\n".join(behavior_descriptions))
+
+        # Add response guidelines
+        prompt_parts.append("""
+## Response Guidelines
+1. Stay focused on your role and the current task.
+2. **Goal Adherence:** After using tools or communicating with collaborators, always review the original request and ensure your final response directly addresses the primary objective.
+3. Consider how tool results are shared or persisted when choosing tools.
+4. Collaborate effectively with your collaborators.
+5. Follow established communication patterns.
+6. Maintain a professional and helpful tone.
+""")
 
         # Add generic tool usage instructions
         prompt_parts.append("""
 ## Tool Usage Instructions
 To use the available tools:
-- If your model provider supports **native tool calling** (e.g., function calling), use that method. Provide all required parameters as specified in the tool description.
-- If your model provider requires a **specific format** (e.g., a JSON object) for tool calls, you will receive explicit instructions. **Follow those instructions *exactly* if provided.**
-- Always refer to the \"Available Tools\" section (added when tools are available) for names, descriptions, and parameters.
+- If you support native tool calling (e.g., function calling), use that method. Provide all required parameters as specified in the tool description.
+- In some situations, you might be instructed to use a specific format (e.g., a JSON object or a specific code block) to trigger a tool call. Follow those instructions precisely if provided.
+- Always refer to the "Available Tools" section (added when tools are available) for names, descriptions, and parameters.
 """)
 
         # Join all parts

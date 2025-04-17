@@ -157,33 +157,22 @@ class OpenrouterProvider:
                 break
         
         # Create the tool simulation instructions
-        tool_simulation_instructions = "\n\n---\n\n"
-        tool_simulation_instructions += "\n**CRITICAL INSTRUCTION: TOOL EXECUTION FORMAT**\n\n"
-        tool_simulation_instructions += "This model interface does not support native tool calls.\n"
-        tool_simulation_instructions += "**TO EXECUTE A TOOL, YOU MUST RESPOND *ONLY* WITH A VALID JSON OBJECT AND NOTHING ELSE.**\n\n"
-        
-        tool_simulation_instructions += "\n**JSON Structure:**\n"
+        tool_simulation_instructions = "\n\n## ACTION REQUIRED: TOOL USE VIA JSON\n"
+        tool_simulation_instructions += "This model interface does not support native tool calls. **Your ability to use tools depends entirely on following the specific format below.**\n\n"
+        tool_simulation_instructions += "To execute a tool, you **MUST** respond with **ONLY** a single valid JSON object formatted **EXACTLY** like this:\n\n"
         tool_simulation_instructions += "```json\n"
         tool_simulation_instructions += "{\n"
         tool_simulation_instructions += '  "tool_name": "<name_of_tool>",\n'
         tool_simulation_instructions += '  "arguments": { <parameters_object> }\n'
         tool_simulation_instructions += "}\n"
         tool_simulation_instructions += "```\n\n"
-        
-        tool_simulation_instructions += "\n**Instructions:**\n"
-        tool_simulation_instructions += "1. Replace `<name_of_tool>` with the exact name of the tool from the 'Available Tools' list below.\n"
-        tool_simulation_instructions += "2. Replace `<parameters_object>` with a valid JSON object containing the arguments for the tool (e.g., `{\"query\": \"What is GLUE framework?\"}`).\n\n"
-        
-        tool_simulation_instructions += "\n**ABSOLUTE REQUIREMENTS - FAILURE TO FOLLOW MEANS TOOL CALL WILL FAIL:**\n"
-        tool_simulation_instructions += "- **Your entire response MUST be ONLY the JSON object.**\n"
-        tool_simulation_instructions += "- **DO NOT include any text before the opening `{`.** The first character MUST be `{`.\n"
-        tool_simulation_instructions += "- **DO NOT include any text after the closing `}`.** The last character MUST be `}`.\n"
-        tool_simulation_instructions += "- **DO NOT use markdown code blocks (```json ... ```) around the JSON output.** Output the raw JSON string directly.\n"
-        tool_simulation_instructions += "- **DO NOT add explanations, introductions, or any other text.** Just the JSON.\n\n"
-        
-        tool_simulation_instructions += "\n**Failure to adhere strictly to this format will result in the tool call being ignored.**\n\n"
-        tool_simulation_instructions += "---\n\n"
-        
+        tool_simulation_instructions += "Replace `<name_of_tool>` with the exact name of the tool you want to execute from the list below.\n"
+        tool_simulation_instructions += "Replace `<parameters_object>` with a valid JSON object containing the arguments for the tool (e.g., `{\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello!\"}`).\n\n"
+        tool_simulation_instructions += "**CRITICAL REQUIREMENT:** Your response **MUST** start *immediately* with the opening curly brace `{` of the JSON object. The very first character of your output must be `{`.\n"
+        tool_simulation_instructions += "- End your response immediately with the closing curly brace `}`.\n"
+        tool_simulation_instructions += "- No other text, explanation, or formatting before or after the JSON is permitted.\n"
+        tool_simulation_instructions += "- Failure to start with `{` means the tool call will **fail**.\n"
+
         tool_simulation_instructions += "Available tools:\n"
         for tool in tools:
             tool_name = tool.get('name', 'unknown_tool')

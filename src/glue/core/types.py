@@ -2,7 +2,7 @@
 # ==================== Imports ====================
 from enum import Enum
 from typing import Dict, List, Set, Any, Optional
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime
 
 # ==================== Constants ====================
@@ -23,51 +23,7 @@ class FlowType(str, Enum):
     PULL = "<-"          # Target pulls from source
     REPEL = "<>"         # No interaction allowed
 
-class MessageType(str, Enum):
-    """Types of messages exchanged within the GLUE system"""
-    # Core types
-    TOOL_RESULT = "tool_result"         # Result from a tool execution
-    AGENT_FEEDBACK = "agent_feedback"     # Feedback from agent to lead (e.g., task status)
-    DIRECT_MESSAGE = "direct_message"     # Direct message between agents/models
-    GLUE_DATA_SHARE = "glue_data_share"   # Sharing a persisted KB entry
-    # Interactive mode types
-    PAUSE_QUERY = "pause_query"           # Broadcast query indicating a pause/need for refinement
-    REFINEMENT_PROPOSAL = "refinement_proposal" # Proposal during lead collaboration
-    REFINEMENT_ACK = "refinement_ack"       # Acknowledgement during lead collaboration
-    RESUME_TASK = "resume_task"           # Instruction to resume agent task after refinement
-
 # ==================== Class Definitions ====================
-
-@dataclass
-class V1MessagePayload:
-    """Standard V1 payload structure for inter-agent/team communication"""
-    task_id: str
-    sender_agent_id: str
-    sender_team_id: str
-    timestamp: str  # ISO 8601 format string
-    message_type: MessageType
-    adhesive_type: AdhesiveType
-    content: Any
-    origin_tool_id: Optional[str] = None
-    schema_version: str = "1.0.0"
-    # Optional/Recommended fields for future use can be added here later
-    # verification_status: Optional[str] = None
-    # intended_recipients: Optional[List[str]] = None
-    # priority: Optional[int] = None
-    # requires_response: bool = False
-    # correlation_id: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Converts the payload instance to a dictionary suitable for transmission,
-        ensuring enums are converted to their string values."""
-        payload_dict = asdict(self)
-        # Ensure enums are strings
-        if isinstance(self.message_type, MessageType):
-            payload_dict['message_type'] = self.message_type.value
-        if isinstance(self.adhesive_type, AdhesiveType):
-            payload_dict['adhesive_type'] = self.adhesive_type.value
-        return payload_dict
-
 @dataclass
 class ToolResult:
     """Result from a tool execution"""

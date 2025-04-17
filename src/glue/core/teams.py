@@ -1,19 +1,16 @@
 # glue/core/team.py
 # ==================== Imports ====================
-from typing import Dict, Set, Any, Optional, List, Union, TYPE_CHECKING
+from typing import Dict, Set, Any, Optional, List, Union
 from datetime import datetime
 import asyncio
 import logging
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 import uuid
 import json
-from dataclasses import dataclass, field, asdict
-import os
 
-from .types import AdhesiveType, TeamConfig, ToolResult, FlowType, Message, V1MessagePayload, MessageType # Added V1MessagePayload, MessageType
+from .types import AdhesiveType, TeamConfig, ToolResult, FlowType
 from .schemas import Message, ToolCall
 from ..utils.json_utils import extract_json
-from ..persistence.knowledge_base import KnowledgeBase
 
 # Import Flow class conditionally to avoid circular imports
 try:
@@ -22,12 +19,10 @@ except ImportError:
     Flow = Any  # Type hint for Flow
 
 from .model import Model
-# Import all required classes from agent_loop unconditionally for runtime use
 from .agent_loop import AgentLoop, TeamLoopCoordinator, AgentState
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
-KB_BASE_PATH = os.environ.get("GLUE_KB_PATH", "./glue_kb_data") # Configurable KB path
 
 # Parameter normalization mappings
 # Maps common alternative parameter names to their expected parameter names
@@ -53,45 +48,31 @@ TOOL_PARAM_MAPPINGS = {
     # Add mappings for other tools as needed
 }
 
-# ==================== Helper Classes ====================
-@dataclass
-class Agent:
-    """Represents an agent within a team."""
-    name: str
-    model: Model  # The underlying model instance for this agent
-    role: str
-    default_adhesives: Set[AdhesiveType] = field(default_factory=lambda: {AdhesiveType.GLUE}) # Default to Glue
-    agent_loop: Optional['AgentLoop'] = None # Use string forward reference
-    velcro_memory: Dict[str, Any] = field(default_factory=dict) # For Velcro adhesive results
-
 # ==================== Class Definition ====================
 class Team:
     """
     Team implementation for GLUE framework.
     Manages model collaboration, tool sharing, and result persistence.
-    Now uses explicit TeamLead and Agent roles.
     """
     def __init__(
         self,
         name: str,
-        mode: str = "non-interactive", # Added mode parameter
         config: Optional[TeamConfig] = None,
-        # DEPRECATED: lead and members args are for backward compatibility only
-        lead_model_instance: Optional[Model] = None,
-        member_model_instances: Optional[List[Model]] = None
+        # For backward compatibility with tests
+        lead: Optional[Model] = None,
+        members: Optional[List[Model]] = None
     ):
         self.name = name
-        self.mode = mode # Store mode
         self.config = config or TeamConfig(name=name, lead="", members=[], tools=[])
         
         # Core components
-        self.lead: Optional[Model] = None  # The Model instance acting as the lead orchestrator
-        self.agents: Dict[str, Agent] = {} # Dictionary of Agent instances keyed by name
+        self.models: Dict[str, Model] = {}
+        self.lead: Optional[Model] = None
         self._tools: Dict[str, Any] = {}
+        # self.tool_bindings: Dict[str, AdhesiveType] = {}
         
         # State management
-        self.shared_results: Dict[str, ToolResult] = {} # Corresponds to 'Glue' KB conceptually
-        self.knowledge_base = KnowledgeBase(base_path=KB_BASE_PATH, team_id=self.name) # Initialize KB
+        self.shared_results: Dict[str, ToolResult] = {}
         self.conversation_history: List[Message] = []
         self.relationships: Dict[str, str] = {}  # Team magnetic relationships
         self.repelled_by: Set[str] = set()      # Teams that repel this one
@@ -103,39 +84,34 @@ class Team:
         self.processing_task = None
         self.pending_broadcasts: Dict[str, asyncio.Future] = {} # For tracking broadcast responses
         self.response_handlers = {}
-        self.running = False # Initialize running flag
 
-        # Agent loop management (will need refactoring)
-        self.agent_loops: Dict[str, AgentLoop] = {} # Might change: loops could be within Agent/Lead directly
+        # Agent loop management
+        self.agent_loops: Dict[str, AgentLoop] = {}
         self.loop_coordinator: Optional[TeamLoopCoordinator] = None
         
         # Metadata
         self.created_at = datetime.now()
         self.updated_at = datetime.now()
         
-        # Handle backward compatibility with tests using DEPRECATED args
-        if lead_model_instance is not None:
-            # Assume the lead model instance is the lead
-            self.set_lead(lead_model_instance)
-            # Add other members as agents with default roles/adhesives
-            if member_model_instances:
-                for member_model in member_model_instances:
-                    if member_model.name != lead_model_instance.name: # Avoid adding lead twice
-                        default_agent = Agent(
-                            name=member_model.name,
-                            model=member_model,
-                            role="member" # Default role
-                        )
-                        self.add_agent(default_agent)
+        # Handle backward compatibility with tests
+        if lead is not None:
+            self.add_member_sync(lead, role="lead")
+            
+        if members is not None:
+            for member in members:
+                self.add_member_sync(member)
 
-        self.logger = logging.getLogger(f"glue.team.{self.name}") # Logger init
-        self.logger.info(f"Initializing team '{self.name}' in '{self.mode}' mode.") # Log mode
-
-    # Property for test compatibility (points to lead model)
+    # Property for test compatibility
     @property
     def model(self):
         """Get the lead model for test compatibility."""
-        return self.lead # Directly return the lead model instance
+        lead_name = self.config.lead
+        if lead_name and lead_name in self.models:
+            return self.models[lead_name]
+        # Return the first model if no lead is set
+        if self.models:
+            return next(iter(self.models.values()))
+        return None
         
     # Override the tools property to return a list for test compatibility
     @property
@@ -172,80 +148,68 @@ class Team:
         return len(self._tools)
 
     # ==================== Properties ====================
-    # Note: Duplicate @property tools removed, keeping the one with list conversion for tests
+    @property
+    def tools(self) -> List[Any]:
+        """Get all tools available to this team.
+        
+        Returns:
+            List of tools
+        """
+        # For test compatibility, we need to match the exact objects stored in app.tools
+        # This is a bit of a hack, but it's necessary for the tests to pass
+        return list(self._tools.values())
 
     # ==================== Core Methods ====================
-    def set_lead(self, lead_model: Model) -> None:
-        """Set the lead model for the team."""
-        if self.lead and self.lead.name != lead_model.name:
-            logger.warning(f"Replacing existing lead {self.lead.name} with {lead_model.name} in team {self.name}")
-        
-        self.lead = lead_model
-        self.lead.team = self # Ensure team reference is set
-        self.lead.role = "lead" # Assign lead role explicitly
-        self.config.lead = lead_model.name # Update config name
-        
-        # Ensure lead model has all team tools
-        self._register_tools_for_model(self.lead)
-        
-        self.updated_at = datetime.now()
-        logger.info(f"Set model {lead_model.name} as lead for team {self.name}")
-
-    def add_agent(self, agent: Agent) -> None:
-        """Add an agent instance to the team."""
-        if agent.name in self.agents:
-            logger.warning(f"Agent {agent.name} already in team {self.name}. Replacing.")
-        
-        self.agents[agent.name] = agent
-        agent.model.team = self # Set team reference on the agent's model
-        
-        # Ensure agent's model has all team tools
-        self._register_tools_for_model(agent.model)
-            
-        # Update config member list (if not already present)
-        if agent.name not in self.config.members:
-            self.config.members.append(agent.name)
-            
-        self.updated_at = datetime.now()
-        logger.info(f"Added agent {agent.name} (Role: {agent.role}) to team {self.name}")
-
-    def _register_tools_for_model(self, model_instance: Model):
-        """Helper to register all current team tools for a given model instance."""
-        if not hasattr(model_instance, 'add_tool_sync') or not callable(model_instance.add_tool_sync):
-            logger.warning(f"Model {model_instance.name} missing add_tool_sync method.")
-            return
-            
-        for tool_name, tool in self._tools.items():
-            # Check if tool exists to prevent errors if add_tool_sync doesn't handle duplicates
-            if tool_name not in model_instance.tools: 
-                try:
-                    model_instance.add_tool_sync(tool_name, tool)
-                except Exception as e:
-                     logger.error(f"Error adding tool {tool_name} to model {model_instance.name}: {e}")
-
-    # DEPRECATED: Use set_lead and add_agent instead
     async def add_member(
         self,
         model: Model,
         role: str = "member",
-        tools: Optional[Set[str]] = None # Tools arg seems less relevant now with dynamic init plan
+        tools: Optional[Set[str]] = None
     ) -> None:
-        """DEPRECATED: Add a model to the team. Use set_lead or add_agent."""
-        logger.warning("add_member is deprecated. Use set_lead or add_agent.")
+        """Add a model to the team"""
+        if model.name in self.models:
+            logger.warning(f"Model {model.name} already in team {self.name}")
+            return
+            
+        # Add model
+        self.models[model.name] = model
+        model.team = self  # Set team reference
+        
+        # Set up tools - use add_tool_sync to avoid async issues
+        # Add all team tools to the model
+        for tool_name, tool in self._tools.items():
+            if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
+                model.add_tool_sync(tool_name, tool)
+            
+        # Add specific tools if provided
+        if tools:
+            for tool_name in tools:
+                if tool_name in self._tools and tool_name not in model.tools:
+                    if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
+                        model.add_tool_sync(tool_name, self._tools[tool_name])
+                    
+        # Update config
         if role == "lead":
-            self.set_lead(model)
+            self.config.lead = model.name
+            self.lead = model
         else:
-            # Create a default Agent wrapper
-            agent = Agent(name=model.name, model=model, role=role)
-            self.add_agent(agent)
-            # Note: Specific tools for member ignored, relies on team tools now
+            if model.name not in self.config.members:
+                self.config.members.append(model.name)
+                
+        self.updated_at = datetime.now()
+        logger.info(f"Added model {model.name} to team {self.name} with role {role}")
 
     async def add_tool(self, name: str, tool: Any) -> None:
-        """Add a tool to this team's toolbox."""
-        # Add tool to team's internal registry
+        """Add a tool to this team.
+        
+        Args:
+            name: Tool name
+            tool: Tool instance
+        """
+        # Add tool to team
         self._tools[name] = tool
         
-        # Initialize the tool if needed (keep existing logic)
+        # Initialize the tool if it's not already initialized
         if hasattr(tool, "initialize") and callable(tool.initialize) and hasattr(tool, "_initialized"):
             if not tool._initialized:
                 try:
@@ -254,73 +218,47 @@ class Team:
                 except Exception as e:
                     logger.warning(f"Failed to initialize tool {name}: {e}")
         
-        # Register tool for the lead model
-        if self.lead:
-            self._register_tools_for_model(self.lead)
-            
-        # Register tool for all agent models
-        for agent in self.agents.values():
-            self._register_tools_for_model(agent.model)
+        # Add tool to all models in the team
+        for model in self.models.values():
+            # Use await here since model.add_tool is async
+            await model.add_tool(name, tool)
         
-        # Update config tool list (if not already present)
-        if name not in self.config.tools:
-             self.config.tools.append(name) # Assuming tools are stored by name in config
-
-        logger.info(f"Added tool {name} to team {self.name} toolbox and registered for lead/agents")
-        self.updated_at = datetime.now()
+        logger.info(f"Added tool {name} to team {self.name}")
 
     async def share_result(
         self,
         tool_name: str,
         result: ToolResult,
-        agent_name: Optional[str] = None # Changed from model_name to agent_name
+        model_name: Optional[str] = None
     ) -> None:
-        """Share a tool result within the team based on adhesive.
-        Needs integration with adhesive logic implementation.
-        """
-        # Determine adhesive (using result.adhesive which should be set by AgentLoop)
-        adhesive = result.adhesive
+        """Share a tool result with the team
         
-        if adhesive is None:
-             logger.warning(f"Adhesive type missing in ToolResult for tool {tool_name}. Cannot process sharing.")
-             return
+        Args:
+            tool_name: Name of the tool that generated the result
+            result: The tool result to share
+            model_name: Optional name of the model that used the tool
+        """
+        # If a specific model is provided, use its adhesives
+        if model_name and model_name in self.models:
+            model = self.models[model_name]
+            if hasattr(model, 'adhesives') and model.adhesives:
+                # Use the first adhesive defined in the model
+                adhesive = next(iter(model.adhesives))
+                result.adhesive = adhesive
+                logger.debug(f"Using adhesive {adhesive} from model {model_name}")
         
         # Process based on adhesive type
-        if adhesive == AdhesiveType.GLUE:
-            # Persist to shared KB via KnowledgeBase instance
-            # Package the data appropriately
-            # TODO: Add verification_status based on result.metadata
-            verification_status = result.metadata.get("verification_status", "unverified")
-            entry_data = {
-                # Add a unique ID for the KB entry itself
-                "id": str(uuid.uuid4()),
-                "tool_name": tool_name,
-                # Serialize the actual result content if it's complex
-                "result_content": result.result,
-                "error": result.error, # Include error if tool failed
-                "source_agent_or_lead": agent_name,
-                "team_id": self.name,
-                "result_timestamp": result.timestamp.isoformat(),
-                "verification_status": verification_status, # Add status
-                # Include other relevant metadata from ToolResult if needed
-                "metadata": result.metadata
-            }
-            
-            entry_id = self.knowledge_base.add_entry(entry_data)
-            if entry_id:
-                logger.info(f"Stored GLUE result {entry_id} (Status: {verification_status}) from tool {tool_name} in KB for team {self.name}")
-                # Optionally, still keep in self.shared_results for quick access?
-                # self.shared_results[entry_id] = result
-        elif adhesive == AdhesiveType.VELCRO:
-             # Logic handled in AgentLoop._execute_tool_action
-             logger.debug(f"share_result called with VELCRO for tool {tool_name}, handling is done in AgentLoop.")
-             pass
-        elif adhesive == AdhesiveType.TAPE:
-            # Logic handled in AgentLoop (effectively ignored after use)
-            logger.debug(f"share_result called with TAPE for tool {tool_name}, handling is done in AgentLoop.")
-            pass # Add pass to make the block valid
-        
-        self.updated_at = datetime.now()
+        if result.adhesive == AdhesiveType.GLUE:
+            # GLUE: Team-wide persistent results
+            self.shared_results[tool_name] = result
+            logger.info(f"Shared result from {tool_name} in team {self.name} with GLUE adhesive")
+        elif result.adhesive == AdhesiveType.VELCRO:
+            # VELCRO: Session-based persistence
+            # Only store temporarily for the current session
+            logger.info(f"Stored result from {tool_name} in team {self.name} with VELCRO adhesive (session only)")
+        else:
+            # TAPE: One-time use, no persistence
+            logger.info(f"Used result from {tool_name} in team {self.name} with TAPE adhesive (one-time use)")
 
     async def process_message(
         self,
@@ -329,8 +267,7 @@ class Team:
         target_model: Optional[str] = None,
         from_model: Optional[str] = None
     ) -> str:
-        """DEPRECATED? Process a message within the team. Use AgentLoop/Communicate instead."""
-        logger.warning("Team.process_message is likely deprecated. Agent interactions should go through AgentLoop.")
+        """Process a message within the team"""
         # Handle backward compatibility
         if from_model is not None and source_model is None:
             source_model = from_model
@@ -340,71 +277,300 @@ class Team:
         if isinstance(content, dict) and "content" in content:
             message_content = content["content"]
             
-        # Get source model instance (either lead or agent's model)
-        source_instance = None
+        # Get source model
+        source = None
         if source_model:
-             if self.lead and self.lead.name == source_model:
-                 source_instance = self.lead
-             elif source_model in self.agents:
-                 source_instance = self.agents[source_model].model
+            source = self.models.get(source_model)
+            if not source:
+                raise ValueError(f"Model {source_model} not in team")
+                
+        # Get target model
+        target = None
+        if target_model:
+            target = self.models.get(target_model)
+            if not target:
+                raise ValueError(f"Model {target_model} not in team")
+                
+        # Use lead model if no specific models given
+        if not source and self.config.lead:
+            source = self.models[self.config.lead]
+            
+        if not source:
+            raise ValueError("No source model available")
+            
+        # Generate response
+        # --- Add history for the incoming message --- 
+        # This assumes process_message is typically called with user input or a simple string
+        # We might need more context if it's called differently
+        self.conversation_history.append(Message(
+            role="user", # Assuming incoming message is like user input
+            content=message_content
+        ))
         
-        if not source_instance and self.lead: # Default to lead if no source specified
-             source_instance = self.lead
+        response_content = await source.generate(message_content)
 
-        if not source_instance:
-            raise ValueError(f"Source model '{source_model or 'default lead'}' not found in team {self.name}")
+        # Store the model's raw response in history first
+        self.conversation_history.append(Message(
+            role="assistant", # Use 'assistant' role for model's response
+            content=response_content
+        ))
 
-        # --- Simplified processing ---
-        # Add incoming message to history (assuming user role for simplicity)
-        self.conversation_history.append(Message(role="user", content=str(message_content)))
+        # --- TOOL CALL HANDLING ---
+        tool_executed = False
+        final_response = response_content # Default to original response
+        tool_call_data = None
 
-        # Generate response using the source model instance
-        response_content = await source_instance.generate(str(message_content))
+        if isinstance(response_content, str):
+            tool_call_data = extract_json(response_content)
+            logger.debug(f"Attempted JSON extraction from response. Found: {tool_call_data is not None}")
 
-        # Add response to history
-        self.conversation_history.append(Message(role="assistant", content=response_content))
+        if tool_call_data and isinstance(tool_call_data, dict):
+            # Check for standard format: {"tool_name": "...", "arguments": {...}}
+            if "tool_name" in tool_call_data and "arguments" in tool_call_data:
+                tool_name = tool_call_data["tool_name"]
+                arguments = tool_call_data["arguments"]
+                tool_call_id = f"call_{uuid.uuid4()}" # Generate an ID for the call
+                logger.info(f"Detected tool call via JSON: {tool_name} (ID: {tool_call_id}) with args: {arguments}")
+            
+            # Check for alternative format: {"tool_name": {...}}
+            elif len(tool_call_data) == 1:
+                tool_name = next(iter(tool_call_data.keys()))
+                arguments = tool_call_data[tool_name]
+                tool_call_id = f"call_{uuid.uuid4()}" # Generate an ID for the call
+                
+                # Verify this is a valid tool
+                if tool_name in source.tools:
+                    logger.info(f"Detected alternative format tool call: {tool_name} (ID: {tool_call_id}) with args: {arguments}")
+                else:
+                    # Not a valid tool call, treat as regular response
+                    return response_content
+            else:
+                # Not a valid tool call format, treat as regular response
+                return response_content
 
-        # Basic tool call handling (might be needed for simple tests)
-        tool_call_data = extract_json(response_content)
-        if tool_call_data and isinstance(tool_call_data, dict) and "tool_name" in tool_call_data:
-             # Log but don't execute here - let AgentLoop handle execution
-             logger.info(f"[Deprecated process_message] Detected tool call: {tool_call_data['tool_name']}")
+            # --- TEMPORARILY COMMENTED OUT TO BYPASS VALIDATION ERROR ---
+            # # Store the parsed tool call in history
+            # # Ensure this matches the ToolCall schema in schemas.py
+            # tool_call_object = ToolCall(
+            #     id=tool_call_id,  # Use 'id'
+            #     function={       # Nest under 'function'
+            #         "name": tool_name, 
+            #         "arguments": json.dumps(arguments)
+            #     }
+            # )
+            # self.conversation_history.append(Message(
+            #     role="assistant",
+            #     content=None, # Content is None when tool_calls are present
+            #     tool_calls=[tool_call_object] # Pass the created object
+            # ))
+            # --- END TEMPORARY COMMENT OUT ---
 
-        return response_content # Return the direct response
+            # Check if the tool exists in the source model's context
+            tool_instance = source.tools.get(tool_name)
+            if tool_instance and hasattr(tool_instance, "execute"): # Ensure tool is executable
+                try:
+                    # Parameter normalization
+                    # This section normalizes parameter names by mapping common alternative names
+                    # to their expected names. For example, it maps 'search_term' to 'query' for
+                    # the web_search tool. Original parameters are removed after normalization
+                    # to avoid duplication.
+                    normalized_args = arguments.copy()
+                    if tool_name in TOOL_PARAM_MAPPINGS:
+                        for arg_name, arg_value in list(normalized_args.items()):
+                            if arg_name in TOOL_PARAM_MAPPINGS[tool_name]:
+                                # Map to the expected parameter name
+                                expected_name = TOOL_PARAM_MAPPINGS[tool_name][arg_name]
+                                # Skip if the mapping doesn't change the name
+                                if expected_name != arg_name:
+                                    normalized_args[expected_name] = arg_value
+                                    # Remove the original parameter to avoid duplication
+                                    del normalized_args[arg_name]
+                                    logger.debug(f"Normalized parameter '{arg_name}' to '{expected_name}' for tool '{tool_name}'")
+                    
+                    # Add calling context to arguments
+                    arguments_with_context = normalized_args.copy()
+                    arguments_with_context['calling_model'] = source.name
+                    arguments_with_context['calling_team'] = self.name
+                    
+                    # Execute the tool using dictionary unpacking for arguments with context
+                    tool_result_content = await tool_instance.execute(**arguments_with_context)
+                    tool_executed = True
+                    logger.info(f"Executed tool '{tool_name}' successfully.")
 
-    # ==================== Agent Loop Management (Needs Refactoring) ====================
+                    # Create ToolResult object using backward-compatible fields
+                    # The validator should handle converting this to the new format
+                    tool_result_object = ToolResult(
+                        tool_name=tool_name, 
+                        result=str(tool_result_content) # Ensure content is string
+                        # Omit adhesive; validator should handle default?
+                        # Omit model_name as it caused previous TypeError
+                    )
+                    
+                    # Store the tool result in history
+                    # Use the validated content from the object
+                    self.conversation_history.append(Message(
+                        role="tool",
+                        tool_call_id=tool_call_id, # Use the ID from the parsed JSON call
+                        name=tool_name,
+                        content=tool_result_object.result # Get content from the backward-compatible result field
+                    ))
+
+                    # Share result (important for VELCRO/GLUE)
+                    await self.share_result(tool_name, tool_result_object, model_name=source.name)
+
+                    # Generate a final response *after* the tool execution
+                    # The history now contains the original call and the result
+                    logger.info("Generating final response after tool execution...")
+                    final_response = await source.generate(content=None)
+                    
+                    # Append this final assistant response to history
+                    self.conversation_history.append(Message(
+                        role="assistant",
+                        content=final_response
+                    ))
+
+                except Exception as e:
+                    logger.error(f"Error executing tool '{tool_name}': {e}", exc_info=True)
+                    # Log the error as a tool result message
+                    error_message = f"Error executing tool '{tool_name}': {e}"
+                    self.conversation_history.append(Message(
+                        role="tool",
+                        tool_call_id=tool_call_id,
+                        name=tool_name,
+                        content=error_message
+                    ))
+                    # Optionally, generate a response acknowledging the error
+                    # final_response = await source.generate(f"I encountered an error trying to use the {tool_name} tool: {e}")
+                    # For now, just return the error message as the final response for simplicity
+                    final_response = error_message 
+                    # No need to append this response to history as the tool error message is already there
+
+            else:
+                logger.warning(f"Tool '{tool_name}' requested by model {source.name} but not found or not executable.")
+                # Log this attempt in history as a failed tool message
+                fail_message = f"Tool '{tool_name}' not found or available."
+                self.conversation_history.append(Message(
+                    role="tool",
+                    tool_call_id=tool_call_id,
+                    name=tool_name,
+                    content=fail_message
+                ))
+                # Generate a response indicating the tool is unavailable
+                # final_response = await source.generate(f"I tried to use the {tool_name} tool, but it is not available to me.")
+                # Return the failure message directly
+                final_response = fail_message
+                # No need to append this response to history as the tool message is already there
+
+        # Return the final response (either original model response or response after tool execution/error)
+        return final_response
+
+    async def direct_communication(
+        self,
+        from_model: str,
+        to_model: str,
+        message: Any
+    ) -> str:
+        """ Handle direct communication between two models within the team
+            Ensures the message history reflects the direct exchange. """
+        
+        # Find source and target models
+        source = self.models.get(from_model)
+        target = self.models.get(to_model)
+        
+        if not source or not target:
+            raise ValueError("Source or target model not found in team")
+            
+        logger.info(f"Direct communication initiated: {from_model} -> {to_model}")
+        
+        # Prepare the message content
+        message_content = message if isinstance(message, str) else json.dumps(message)
+        
+        # --- Update history for the target model --- 
+        # The target model receives the message as if from the source model (assistant role?)
+        # Let's treat it as a specific instruction or input from the teammate.
+        # Using 'user' role might be confusing. Let's stick to 'assistant' with name.
+        history_for_target = self.conversation_history.copy()
+        history_for_target.append(Message(
+            role="assistant", # Message from another assistant
+            name=from_model,  # Attribute to the source model
+            content=message_content
+        ))
+        
+        # --- Target model generates a response --- 
+        target_response_content = await target.generate(
+            prompt=None, # Use history
+            history=history_for_target
+        )
+
+        # --- Log the exchange in the main team history --- 
+        # 1. Log the message sent from source model (as part of the communicate tool call)
+        #    This is typically handled when the communicate tool call is logged.
+        
+        # 2. Log the response received from the target model 
+        #    Log it as an 'assistant' message attributed to the target model
+        self.conversation_history.append(Message(
+            role="assistant",
+            name=to_model, # Attributed to the target model
+            content=target_response_content
+        ))
+        
+        # --- Potentially handle tool calls within the target's response --- 
+        # For now, we assume the target's response is final text. 
+        # If the target model *also* needs to call tools, this logic would need extension.
+        # Let's keep it simple: the direct_communication response is the text generated.
+
+        logger.info(f"Direct communication response from {to_model}: {target_response_content[:100]}...")
+        return target_response_content
+
+    def add_member_sync(
+        self,
+        model: Model,
+        role: str = "member",
+        tools: Optional[Set[str]] = None
+    ) -> None:
+        """Synchronous version of add_member for use in tests"""
+        # Register the model with this team
+        model.set_team(self)
+        
+        # Add to models dictionary
+        self.models[model.name] = model
+        
+        # Assign tools if specified
+        if tools:
+            for tool_name in tools:
+                if tool_name in self._tools:
+                    model.add_tool(tool_name, self._tools[tool_name])
+        
+        # Set as lead if role is lead
+        if role == "lead":
+            self.config.lead = model.name
+            self.lead = model
+        
+        logger.info(f"Added model {model.name} to team {self.name} with role {role}")
 
     async def create_agent_loops(self) -> None:
-        """Create AgentLoop instances for the lead and each agent."""
-        self.agent_loops = {} # Clear existing loops
-        self.loop_coordinator = TeamLoopCoordinator(self.name)
-        
-        # Create loop for the Lead
-        if self.lead:
-            lead_agent_id = f"{self.name}-lead-{self.lead.name}"
-            # Pass team_ref=self, agent_ref=None for the lead
-            lead_loop = AgentLoop(agent_id=lead_agent_id, team_id=self.name, model=self.lead, team_ref=self)
-            # Register tools for the lead loop (using lead's model which should have them)
-            for tool_name, tool_instance in self._tools.items(): # Use team's _tools
-                 lead_loop.register_tool(tool_name, tool_instance) # Pass the instance
-            self.agent_loops[lead_agent_id] = lead_loop
-            self.loop_coordinator.add_agent(lead_loop)
-            logger.info(f"Created agent loop for Lead: {lead_agent_id}")
-        else:
-             logger.warning(f"Team {self.name} has no lead defined. Cannot create lead agent loop.")
-
-        # Create loops for Agents
-        for agent_name, agent_instance in self.agents.items():
-            agent_loop_id = f"{self.name}-agent-{agent_name}"
-            # Pass team_ref=self and agent_ref=agent_instance for agents
-            agent_loop = AgentLoop(agent_id=agent_loop_id, team_id=self.name, model=agent_instance.model, team_ref=self, agent_ref=agent_instance)
-            # Register tools for the agent loop (using agent's model)
-            for tool_name, tool_instance in self._tools.items(): # Use team's _tools
-                agent_loop.register_tool(tool_name, tool_instance) # Pass the instance
-            self.agent_loops[agent_loop_id] = agent_loop
-            agent_instance.agent_loop = agent_loop # Link loop back to agent instance
+        """Create agent loops for all team members and set up the coordinator"""
+        if not self.loop_coordinator:
+            self.loop_coordinator = TeamLoopCoordinator(self.name)
+            
+        # Create agent loops for each model
+        for agent_id, model in self.models.items():
+            # Skip if agent loop already exists
+            if agent_id in self.agent_loops:
+                continue
+                
+            # Create new agent loop
+            agent_loop = AgentLoop(agent_id, self.name, model)
+            
+            # Register tools
+            for tool_name, tool_func in self._tools.items():
+                agent_loop.register_tool(tool_name, tool_func)
+                
+            # Add to our tracking and the coordinator
+            self.agent_loops[agent_id] = agent_loop
             self.loop_coordinator.add_agent(agent_loop)
-            logger.info(f"Created agent loop for Agent: {agent_loop_id}")
+            
+            logger.info(f"Created agent loop for {agent_id} in team {self.name}")
             
     async def start_agent_loops(self, initial_input: Optional[str] = None) -> None:
         """Start all agent loops in the team"""
@@ -454,23 +620,6 @@ class Team:
         self.agent_loops = {}
         self.loop_coordinator = None
 
-    # ==================== Compatibility/Helper Methods ====================
-
-    # DEPRECATED: Use add_agent instead.
-    def add_member_sync(
-        self,
-        model: Model,
-        role: str = "member",
-        tools: Optional[Set[str]] = None
-    ) -> None:
-        """DEPRECATED synchronous version of add_member."""
-        logger.warning("add_member_sync is deprecated. Use set_lead or add_agent.")
-        if role == "lead":
-            self.set_lead(model)
-        else:
-             agent = Agent(name=model.name, model=model, role=role)
-             self.add_agent(agent)
-
     # ==================== Magnetic Field Methods ====================
     def set_relationship(self, team_name: str, relationship: str) -> None:
         """Set magnetic relationship with another team"""
@@ -501,21 +650,18 @@ class Team:
     # ==================== Helper Methods ====================
     def get_model_tools(self, model_name: str) -> Dict[str, Any]:
         """Get tools available to a specific model"""
-        target_model = None
-        if self.lead and self.lead.name == model_name:
-             target_model = self.lead
-        elif model_name in self.agents:
-             target_model = self.agents[model_name].model
-        else:
-             raise ValueError(f"Model {model_name} not found in team {self.name}")
-
-        # Handle different model implementations for storing tools
-        if hasattr(target_model, 'tools'):
-            return target_model.tools
-        elif hasattr(target_model, '_tools'): # Check for private attribute if public fails
-            return target_model._tools
+        if model_name not in self.models:
+            raise ValueError(f"Model {model_name} not in team")
             
-        return {} # Return empty if no tools attribute found
+        model = self.models[model_name]
+        
+        # Handle different model implementations
+        if hasattr(model, 'tools'):
+            return model.tools
+        elif hasattr(model, '_tools'):
+            return model._tools
+            
+        return {}
 
     async def try_establish_relationship(self, target_team: str) -> Dict[str, Any]:
         """Attempt to automatically establish a relationship with another team.
@@ -570,49 +716,16 @@ class Team:
         return self.shared_results
 
     async def cleanup(self) -> None:
-        """Clean up resources used by the team."""
-        # Stop message processing task first
-        self.running = False
-        if self.processing_task and not self.processing_task.done():
-             self.processing_task.cancel()
-             try:
-                 await asyncio.wait_for(self.processing_task, timeout=1.0)
-             except (asyncio.CancelledError, asyncio.TimeoutError):
-                 logger.info("Message processing task cancelled during cleanup.")
-             except Exception as e:
-                 logger.error(f"Error waiting for message processing task during cleanup: {e}")
-        self.processing_task = None
-
-        # Clean up agent loops
-        if self.loop_coordinator:
-            await self.loop_coordinator.cleanup()
-            
+        """Clean up team resources"""
         # Clean up tools
         for tool_name, tool in self._tools.items():
             if hasattr(tool, 'cleanup') and callable(tool.cleanup):
-                try:
-                    # Check if cleanup is async
-                    if asyncio.iscoroutinefunction(tool.cleanup):
-                        await tool.cleanup()
-                    else:
-                        tool.cleanup() # Call synchronously if not async
-                except Exception as e:
-                    logger.error(f"Error cleaning up tool {tool_name}: {e}")
-
-        # Clean up models (handle potential missing cleanup)
-        model_instances = [self.lead] + [agent.model for agent in self.agents.values()]
-        for model in filter(None, model_instances): # Filter out None lead
-            if hasattr(model, 'cleanup') and callable(model.cleanup):
-                try:
-                    if asyncio.iscoroutinefunction(model.cleanup):
-                        await model.cleanup()
-                    else:
-                        model.cleanup()
-                except Exception as e:
-                    logger.error(f"Error cleaning up model {model.name}: {e}")
-
-        # Clear shared results and history
+                await tool.cleanup()
+                
+        # Clear shared results
         self.shared_results.clear()
+        
+        # Clear conversation history
         self.conversation_history.clear()
         
         logger.info(f"Cleaned up team {self.name}")
@@ -630,8 +743,7 @@ class Team:
                 pass
                 
         # Start the internal message processing loop unconditionally
-        self.running = True # Set running flag before starting task
-        if self.processing_task is None or self.processing_task.done():
+        if self.processing_task is None:
             self.processing_task = asyncio.create_task(self._process_messages())
             logger.debug(f"Started message processing task for team {self.name}")
         else:
@@ -643,9 +755,8 @@ class Team:
     async def _handle_error(self, error: Exception) -> None:
         """Handle team-level errors"""
         logger.error(f"Team error in {self.name}: {str(error)}")
-        # Depending on severity, might trigger termination or recovery
-        raise error # Re-raise for now
-
+        raise
+        
     # ==================== Flow Management Methods ====================
     def register_outgoing_flow(self, flow: Any) -> None:
         """Register an outgoing flow with this team.
@@ -655,9 +766,7 @@ class Team:
         """
         if flow not in self.outgoing_flows:
             self.outgoing_flows.append(flow)
-            # Ensure target has a name attribute before logging
-            target_name = getattr(getattr(flow, 'target', None), 'name', 'unknown')
-            logger.info(f"Registered outgoing flow from {self.name} to {target_name}")
+            logger.info(f"Registered outgoing flow from {self.name} to {flow.target.name}")
             
     def register_incoming_flow(self, flow: Any) -> None:
         """Register an incoming flow with this team.
@@ -667,11 +776,12 @@ class Team:
         """
         if flow not in self.incoming_flows:
             self.incoming_flows.append(flow)
-            # Ensure source has a name attribute before logging
-            source_name = getattr(getattr(flow, 'source', None), 'name', 'unknown')
-            logger.info(f"Registered incoming flow to {self.name} from {source_name}")
+            logger.info(f"Registered incoming flow to {self.name} from {flow.source.name}")
             
             # Task is now started in setup
+            # # Start message processing if not already running
+            # if self.processing_task is None:
+            #     self.processing_task = asyncio.create_task(self._process_messages())
 
     def unregister_outgoing_flow(self, flow: Any) -> None:
         """Unregister an outgoing flow from this team.
@@ -681,8 +791,7 @@ class Team:
         """
         if flow in self.outgoing_flows:
             self.outgoing_flows.remove(flow)
-            target_name = getattr(getattr(flow, 'target', None), 'name', 'unknown')
-            logger.info(f"Unregistered outgoing flow from {self.name} to {target_name}")
+            logger.info(f"Unregistered outgoing flow from {self.name} to {flow.target.name}")
             
     def unregister_incoming_flow(self, flow: Any) -> None:
         """Unregister an incoming flow from this team.
@@ -692,311 +801,476 @@ class Team:
         """
         if flow in self.incoming_flows:
             self.incoming_flows.remove(flow)
-            source_name = getattr(getattr(flow, 'source', None), 'name', 'unknown')
-            logger.info(f"Unregistered incoming flow to {self.name} from {source_name}")
+            logger.info(f"Unregistered incoming flow to {self.name} from {flow.source.name}")
             
     async def receive_message(self, message: Dict[str, Any], sender: Any) -> None:
-        """DEPRECATED? Handle messages received from flows. Use receive_information."""
-        # This method seems redundant if receive_information handles flow input
-        logger.warning("Team.receive_message called, but receive_information should handle flow inputs.")
-        # For backward compatibility, maybe try to parse and queue?
-        source_team = message.get("metadata", {}).get("source_team", "unknown")
-        await self.receive_information(source_team, message) # Pass it to the new handler
-
+        """Receive a message from another team.
+        
+        Args:
+            message: Message to receive
+            sender: Team that sent the message
+        """
+        logger.info(f"Team {self.name} received message from {sender.name}")
+        
+        # Check if this is a response to a previous message
+        if message.get("metadata", {}).get("is_response", False):
+            # This is a response to a previous message
+            source_model = message.get("metadata", {}).get("source_model")
+            target_model = message.get("metadata", {}).get("target_model")
+            message_id = message.get("metadata", {}).get("message_id")
+            
+            # Check if we have pending responses for this message ID
+            if message_id and hasattr(self, 'pending_responses') and message_id in self.pending_responses:
+                # Store the response content
+                self.pending_responses[message_id] = message.get("content", "No content in response")
+                logger.info(f"Stored response for message ID {message_id}")
+                return  # Skip adding to message queue since we've handled it
+            
+            # If we have response handlers, try to find a matching one (legacy support)
+            if hasattr(self, 'response_handlers') and self.response_handlers:
+                # First try to find a handler by message ID
+                if message_id and message_id in self.response_handlers:
+                    try:
+                        await self.response_handlers[message_id](message)
+                        # Remove the handler after it's been called
+                        del self.response_handlers[message_id]
+                        logger.debug(f"Called response handler for message ID {message_id}")
+                        return  # Skip adding to message queue since we've handled it
+                    except Exception as e:
+                        logger.error(f"Error calling response handler for message ID {message_id}: {e}")
+                
+                # If no message ID or handler not found, try to find by target model
+                if target_model:
+                    for key, handler in list(self.response_handlers.items()):
+                        # Check if this response matches the handler
+                        if target_model in key:
+                            # Call the handler with the message
+                            try:
+                                await handler(message)
+                                # Remove the handler after it's been called
+                                del self.response_handlers[key]
+                                logger.debug(f"Called response handler for {key}")
+                                return  # Skip adding to message queue since we've handled it
+                            except Exception as e:
+                                logger.error(f"Error calling response handler: {e}")
+        
+        # Add to message queue for processing
+        await self.message_queue.put((message, sender))
+        
     async def _process_messages(self) -> None:
-        """Internal loop to process messages from the team queue."""
-        # Ensure self.running is defined, maybe in __init__? Assuming it is.
-        if not hasattr(self, 'running'): self.running = True # Simple fix if missing
-
-        while self.running:
+        """Process messages from the message queue."""
+        logger.debug(f"_process_messages task started/running for team {self.name}")
+        while True:
+            logger.debug(f"Team {self.name} message queue polling...")
             try:
-                # Wait for a message package from the queue
-                message_package = await self.message_queue.get()
-
-                payload_dict = None
-                target_loop_id = None
-                source_info = message_package.get("source", "internal") # Default to internal
-
-                # --- Extract Payload and Target ---
-                if source_info == "flow": # Message from another team via receive_information
-                    payload_dict = message_package.get("payload")
-                    # TODO: V1 - Route external messages to Lead by default? Or check intended_recipients?
-                    if self.lead:
-                         target_loop_id = f"{self.name}-lead-{self.lead.name}"
-                         logger.debug(f"Routing message from external flow to Lead: {target_loop_id}")
-                    else:
-                         logger.warning(f"Received message from external flow but no Lead defined in team {self.name}. Discarding.")
-                         self.message_queue.task_done()
-                         continue
-                elif source_info == "internal": # Message from Communicate tool or Agent Feedback
-                     target_loop_id = message_package.get("target_loop_id")
-                     payload_dict = message_package.get("content") # Internal messages put payload in 'content'
-                else: # Unknown source
-                     logger.warning(f"Unknown message package source: {source_info}. Discarding.")
-                     self.message_queue.task_done()
-                     continue
-
-                # --- Validate Payload ---
-                if not payload_dict or not isinstance(payload_dict, dict):
-                    logger.warning(f"Invalid or empty payload received in queue package: {message_package}. Discarding.")
-                    self.message_queue.task_done()
-                    continue
-
-                # Basic validation (check for essential V1 fields)
-                # More robust validation using Pydantic model could be added here
-                required_fields = ['task_id', 'sender_agent_id', 'sender_team_id', 'timestamp', 'message_type', 'adhesive_type', 'content']
-                if not all(field in payload_dict for field in required_fields):
-                     logger.warning(f"Received payload missing required V1 fields: {payload_dict}. Discarding.")
-                     self.message_queue.task_done()
-                     continue
-
-                # --- Route to Target Loop ---
-                if target_loop_id and target_loop_id in self.agent_loops:
-                    target_loop = self.agent_loops[target_loop_id]
-                    logger.info(f"Routing message type '{payload_dict.get('message_type')}' to loop {target_loop_id}")
-
-                    if hasattr(target_loop, 'handle_message') and callable(target_loop.handle_message):
-                        # Pass the validated payload dictionary to the agent loop
-                        await target_loop.handle_message(payload_dict)
-                    else:
-                        logger.warning(f"Loop {target_loop_id} does not have a callable 'handle_message' method. Cannot deliver message.")
-                        # Consider alternative handling: requeue? error state?
-
-                elif target_loop_id: # Target specified but not found
-                    logger.warning(f"Target loop {target_loop_id} not found in team {self.name}. Discarding message.")
-
-                else: # No specific target loop identified (e.g., external message routed to non-existent lead)
-                     logger.warning(f"No valid target loop identified for payload: {payload_dict}. Discarding.")
-
-                # --- Handle Team-Level Broadcasts (Example - Needs Refinement) ---
-                # This logic might need to move or be triggered differently based on V1 payload types
-                message_type = payload_dict.get("message_type")
-                # Assuming broadcast info might be in content or metadata for specific types
-                metadata = payload_dict.get("metadata", {}) # Check if metadata exists
-                is_internal_broadcast = metadata.get("internal") is True
-                broadcast_id = metadata.get("broadcast_id")
-
-                if is_internal_broadcast and broadcast_id:
-                     logger.debug(f"Processing internal broadcast ID: {broadcast_id}")
-                     if broadcast_id in self.pending_broadcasts:
-                         broadcast_future = self.pending_broadcasts.get(broadcast_id)
-                         if broadcast_future and not broadcast_future.done():
-                             # TODO: Implement actual broadcast logic here.
-                             # This likely involves routing the payload to *all* other agent loops
-                             # and potentially aggregating responses before setting the future result.
-                             # Placeholder result for now:
-                             broadcast_result = {"status": "acknowledged", "info": "Broadcast received by team processor."}
-                             
-                             logger.info(f"Completing future for internal broadcast ID: {broadcast_id}")
-                             try:
-                                 broadcast_future.set_result(broadcast_result)
-                             except asyncio.InvalidStateError:
-                                 logger.warning(f"Future for broadcast {broadcast_id} was already done when trying to set result.")
-                             finally: # Ensure pop happens even if set_result fails
-                                 self.pending_broadcasts.pop(broadcast_id, None)
-                         else:
-                             logger.warning(f"Future for broadcast {broadcast_id} not found or already done in pending_broadcasts.")
-                     else:
-                         logger.warning(f"Received internal broadcast message for ID {broadcast_id}, but no pending future found.")
-                # Remove old untargeted message handling logic as routing is now explicit
-                # elif content_type == "some_general_info":
-                #     pass
-                # else:
-                #     logger.warning(f"Discarding untargeted message of type '{content_type}'")
-
-                # Mark task as done
-                self.message_queue.task_done()
-
-            except asyncio.CancelledError:
-                logger.info(f"Message processing loop for team {self.name} cancelled.")
-                break # Exit loop cleanly on cancellation
-            except Exception as e:
-                logger.error(f"Error processing message queue for team {self.name}: {e}", exc_info=True)
-                # Avoid breaking the loop on processing errors, just log and continue
-                # Ensure task_done is called even on error if possible
+                # Get message from queue
+                message, sender = await self.message_queue.get()
+                sender_name = sender.name if sender else "internal"
+                
                 try:
+                    # Process the message
+                    logger.debug(f"Processing message in team {self.name} from {sender_name}: {message}")
+                    
+                    # Extract content from message
+                    content = message.get("content", "")
+                    if isinstance(content, dict) and "content" in content:
+                        content = content["content"]
+                        
+                    # Get metadata
+                    metadata = message.get("metadata", {})
+                    source_model_name = metadata.get("source_model")
+                    target_model_name = metadata.get("target_model") # Check if a specific model is targeted
+                    is_internal = metadata.get("internal", False)
+                    broadcast_id = metadata.get("broadcast_id") # Get broadcast ID if present
+                    is_internal_broadcast = is_internal and target_model_name is None and broadcast_id is not None
+
+                    # --- Message Routing Logic ---
+                    recipients = []
+                    if is_internal_broadcast:
+                        # Internal broadcast to all team members
+                        logger.info(f"Internal team message detected. Broadcasting to all members of team {self.name}.")
+                        recipients = list(self.models.values())
+                    elif target_model_name and target_model_name in self.models:
+                        # Message targeted at a specific model (internal or external)
+                        logger.debug(f"Message targeted at specific model: {target_model_name}")
+                    elif self.config.lead and self.config.lead in self.models:
+                        # Default: External message or internal without specific target -> Route to lead
+                        logger.debug(f"Routing message from {sender_name} to lead model: {self.config.lead}")
+                        recipients.append(self.models[self.config.lead])
+                    else:
+                        logger.warning(f"No valid recipient (lead or target) found for message in team {self.name}. Discarding.")
+                        recipients = [] # No one to send to
+
+                    # --- Process message for each recipient ---
+                    broadcast_responses = [] # List to store responses for this broadcast
+                    for recipient_model in recipients:
+                        try:
+                            # Create a formatted message for the recipient model
+                            model_message_content = f"Message from {source_model_name or sender_name}: {content}"
+                            model_message = Message(
+                                role="system", # Use system role for inter-model/team messages
+                                content=model_message_content
+                            )
+                            
+                            logger.debug(f"Generating response from recipient model {recipient_model.name}")
+                            # Generate response (fire and forget for broadcasts, or handle response later)
+                            # For simplicity now, we just let the model process it. Response handling might need refinement.
+                            response = await recipient_model.generate_response([model_message]) 
+                            
+                            # Store interaction in conversation history (adjust roles as needed)
+                            if is_internal_broadcast:
+                                broadcast_responses.append({"model": recipient_model.name, "response": response})
+
+                            # TODO: Handle response logic? Should the lead respond on behalf of the team?
+                            # Should responses be aggregated? For now, individual models process internally.
+                            
+                            # If the original sender was external and requires a response,
+                            # maybe only the lead's response should be sent back?
+                            # This part needs careful consideration based on desired team behavior.
+                            if sender and metadata.get("requires_response", False) and recipient_model.name == self.config.lead:
+                                 logger.info(f"Lead model {self.config.lead} generated response to external sender {sender_name}")
+                                 # Simplified response sending - assumes lead response is the one to send back
+                                 response_message = {
+                                     "content": response,
+                                     "metadata": {
+                                         "source_team": self.name,
+                                         "target_team": sender.name, # Use the original sender's name
+                                         "source_model": self.config.lead,
+                                         "is_response": True,
+                                         "message_id": metadata.get("message_id"),
+                                         "target_model": metadata.get("source_model")
+                                     }
+                                 }
+                                 # Find and use the correct flow to send back
+                                 sent_back = False
+                                 for flow in self.outgoing_flows:
+                                     if hasattr(flow, 'target') and flow.target == sender:
+                                         await flow.send_from_source(response_message)
+                                         sent_back = True
+                                         break
+                                 if not sent_back:
+                                      for flow in self.incoming_flows:
+                                         if hasattr(flow, 'source') and flow.source == sender:
+                                             await flow.send_from_target(response_message)
+                                             sent_back = True
+                                             break
+                                 if not sent_back:
+                                     logger.warning(f"Could not find flow to send response back to sender {sender_name}")
+
+                        except Exception as model_e:
+                            logger.error(f"Error processing message for recipient model {recipient_model.name} in team {self.name}: {model_e}")
+
+                    # --- Finalize Broadcast Processing (if applicable) ---
+                    if is_internal_broadcast:
+                        logger.debug(f"Finished processing broadcast {broadcast_id}. Aggregated {len(broadcast_responses)} responses.")
+                        if hasattr(self, 'pending_broadcasts') and broadcast_id in self.pending_broadcasts:
+                            future = self.pending_broadcasts.pop(broadcast_id) # Get and remove future
+                            if not future.done():
+                                future.set_result(broadcast_responses)
+                                logger.info(f"Set result for broadcast future {broadcast_id}")
+                            else:
+                                logger.warning(f"Future for broadcast {broadcast_id} was already done.")
+                        else:
+                            logger.warning(f"No pending future found for broadcast ID {broadcast_id}. Cannot set result.")
+
+                except Exception as e:
+                    logger.error(f"Error in message processing loop for team {self.name}: {e}")
+                
+                finally:
+                    # Mark task as done
                     self.message_queue.task_done()
-                except ValueError: # May happen if queue is empty/task already done
-                    pass
-                await asyncio.sleep(1) # Prevent fast error loops
+                    
+            except asyncio.CancelledError:
+                # Handle task cancellation
+                logger.debug(f"Message processing task cancelled for team {self.name}")
+                break
+                
+            except Exception as e:
+                # Log any errors but keep processing
+                logger.error(f"Error in message processing loop for team {self.name}: {e}")
+                
+    async def send_information(self, target_team: str, content: Any) -> Union[bool, Dict[str, Any]]:
+        """Send information to another team.
+        
+        Args:
+            target_team: Name of the target team
+            content: Content to send
+                
+        Returns:
+            True if the information was sent successfully, 
+            or dict with error information if failed
+        """
+        logger.info(f"Team {self.name} attempting to send information to team {target_team}")
 
-    async def share_glue_entry(self, kb_entry_id: str, target_team_name: str) -> bool:
-        """Share a specific persisted GLUE entry with another team."""
-        kb_entry = self.knowledge_base.get_entry(kb_entry_id)
-        if not kb_entry:
-             logger.error(f"Cannot share GLUE entry: ID {kb_entry_id} not found in KB.")
-             return False
+        # Handle intra-team communication directly
+        if target_team == self.name:
+            logger.debug(f"Handling intra-team communication within {self.name}")
+            # Create message similar to inter-team format
+            message = {
+                "content": content,
+                "metadata": {
+                    "source_team": self.name,
+                    "target_team": self.name,
+                    # Determine source model if possible (e.g., from content metadata or default to lead)
+                    "source_model": content.get("metadata", {}).get("source_model") if isinstance(content, dict) else self.config.lead,
+                    "timestamp": datetime.now().isoformat(),
+                    "internal": True # Flag for internal message
+                }
+            }
+            # Merge metadata if provided in content
+            if isinstance(content, dict) and "metadata" in content:
+                message["metadata"].update(content["metadata"])
+                if "content" in content: # Use content's content field if available
+                    message["content"] = content["content"]
 
-        # Construct message data according to V1 standard for send_information
-        message_data = {
-            "type": MessageType.GLUE_DATA_SHARE.value, # Use enum value
-            "content": {"kb_entry": kb_entry},
+            # Put the message into the team's own queue for processing
+            try:
+                await self.message_queue.put((message, None)) # Use None for sender as it's internal
+                logger.info(f"Queued internal message within team {self.name}")
+                return True
+            except Exception as e:
+                error_msg = f"Error queueing internal message in team {self.name}: {e}"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg
+                }
+
+        # --- Inter-Team Communication Logic ---
+        # Check if we have a relationships attribute
+        if not hasattr(self, 'relationships'):
+            error_msg = f"Team {self.name} has no relationships attribute configured"
+            logger.warning(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "suggestion": "Make sure the team is properly initialized with relationships support"
+            }
+            
+        logger.debug(f"Team {self.name} has relationships: {self.relationships}")
+        
+        # Try to establish a relationship if one doesn't exist
+        if target_team not in self.relationships:
+            logger.warning(f"No relationship with team {target_team}")
+            
+            # Try to establish a relationship automatically
+            relationship_result = await self.try_establish_relationship(target_team)
+            
+            if not relationship_result["success"]:
+                error_msg = f"No relationship with team {target_team} and could not establish one automatically: {relationship_result['error']}"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "suggestion": f"Add a flow between {self.name} and {target_team} in your GLUE configuration"
+                }
+        
+        # Check if the relationship allows sending
+        relationship = self.relationships.get(target_team)
+        if relationship not in [FlowType.PUSH.value, FlowType.BIDIRECTIONAL.value]:
+            error_msg = f"Relationship {relationship} with team {target_team} doesn't allow sending"
+            logger.warning(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "suggestion": f"Change the relationship type to PUSH or BIDIRECTIONAL in your GLUE configuration"
+            }
+            
+        # Find the appropriate flow
+        if not hasattr(self, 'outgoing_flows'):
+            error_msg = f"Team {self.name} has no outgoing_flows attribute"
+            logger.warning(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "suggestion": "Make sure the team is properly initialized with flow support"
+            }
+            
+        logger.debug(f"Team {self.name} has outgoing flows to: {[flow.target.name for flow in self.outgoing_flows if hasattr(flow, 'target')]}")
+        
+        for flow in self.outgoing_flows:
+            if hasattr(flow, 'target') and flow.target.name == target_team:
+                # Create message
+                message = {
+                    "content": content,
+                    "metadata": {
+                        "source_team": self.name,
+                        "target_team": target_team,
+                        "source_model": self.config.lead if self.config.lead else None,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                }
+                
+                # If content is a dict with metadata, merge it
+                if isinstance(content, dict) and "metadata" in content:
+                    message["metadata"].update(content["metadata"])
+                    if "content" in content:
+                        message["content"] = content["content"]
+                
+                # Send message
+                try:
+                    logger.debug(f"Sending message via flow: {message}")
+                    await flow.send_from_source(message)
+                    logger.info(f"Sent information from team {self.name} to {target_team}")
+                    return True
+                except Exception as e:
+                    error_msg = f"Error sending message from team {self.name} to {target_team}: {e}"
+                    logger.error(error_msg)
+                    return {
+                        "success": False,
+                        "error": error_msg
+                    }
+                
+        error_msg = f"No outgoing flow found from team {self.name} to {target_team}"
+        logger.warning(error_msg)
+        return {
+            "success": False,
+            "error": error_msg,
+            "suggestion": f"Define a flow from {self.name} to {target_team} in your GLUE configuration"
+        }
+        
+    async def receive_information(self, source_team: str, content: Any) -> Union[bool, Dict[str, Any]]:
+        """Receive information from another team.
+        
+        Args:
+            source_team: Name of the source team
+            content: Content to receive
+            
+        Returns:
+            True if the information was received successfully, 
+            or dict with error information if failed
+        """
+        # Check if we have a relationship with the source team
+        if source_team not in self.relationships:
+            error_msg = f"No relationship with team {source_team}"
+            logger.warning(error_msg)
+            
+            # Try to establish a relationship automatically
+            relationship_result = await self.try_establish_relationship(source_team)
+            
+            if not relationship_result["success"]:
+                error_msg = f"No relationship with team {source_team} and could not establish one automatically: {relationship_result['error']}"
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "suggestion": f"Add a flow between {self.name} and {source_team} in your GLUE configuration"
+                }
+            
+        # Check if the relationship allows receiving
+        relationship = self.relationships[source_team]
+        if relationship not in [FlowType.PULL.value, FlowType.BIDIRECTIONAL.value]:
+            error_msg = f"Relationship {relationship} with team {source_team} doesn't allow receiving"
+            logger.warning(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "suggestion": f"Change the relationship type to PULL or BIDIRECTIONAL in your GLUE configuration"
+            }
+            
+        # Create message
+        message = {
+            "content": content,
             "metadata": {
-                 "task_id": kb_entry.get("metadata", {}).get("task_id", f"share_{kb_entry_id}"), # Try to get original task ID
-                 # Add other relevant metadata if needed
+                "source_team": source_team,
+                "target_team": self.name,
+                "timestamp": datetime.now().isoformat()
             }
         }
-
-        logger.info(f"Attempting to share GLUE entry {kb_entry_id} with team {target_team_name}")
-        success = await self.send_information(target_team_name, message_data)
-        if success:
-             logger.info(f"Successfully initiated sending GLUE entry {kb_entry_id} to team {target_team_name}")
-        else:
-             logger.warning(f"Failed to initiate sending GLUE entry {kb_entry_id} to team {target_team_name}")
-        return success # Return status from send_information
-
-    async def broadcast_pause_query(self, query_content: str) -> None:
-         """Broadcast a pause query to all connected team leads if in interactive mode."""
-         if self.mode != 'interactive': # Check mode
-             self.logger.info(f"Not broadcasting pause query: Team '{self.name}' is in '{self.mode}' mode.")
-             return
-             
-         if not self.outgoing_flows:
-              logger.info("No outgoing flows, cannot broadcast pause query.")
-              return
-              
-         # Construct message data according to V1 standard
-         message_data = {
-              "type": MessageType.PAUSE_QUERY.value, # Use enum value
-              "content": {"query_content": query_content},
-              "metadata": {
-                   # Add task_id if available/relevant for the pause context
-                   # "task_id": current_task_id,
-              }
-         }
-         
-         logger.info(f"Broadcasting pause query (Interactive Mode) to connected teams: {query_content}")
-         broadcast_tasks = []
-         # Find unique target team names from flows
-         target_teams = {flow.target.name for flow in self.outgoing_flows if hasattr(flow, 'target') and hasattr(flow.target, 'name')}
-         
-         for target_team_name in target_teams:
-              if target_team_name != self.name: # Don't broadcast to self
-                  # Pass the structured message_data to send_information
-                  broadcast_tasks.append(self.send_information(target_team_name, message_data))
-                  
-         results = await asyncio.gather(*broadcast_tasks, return_exceptions=True)
-         
-         # Process results (logging remains similar)
-         for target_team_name, result in zip(target_teams - {self.name}, results):
-             if isinstance(result, Exception):
-                 logger.error(f"Error broadcasting pause query to team {target_team_name}: {result}")
-             elif not result: # Check for False or error dict from send_information
-                 error_info = f" (send_information returned {result})" if isinstance(result, dict) else ""
-                 logger.warning(f"Failed to broadcast pause query to team {target_team_name}{error_info}.")
-             else:
-                 logger.info(f"Successfully initiated broadcast of pause query to team {target_team_name}.")
-
-    # --- send_information and receive_information need review for robustness ---
-    async def send_information(self, target_team_name: str, message_data: Dict[str, Any]) -> Union[bool, Dict[str, Any]]:
-        """
-        Send information (structured as V1MessagePayload) to another team via flows.
-
-        Args:
-            target_team_name: Name of the target team.
-            message_data: A dictionary representing the V1MessagePayload content.
-                          Must include 'type', 'content', and 'metadata'.
-
-        Returns:
-            True if successfully sent via at least one flow, False otherwise.
-            Can return a dict with error details in specific failure cases.
-        """
-        # --- Construct V1 Payload ---
-        # Expect message_data to already contain the core 'content' and 'type'
-        # We add the standard sender/timestamp metadata here.
-        message_type_str = message_data.get("type")
-        content_payload = message_data.get("content")
-        metadata = message_data.get("metadata", {}) # Use provided metadata or default
-
-        if not message_type_str or content_payload is None:
-             logger.error(f"send_information requires 'type' and 'content' in message_data.")
-             return {"error": "Invalid message_data format", "status": "failed"}
-
+        
+        # Process the message
         try:
-            message_type_enum = MessageType(message_type_str)
-        except ValueError:
-             logger.error(f"Invalid message type '{message_type_str}' in send_information.")
-             return {"error": f"Invalid message type: {message_type_str}", "status": "failed"}
-
-        # Determine sender ID (assume lead if not specified in metadata)
-        sender_id = metadata.get("source_agent_or_lead", self.lead.name if self.lead else self.name)
-        # Determine adhesive (default to TAPE for inter-team info unless specified)
-        adhesive_type_enum = metadata.get("adhesive_type", AdhesiveType.TAPE)
-        if isinstance(adhesive_type_enum, str):
-             try:
-                 adhesive_type_enum = AdhesiveType(adhesive_type_enum)
-             except ValueError:
-                 adhesive_type_enum = AdhesiveType.TAPE
-        elif not isinstance(adhesive_type_enum, AdhesiveType):
-             adhesive_type_enum = AdhesiveType.TAPE
-
-        # TODO: Get task_id reliably, maybe from metadata?
-        task_id = metadata.get("task_id", f"inter_team_{datetime.now().isoformat()}")
-
-        try:
-            payload = V1MessagePayload(
-                task_id=task_id,
-                sender_agent_id=sender_id,
-                sender_team_id=self.name,
-                timestamp=datetime.now().isoformat(),
-                message_type=message_type_enum,
-                adhesive_type=adhesive_type_enum,
-                content=content_payload,
-                origin_tool_id=metadata.get("origin_tool_id") # Pass if available
-            )
-
-            # Convert payload to dict using the new method
-            payload_dict = payload.to_dict()
-
+            await self.message_queue.put((message, None))
+            logger.info(f"Received information in team {self.name} from {source_team}")
+            return True
         except Exception as e:
-            logger.error(f"Error constructing V1 payload for inter-team message: {e}", exc_info=True)
-            return {"error": f"Internal error constructing message payload: {e}", "status": "failed"}
-
-        # --- Find Flow and Send ---
-        flow_found = False
-        sent_successfully = False
-        for flow in self.outgoing_flows:
-            # Check if flow object has 'target' attribute and 'name' matches
-            if hasattr(flow, 'target') and hasattr(flow.target, 'name') and flow.target.name == target_team_name:
-                flow_found = True
-                try:
-                    # Send the structured payload dictionary
-                    await flow.send(payload_dict)
-                    logger.info(f"Sent message type '{payload.message_type.value}' to team {target_team_name} via flow {flow.name}")
-                    sent_successfully = True
-                    # Optionally break if only one flow needed, or continue to send via all matching flows
-                    # For now, assume sending via the first matching flow is sufficient
-                    break
-                except Exception as e:
-                    logger.error(f"Error sending message to team {target_team_name} via flow {flow.name}: {e}")
-                    # Continue trying other flows if available
-
-        if not flow_found:
-            logger.warning(f"No outgoing flow found for target team {target_team_name}")
-            return False # Indicate no flow found
-
-        return sent_successfully # Return True if sent via at least one flow, False if all attempts failed
-
-    async def receive_information(self, source_team_name: str, payload_dict: Dict[str, Any]) -> Union[bool, Dict[str, Any]]:
+            error_msg = f"Error processing received message from {source_team}: {e}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg
+            }
+        
+    async def set_relationship(self, team_name: str, relationship: str) -> None:
+        """Set relationship with another team.
+        
+        Args:
+            team_name: Name of the team to set relationship with
+            relationship: Type of relationship to set
         """
-        Callback invoked by a Flow when information (as V1 payload dict) is received.
-        Puts the received payload onto the internal message queue for processing.
+        if team_name in self.repelled_by:
+            raise ValueError(f"Cannot set relationship with {team_name} - repelled")
+            
+        self.relationships[team_name] = relationship
+        self.updated_at = datetime.now()
+        logger.info(f"Set {relationship} relationship with team {team_name}")
+        
+    def add_member_sync(self, model: Model, role: str = "member", tools: Optional[Set[str]] = None) -> None:
+        """Add a model to the team synchronously.
+        
+        This is a synchronous version of add_member for use during setup.
+        
+        Args:
+            model: Model to add
+            role: Role of the model in the team (lead or member)
+            tools: Optional set of tool names to add to the model
         """
-        if not isinstance(payload_dict, dict):
-             logger.error(f"Received non-dict payload from {source_team_name} via flow. Discarding: {payload_dict}")
-             return False # Indicate error
-
-        logger.info(f"Received V1 payload dict from {source_team_name}. Queueing for processing.")
-        # Add source_team_name to the payload if not already present, for context
-        # This assumes payload_dict is mutable, which should be fine
-        if 'metadata' not in payload_dict:
-             payload_dict['metadata'] = {} # Ensure metadata key exists
-        if 'source_flow_team' not in payload_dict['metadata']:
-             payload_dict['metadata']['source_flow_team'] = source_team_name
-
-        # Put the entire received payload dictionary onto the queue, wrapped to indicate source
-        # The wrapper helps _process_messages distinguish internal vs external origin if needed
-        await self.message_queue.put({"source": "flow", "payload": payload_dict})
-        return True # Acknowledge receipt to the flow
-
-    # ... rest of the file ...
+        if model.name in self.models:
+            logger.warning(f"Model {model.name} already in team {self.name}")
+            return
+            
+        # Add model
+        self.models[model.name] = model
+        model.team = self  # Set team reference
+        
+        # Set up tools
+        if tools:
+            for tool_name in tools:
+                if tool_name in self._tools:
+                    if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
+                        model.add_tool_sync(tool_name, self._tools[tool_name])
+                    
+        # Update config
+        if role == "lead":
+            self.config.lead = model.name
+            self.lead = model
+        else:
+            self.config.members.append(model.name)
+            
+        self.updated_at = datetime.now()
+        logger.info(f"Added model {model.name} to team {self.name} with role {role}")
+        
+    async def initiate_communication(self, target_team: str, content: str, source_model: Optional[str] = None) -> bool:
+        """Initiate communication with another team.
+        
+        This method allows a model to proactively communicate with another team.
+        
+        Args:
+            target_team: Name of the target team
+            content: Content to send
+            source_model: Optional name of the source model
+            
+        Returns:
+            True if communication was initiated successfully, False otherwise
+        """
+        # Use lead model if no source model specified
+        if not source_model:
+            source_model = self.config.lead
+            
+        if not source_model or source_model not in self.models:
+            logger.warning(f"No valid source model for communication in team {self.name}")
+            return False
+            
+        # Create message
+        message = {
+            "content": content,
+            "metadata": {
+                "source_team": self.name,
+                "target_team": target_team,
+                "source_model": source_model,
+                "timestamp": datetime.now().isoformat(),
+                "initiated": True
+            }
+        }
+        
+        # Send information to target team
+        return await self.send_information(target_team, message)
