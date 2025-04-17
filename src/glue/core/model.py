@@ -49,6 +49,7 @@ class Model(BaseModel):
             
         # Initialize the base model
         super().__init__(config)
+        self._provider_tools = {} # Initialize the provider tools dictionary
         
         # Set up adhesives for compatibility
         self.adhesives = set()

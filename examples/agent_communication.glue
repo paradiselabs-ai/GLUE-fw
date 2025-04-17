@@ -13,7 +13,7 @@ glue app {
 // Define models
 model researcher {
     provider = openrouter
-    role = "Researcher who finds information and communicates with other models"
+    role = "Team Lead Researcher who finds information and communicates with other models"
     adhesives = [glue, velcro]
     config {
         model = "meta-llama/llama-3.3-70b-instruct:free"

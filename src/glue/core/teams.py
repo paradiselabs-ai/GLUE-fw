@@ -174,6 +174,7 @@ class Team:
         # Add model
         self.models[model.name] = model
         model.team = self  # Set team reference
+        model.is_lead = False # Default to not lead
         
         # Set up tools - use add_tool_sync to avoid async issues
         # Add all team tools to the model
@@ -188,11 +189,13 @@ class Team:
                     if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
                         model.add_tool_sync(tool_name, self._tools[tool_name])
                     
-        # Update config
+        # Update config and set lead flag
         if role == "lead":
             self.config.lead = model.name
             self.lead = model
+            model.is_lead = True # Explicitly set lead status on the model
         else:
+            # Ensure model is added to members list if not lead
             if model.name not in self.config.members:
                 self.config.members.append(model.name)
                 
@@ -514,12 +517,6 @@ class Team:
             content=target_response_content
         ))
         
-        # --- Potentially handle tool calls within the target's response --- 
-        # For now, we assume the target's response is final text. 
-        # If the target model *also* needs to call tools, this logic would need extension.
-        # Let's keep it simple: the direct_communication response is the text generated.
-
-        logger.info(f"Direct communication response from {to_model}: {target_response_content[:100]}...")
         return target_response_content
 
     def add_member_sync(
@@ -531,21 +528,34 @@ class Team:
         """Synchronous version of add_member for use in tests"""
         # Register the model with this team
         model.set_team(self)
+        model.is_lead = False # Default to not lead
         
         # Add to models dictionary
         self.models[model.name] = model
         
-        # Assign tools if specified
+        # Assign tools if specified (using sync add_tool for compatibility)
+        # Add all team tools to the model
+        for tool_name, tool in self._tools.items():
+            if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
+                 model.add_tool_sync(tool_name, tool)
+
+        # Add specific tools if provided
         if tools:
             for tool_name in tools:
-                if tool_name in self._tools:
-                    model.add_tool(tool_name, self._tools[tool_name])
+                 if tool_name in self._tools and tool_name not in model.tools:
+                    if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
+                        model.add_tool_sync(tool_name, self._tools[tool_name])
         
         # Set as lead if role is lead
         if role == "lead":
             self.config.lead = model.name
             self.lead = model
-        
+            model.is_lead = True # Explicitly set lead status on the model
+        else:
+            # Ensure model is added to members list if not lead
+             if model.name not in self.config.members:
+                self.config.members.append(model.name)
+
         logger.info(f"Added model {model.name} to team {self.name} with role {role}")
 
     async def create_agent_loops(self) -> None:
@@ -871,31 +881,47 @@ class Team:
                     # Process the message
                     logger.debug(f"Processing message in team {self.name} from {sender_name}: {message}")
                     
-                    # Extract content from message
-                    content = message.get("content", "")
-                    if isinstance(content, dict) and "content" in content:
-                        content = content["content"]
-                        
-                    # Get metadata
+                    # --- Extract Content and Metadata ---
+                    content = message.get("content", {})
                     metadata = message.get("metadata", {})
                     source_model_name = metadata.get("source_model")
                     target_model_name = metadata.get("target_model") # Check if a specific model is targeted
                     is_internal = metadata.get("internal", False)
                     broadcast_id = metadata.get("broadcast_id") # Get broadcast ID if present
+                    message_type = metadata.get("message_type") # Check for explicit message type
+                    
+                    # Determine message content payload based on structure
+                    payload_content = content # Default to the whole content dict if structured
+                    if isinstance(content, dict) and "type" in content:
+                        message_type = content.get("type") # Infer type from content if not in metadata
+                        if message_type == "task_assignment":
+                             payload_content = content.get("task_details", {})
+                             target_model_name = metadata.get("target_model") # Task assignments MUST have a target model
+                             logger.debug(f"Identified task assignment for {target_model_name}: {content.get('task_id')}")
+                        elif message_type == "task_update":
+                             payload_content = content.get("update_details", {})
+                             target_model_name = metadata.get("target_model") # Task updates MUST have a target model (the lead)
+                             logger.debug(f"Identified task update from {source_model_name} for {target_model_name}: {content.get('task_id')} Status: {content.get('status')}")
+                        # Handle other potential structured content types here
+                    elif isinstance(content, str):
+                         payload_content = content # Use raw string if not a dictionary
+                    
                     is_internal_broadcast = is_internal and target_model_name is None and broadcast_id is not None
-
+                    
                     # --- Message Routing Logic ---
                     recipients = []
-                    if is_internal_broadcast:
-                        # Internal broadcast to all team members
-                        logger.info(f"Internal team message detected. Broadcasting to all members of team {self.name}.")
-                        recipients = list(self.models.values())
-                    elif target_model_name and target_model_name in self.models:
-                        # Message targeted at a specific model (internal or external)
-                        logger.debug(f"Message targeted at specific model: {target_model_name}")
+                    if target_model_name and target_model_name in self.models:
+                        # Message explicitly targeted at a specific model (task assignment, task update, direct message)
+                        logger.debug(f"Message routed to specific target model: {target_model_name}")
+                        recipients.append(self.models[target_model_name])
+                    elif is_internal_broadcast:
+                        # Internal broadcast to all team members (triggered by communicate target_type=team)
+                        logger.info(f"Internal broadcast detected. Broadcasting to all members of team {self.name}.")
+                        # Exclude the sender of the broadcast
+                        recipients = [m for name, m in self.models.items() if name != source_model_name]
                     elif self.config.lead and self.config.lead in self.models:
                         # Default: External message or internal without specific target -> Route to lead
-                        logger.debug(f"Routing message from {sender_name} to lead model: {self.config.lead}")
+                        logger.debug(f"Routing message from {sender_name} (no specific target) to lead model: {self.config.lead}")
                         recipients.append(self.models[self.config.lead])
                     else:
                         logger.warning(f"No valid recipient (lead or target) found for message in team {self.name}. Discarding.")
@@ -905,57 +931,46 @@ class Team:
                     broadcast_responses = [] # List to store responses for this broadcast
                     for recipient_model in recipients:
                         try:
-                            # Create a formatted message for the recipient model
-                            model_message_content = f"Message from {source_model_name or sender_name}: {content}"
+                            # --- Format Message for Recipient Model --- 
+                            model_message_content = ""
+                            if message_type == "task_assignment":
+                                task_id = content.get("task_id", "N/A")
+                                adhesive = content.get("adhesive", "N/A")
+                                task_desc = payload_content.get("description", "No description.")
+                                model_message_content = f"Task Assigned (ID: {task_id}, Adhesive: {adhesive}) from Lead ({source_model_name}): {task_desc}"
+                                # Optionally include full payload details if needed by model:
+                                # model_message_content += f"\nDetails: {json.dumps(payload_content)}"
+                            elif message_type == "task_update":
+                                task_id = content.get("task_id", "N/A")
+                                status = content.get("status", "N/A")
+                                update_details = payload_content # Use the extracted details
+                                model_message_content = f"Task Update (ID: {task_id}, Status: {status}) from Agent ({source_model_name}): {json.dumps(update_details)}"
+                            else:
+                                # Default formatting for general messages
+                                final_content = payload_content if not isinstance(payload_content, dict) else json.dumps(payload_content)
+                                model_message_content = f"Message from {source_model_name or sender_name}: {final_content}"
+                            
+                            # Create the message object for the LLM
                             model_message = Message(
-                                role="system", # Use system role for inter-model/team messages
+                                role="user", # Present tasks/updates as user input to the recipient model
                                 content=model_message_content
                             )
                             
-                            logger.debug(f"Generating response from recipient model {recipient_model.name}")
-                            # Generate response (fire and forget for broadcasts, or handle response later)
-                            # For simplicity now, we just let the model process it. Response handling might need refinement.
+                            logger.debug(f"Generating response from recipient model {recipient_model.name} for message type '{message_type or 'general'}'")
+                            # Generate response (fire and forget for now, complex response handling can be added)
                             response = await recipient_model.generate_response([model_message]) 
                             
-                            # Store interaction in conversation history (adjust roles as needed)
+                            # Store interaction in conversation history (example)
+                            self.conversation_history.append(Message(
+                                role="system", 
+                                content=f"Processed {message_type or 'message'} for {recipient_model.name}: Input: {model_message_content[:100]}... Output: {response[:100]}..."
+                            ))
+
+                            # Collect broadcast responses if needed
                             if is_internal_broadcast:
                                 broadcast_responses.append({"model": recipient_model.name, "response": response})
-
-                            # TODO: Handle response logic? Should the lead respond on behalf of the team?
-                            # Should responses be aggregated? For now, individual models process internally.
                             
-                            # If the original sender was external and requires a response,
-                            # maybe only the lead's response should be sent back?
-                            # This part needs careful consideration based on desired team behavior.
-                            if sender and metadata.get("requires_response", False) and recipient_model.name == self.config.lead:
-                                 logger.info(f"Lead model {self.config.lead} generated response to external sender {sender_name}")
-                                 # Simplified response sending - assumes lead response is the one to send back
-                                 response_message = {
-                                     "content": response,
-                                     "metadata": {
-                                         "source_team": self.name,
-                                         "target_team": sender.name, # Use the original sender's name
-                                         "source_model": self.config.lead,
-                                         "is_response": True,
-                                         "message_id": metadata.get("message_id"),
-                                         "target_model": metadata.get("source_model")
-                                     }
-                                 }
-                                 # Find and use the correct flow to send back
-                                 sent_back = False
-                                 for flow in self.outgoing_flows:
-                                     if hasattr(flow, 'target') and flow.target == sender:
-                                         await flow.send_from_source(response_message)
-                                         sent_back = True
-                                         break
-                                 if not sent_back:
-                                      for flow in self.incoming_flows:
-                                         if hasattr(flow, 'source') and flow.source == sender:
-                                             await flow.send_from_target(response_message)
-                                             sent_back = True
-                                             break
-                                 if not sent_back:
-                                     logger.warning(f"Could not find flow to send response back to sender {sender_name}")
+                            # TODO: Advanced response handling (e.g., routing agent responses back to specific lead)
 
                         except Exception as model_e:
                             logger.error(f"Error processing message for recipient model {recipient_model.name} in team {self.name}: {model_e}")
@@ -1204,41 +1219,6 @@ class Team:
         self.updated_at = datetime.now()
         logger.info(f"Set {relationship} relationship with team {team_name}")
         
-    def add_member_sync(self, model: Model, role: str = "member", tools: Optional[Set[str]] = None) -> None:
-        """Add a model to the team synchronously.
-        
-        This is a synchronous version of add_member for use during setup.
-        
-        Args:
-            model: Model to add
-            role: Role of the model in the team (lead or member)
-            tools: Optional set of tool names to add to the model
-        """
-        if model.name in self.models:
-            logger.warning(f"Model {model.name} already in team {self.name}")
-            return
-            
-        # Add model
-        self.models[model.name] = model
-        model.team = self  # Set team reference
-        
-        # Set up tools
-        if tools:
-            for tool_name in tools:
-                if tool_name in self._tools:
-                    if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
-                        model.add_tool_sync(tool_name, self._tools[tool_name])
-                    
-        # Update config
-        if role == "lead":
-            self.config.lead = model.name
-            self.lead = model
-        else:
-            self.config.members.append(model.name)
-            
-        self.updated_at = datetime.now()
-        logger.info(f"Added model {model.name} to team {self.name} with role {role}")
-        
     async def initiate_communication(self, target_team: str, content: str, source_model: Optional[str] = None) -> bool:
         """Initiate communication with another team.
         
@@ -1246,11 +1226,11 @@ class Team:
         
         Args:
             target_team: Name of the target team
-            content: Content to send
-            source_model: Optional name of the source model
+            content: Message content
+            source_model: Optional name of the source model initiating the communication
             
         Returns:
-            True if communication was initiated successfully, False otherwise
+            True if communication was successfully initiated, False otherwise
         """
         # Use lead model if no source model specified
         if not source_model:

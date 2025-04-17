@@ -17,6 +17,8 @@ logger = logging.getLogger("glue.tools")
 from .tool_base import Tool, ToolConfig, ToolPermission
 from .file_handler_tool import FileHandlerTool, FileOperation
 from .code_interpreter_tool import CodeInterpreterTool, CodeLanguage
+# Import the new task management tools
+from .task_management_tools import AssignTaskTool, ReportTaskUpdateTool
 
 class SimpleBaseTool:
     """Base class for simple tools that can be used in GLUE applications.
@@ -126,3 +128,32 @@ def list_tools() -> List[str]:
         List of tool names
     """
     return list(_tool_registry.keys())
+    
+# Manually register class-based tools that don't use the decorator
+# This ensures they are known to the registry if not defined in the .glue file explicitly
+_tool_registry[FileHandlerTool().name] = FileHandlerTool()
+_tool_registry[CodeInterpreterTool().name] = CodeInterpreterTool()
+
+# Register the new task management tools
+# We instantiate them here so their names are correctly registered
+_tool_registry[AssignTaskTool().name] = AssignTaskTool() 
+_tool_registry[ReportTaskUpdateTool().name] = ReportTaskUpdateTool()
+
+logger.info(f"Tool registry initialized with: {list(_tool_registry.keys())}")
+
+# Export necessary symbols
+__all__ = [
+    "Tool",
+    "ToolConfig",
+    "ToolPermission",
+    "SimpleBaseTool",
+    "FileHandlerTool",
+    "FileOperation",
+    "CodeInterpreterTool",
+    "CodeLanguage",
+    "AssignTaskTool", # Export new tool
+    "ReportTaskUpdateTool", # Export new tool
+    "register_tool",
+    "get_tool",
+    "list_tools"
+]

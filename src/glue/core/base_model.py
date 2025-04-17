@@ -501,59 +501,103 @@ class BaseModel:
         """
         # Build the prompt
         prompt_parts = []
+        is_lead = False  # Flag to track if this model is a lead/orchestrator
         
         # Add the model identity
         prompt_parts.append(f"# Model: {self.name}")
-        
-        # Add the model role if defined
+
+        # --- Determine Lead Status (Role String ONLY) ---
+        # Check ONLY the role description string for lead keywords
+        if self.role and ('lead' in self.role.lower() or 'orchestrator' in self.role.lower()):
+             is_lead = True
+        # REMOVED: Fallback check comparing self.name to self.team.lead_model_name
+        # elif hasattr(self, 'team') and self.team is not None and hasattr(self.team, 'lead_model_name'):
+        #     if self.name == self.team.lead_model_name:
+        #         is_lead = True
+
+        # Add the model role description regardless of lead status check
         if self.role:
             prompt_parts.append(f"\n## Your Role\nYou are an AI assistant with the role: {self.role}")
         
+        # Add clarification based on the determined lead status
+        if is_lead:
+            prompt_parts.append("As the designated Team Lead/Orchestrator for your team, you are responsible for coordinating tasks and communication.")
+        else:
+            # Only add this clarification if a role was defined (to avoid adding it for models without roles)
+            if self.role: 
+                 prompt_parts.append("As a Team Member, you execute tasks assigned by your Team Lead.")
+
         # Add team context if available
         if hasattr(self, 'team') and self.team is not None:
-            prompt_parts.append(f"\n## Your Collaborators\nYou are part of the '{self.team.name}' group.")
+            prompt_parts.append(f"\n## Your Team: {self.team.name}")
             
-            # Include team members if available
+            # Include team members/lead if available
             if hasattr(self.team, 'models') and isinstance(self.team.models, dict):
-                team_members = [name for name in self.team.models.keys() if name != self.name]
-                if team_members:
-                    members_str = ", ".join(team_members)
-                    prompt_parts.append(f"Your collaborators: {members_str}")
+                if is_lead:
+                    team_members = [name for name in self.team.models.keys() if name != self.name]
+                    if team_members:
+                        members_str = ", ".join(team_members)
+                        prompt_parts.append(f"Your team members (Agents): {members_str}")
+                    else:
+                        prompt_parts.append("You are the only member of this team.")
                 else:
-                    prompt_parts.append("You are the only member of this group.")
+                    # Find the lead
+                    lead_name = getattr(self.team, 'lead_model_name', 'the Team Lead')
+                    prompt_parts.append(f"Your Team Lead is: {lead_name}")
+                    team_members = [name for name in self.team.models.keys() if name != self.name and name != lead_name]
+                    if team_members:
+                        members_str = ", ".join(team_members)
+                        prompt_parts.append(f"Your other team members: {members_str}")
         
-        # Add tool result behavior descriptions
+        # Add detailed adhesive descriptions
         adhesives = getattr(self, 'adhesives', set())
         if adhesives:
-            prompt_parts.append("\n## Tool Result Behavior")
-            behavior_descriptions = []
-            
-            if AdhesiveType.GLUE in adhesives:
-                behavior_descriptions.append("**Shared Results**: Some tool results are automatically shared and persisted within your group.")
+            prompt_parts.append("\n## Adhesive Semantics")
+            prompt_parts.append("Adhesives determine how tool outputs or intermediate results are handled:")
+            if AdhesiveType.TAPE in adhesives: # Assuming AdhesiveType.TAPE exists or is added
+                 prompt_parts.append("- **Tape:** For rapid, transient checks. Outputs are discarded immediately after use. Use for quick tests or disposable results.")
             if AdhesiveType.VELCRO in adhesives:
-                behavior_descriptions.append("**Private Results**: Some tool results are kept private to you and persist only for the current session.")
-            
-            if behavior_descriptions:
-                 prompt_parts.append("\n".join(behavior_descriptions))
+                prompt_parts.append("- **Velcro:** For intermediate results during iterative work *within a single tool invocation or sub-task*. Cached locally for the session, then flushed to the Team Lead. Not persisted long-term.")
+            if AdhesiveType.GLUE in adhesives:
+                prompt_parts.append("- **Glue:** For final, validated outputs intended for persistence and sharing. Results are stored in the team's Knowledge Base (KB) and are accessible across the team and potentially other teams.")
+            prompt_parts.append("Always consider the required adhesive when planning or executing tasks.")
 
-        # Add response guidelines
-        prompt_parts.append("""
-## Response Guidelines
-1. Stay focused on your role and the current task.
-2. **Goal Adherence:** After using tools or communicating with collaborators, always review the original request and ensure your final response directly addresses the primary objective.
-3. Consider how tool results are shared or persisted when choosing tools.
-4. Collaborate effectively with your collaborators.
-5. Follow established communication patterns.
-6. Maintain a professional and helpful tone.
+
+        # Add workflow instructions based on role
+        prompt_parts.append("\n## Workflow & Response Guidelines")
+        if is_lead: # This check should now be reliable based ONLY on role string
+             prompt_parts.append("""
+As the Team Lead Orchestrator (TLO):
+1.  **Decomposition:** Break down incoming tasks into smaller, manageable sub-tasks for your agents.
+2.  **Assignment:** Assign sub-tasks to appropriate agents using the `communicate` tool. Your message **must** clearly state the required **adhesive** (Tape, Velcro, Glue) for the expected output. Example: `"Assigning task X to agent Y with adhesive Velcro: [task description]"`.
+3.  **Execution Oversight:** Monitor agent progress. **Wait** for feedback messages (e.g., status `session_complete` or `final_validated`) from agents via `communicate` before proceeding, especially for Velcro/Glue tasks. Do not act on intermediate tool calls from the agent as final results.
+4.  **Aggregation & QA:** Once agent results are reported (with status `session_complete` or `final_validated`), collect and consolidate them. Validate final (Glue) outputs for coherence and quality. Use Tape/Velcro for quick internal checks if needed.
+5.  **Glue Persistence:** Ensure final, verified outputs are appropriately stored (implicitly via tool use or explicitly instructed if needed).
+6.  **Inter-Team Communication:** Use the `communicate` tool (target_type='team') to share Glue-verified outputs with other relevant teams or to coordinate during interactive pauses. Acknowledge receipts.
+7.  **Interactive Mode Handling:** If the system pauses for user clarification, coordinate with other Team Leads, refine the task based on user input, and redistribute updated instructions to your agents. Agents will 'hold' during this phase.
+8.  **Final Delivery:** Compile the final, Glue-verified deliverable(s) and provide a summary report if applicable. Address the original user request comprehensively based *only* on Glue-verified results reported by agents.
+""")
+        else: # Instructions for Agents/Members
+             prompt_parts.append("""
+As a Team Member (Agent):
+1.  **Execute Tasks:** Perform tasks assigned by your Team Lead via the `communicate` tool.
+2.  **Adhere to Adhesives:** Pay close attention to the **adhesive** specified by the lead for your task:
+    *   **Tape:** Perform quick checks; results are transient and not explicitly reported unless requested.
+    *   **Velcro:** Perform iterative work, potentially using tools. Report intermediate results back to the Lead via `communicate` upon completion of your assigned sub-task session.
+    *   **Glue:** Perform final validation or generation tasks. Ensure outputs meet quality standards. The persistence to the KB might be handled by the tool or framework, but confirm task completion with the Lead via `communicate`.
+3.  **Report Back:** Use the `communicate` tool (target_type='model', target_name='<lead_name>') to report completion status, results (especially for Velcro/Glue), or any issues encountered. Reference the original task context.
+4.  **Interactive Mode Handling:** If the Team Lead signals a 'hold' due to user interaction, pause your current task and await further instructions.
+5.  **Goal Focus:** Stay focused on the specific sub-task assigned to you by the lead.
 """)
 
-        # Add generic tool usage instructions
+        # Add generic tool usage instructions (slightly modified)
         prompt_parts.append("""
 ## Tool Usage Instructions
 To use the available tools:
-- If you support native tool calling (e.g., function calling), use that method. Provide all required parameters as specified in the tool description.
-- In some situations, you might be instructed to use a specific format (e.g., a JSON object or a specific code block) to trigger a tool call. Follow those instructions precisely if provided.
-- Always refer to the "Available Tools" section (added when tools are available) for names, descriptions, and parameters.
+- Use the appropriate method (native call or specified format like JSON) based on the model's capabilities and instructions.
+- Provide all required parameters precisely.
+- **Adhesive Context:** Remember that the *Team Lead* specifies the intended adhesive for the *overall sub-task*. How a specific *tool* uses adhesives (Tape/Velcro/Glue) internally might be predefined by the tool itself, but your final reporting back to the lead should align with the lead's specified adhesive requirement for your assigned work.
+- Always refer to the 'Available Tools' section for details.
 """)
 
         # Join all parts
