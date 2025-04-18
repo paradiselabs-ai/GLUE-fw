@@ -15,10 +15,35 @@ import argparse
 import logging
 import re
 import uuid
+import datetime
+import time
 from pathlib import Path
+from typing import Dict, List, Any, Optional, Tuple, Union
+
+# Rich UI components
 from rich import print
-from rich.console import Console
+from rich.console import Console, Group
 from rich.syntax import Syntax
+from rich.panel import Panel
+from rich.markdown import Markdown
+from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
+from rich.prompt import Prompt, Confirm, IntPrompt
+from rich.layout import Layout
+from rich.live import Live
+from rich.traceback import install as install_rich_traceback
+from rich.align import Align
+from rich.box import ROUNDED, DOUBLE, HEAVY, Box
+from rich.columns import Columns
+from rich.highlighter import ReprHighlighter
+from rich.style import Style
+from rich.text import Text
+from rich.tree import Tree
+from rich.rule import Rule
+from rich.theme import Theme
+from rich.emoji import Emoji
+from rich.segment import Segment
+from rich.status import Status
 
 # Import framework modules
 # Use direct imports to avoid circular imports
@@ -27,9 +52,14 @@ from glue.dsl import GlueDSLParser, GlueLexer
 
 # Import new utilities
 from .utils.json_utils import extract_json
+from .cliHelpers import parse_interactive_command, colorize_agent_output, format_agent_message, get_interactive_help_text
 
 # Constants for tools
-AVAILABLE_TOOLS = {
+def get_available_tools():
+    """retrieve available tools from the tool registry."""
+        
+    # Fallback if dynamic retrieval fails
+    return {
     "web_search": {
         "description": "Search the web for information",
         "parameters": {"query": "string"}
@@ -42,11 +72,10 @@ AVAILABLE_TOOLS = {
         "description": "Execute Python code",
         "parameters": {"code": "string"}
     },
-    "communicate": {
-        "description": "Communicate with other models or teams",
-        "parameters": {"target_type": "string", "target_name": "string", "message": "string"}
-    }
 }
+
+# Replace the hardcoded constant with a function call
+AVAILABLE_TOOLS = get_available_tools()
 
 # Version information
 __version__ = "0.1.0-alpha"  # Updated for alpha release
@@ -56,6 +85,138 @@ DEFAULT_ENV_FILE = ".env"
 CONFIG_DIR = os.path.expanduser("~/.glue")
 LOGS_DIR = os.path.join(CONFIG_DIR, "logs")
 TEMPLATES_DIR = os.path.join(CONFIG_DIR, "templates")
+WORKSPACE_DIR = os.path.join(CONFIG_DIR, "workspace")
+
+# Define custom Rich theme
+GLUE_THEME = Theme({
+    "info": "dim cyan",
+    "warning": "yellow",
+    "danger": "bold red",
+    "success": "bold green",
+    "command": "bold magenta",
+    "heading": "bold blue",
+    "filename": "cyan",
+    "filepath": "bold cyan",
+    "prompt": "bold cyan",
+    "input": "white",
+    "muted": "dim white",
+    "title": "bold green",
+    "subtitle": "dim green",
+    "url": "underline cyan",
+    "error": "red",
+    "debug": "dim",
+    "model.researcher": "green",
+    "model.assistant": "cyan",
+    "model.writer": "magenta",
+    "model.editor": "yellow",
+    "team": "bold blue",
+    "tool": "bold yellow",
+    "code": "green",
+    "json": "yellow",
+    "highlight": "bold white on blue",
+    "app.name": "bold cyan",
+    "app.value": "white",
+})
+
+# CLI Configuration
+CLI_CONFIG = {
+    "theme": {
+        "app_name": "app.name",
+        "section_title": "heading",
+        "success": "success",
+        "error": "danger",
+        "warning": "warning",
+        "info": "info",
+        "command": "command",
+        "prompt": "prompt",
+        "input": "input",
+        "model": {
+            "researcher": "model.researcher",
+            "assistant": "model.assistant",
+            "writer": "model.writer",
+            "editor": "model.editor",
+            "default": "white"
+        }
+    },
+    "layout": {
+        "show_header": True,
+        "show_footer": True,
+        "compact_mode": False,
+        "use_animations": True,
+        "loading_animations": {
+            "dots": "dots",
+            "dots2": "dots2",
+            "dots3": "dots3", 
+            "dots4": "dots4",
+            "line": "line",
+            "bounce": "bounce",
+            "pulse": "pulse"
+        }
+    },
+    "display": {
+        "show_timestamps": True,
+        "verbose_errors": False,
+        "color_enabled": True,
+        "show_emoji": True,
+        "use_unicode_symbols": True,
+        "box_style": ROUNDED,
+        "table_box": ROUNDED,
+        "panel_box": ROUNDED,
+        "interactive_mode": {
+            "show_thinking": False,
+            "step_by_step": False,
+            "history_length": 10,
+            "show_typing_animation": True
+        }
+    },
+    "emoji": {
+        "success": "✅",
+        "error": "❌",
+        "warning": "⚠️",
+        "info": "ℹ️",
+        "tool": "🔧",
+        "model": "🧠",
+        "team": "👥",
+        "config": "⚙️",
+        "file": "📄",
+        "folder": "📁",
+        "app": "🚀",
+        "search": "🔍",
+        "loading": "⏳",
+        "run": "▶️",
+        "stop": "⏹️",
+    }
+}
+
+# ASCII art logo with gradient color styling
+GLUE_LOGO = r"""[bold blue]
+   ██████╗  ██╗      ██╗   ██╗ ███████╗
+  ██╔════╝  ██║      ██║   ██║ ██╔════╝
+  ██║  ███╗ ██║      ██║   ██║ █████╗  
+  ██║   ██║ ██║      ██║   ██║ ██╔══╝  
+  ╚██████╔╝ ███████╗ ╚██████╔╝ ███████╗
+   ╚═════╝  ╚══════╝  ╚═════╝  ╚══════╝
+[/bold blue][bold cyan]                                 
+  GenAI Linking & Unification Engine v{__version__}
+[/bold cyan]"""
+
+# Command categories for help display
+COMMAND_CATEGORIES = {
+    "core": ["run", "new", "validate", "version"],
+    "dev": ["forge", "list-tools", "list-models"],
+    "interactive": ["help", "status", "tools", "teams", "clear", "verbose", "step", "color", "exit"]
+}
+
+# Template types with descriptions
+TEMPLATES = {
+    "basic": "Simple app with a single model",
+    "research": "Research-focused app with web search tools",
+    "chat": "Chat application with multiple collaborating models",
+    "agent": "Full agent system with autonomy and complex workflows"
+}
+
+# Install rich traceback handler with custom settings
+install_rich_traceback(show_locals=True, width=None, suppress=[re])
 
 # Helper functions for formatting and display
 def format_component_name(name: str, component_type: str = "component") -> tuple:
@@ -81,6 +242,24 @@ def format_component_name(name: str, component_type: str = "component") -> tuple
     class_name = "".join(word.capitalize() for word in name_lower.split())
     
     return dir_name, module_name, class_name
+
+def display_section_header(console: Console, title: str, emoji: Optional[str] = None) -> None:
+    """Display a section header.
+    
+    Args:
+        console: Rich console to use for display
+        title: Section title
+        emoji: Optional emoji to display before the title
+    """
+    if CLI_CONFIG["display"]["show_emoji"] and emoji and emoji in CLI_CONFIG["emoji"]:
+        emoji_str = f"{CLI_CONFIG['emoji'][emoji]} "
+    elif emoji:
+        emoji_str = f"{emoji} "
+    else:
+        emoji_str = ""
+    
+    rule = Rule(f"{emoji_str}{title}", style=CLI_CONFIG["theme"]["section_title"])
+    console.print(rule)
 
 # ==================== Application Functions ====================
 async def run_app(config_file: str, interactive: bool = False, input_text: str = None) -> bool:
@@ -155,18 +334,17 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         app = GlueApp(config=ast)
         
         # Setup the app first
-        print("[DEBUG] Before app.setup()")
+        logger.debug("Setting up application")
         await app.setup()
-        print("[DEBUG] After app.setup()")
+        logger.debug("Application setup complete")
         
         # Display available tools if in interactive mode
         if interactive:
-            display_available_tools(app)
             logger.info("Starting interactive session")
             print(f"\nStarting interactive session with {app.name}")
-            print("[DEBUG] Before run_interactive_session()")
+            logger.debug("Entering interactive session")
             await run_interactive_session(app)
-            print("[DEBUG] After run_interactive_session()")
+            logger.debug("Interactive session complete")
             return True
         
         # Non-interactive mode
@@ -335,88 +513,528 @@ async def run_interactive_session(app: GlueApp) -> None:
         app: The GLUE application to run
     """
     logger = logging.getLogger("glue.interactive")
-    console = Console()
+    console = get_console()
     
-    # Assume app.setup() has already been called by run_app
+    # State management for interactive session
+    state = {
+        "history": [],                           # Message history
+        "verbose_mode": False,                   # Show internal messages 
+        "step_mode": False,                      # Step by step execution
+        "color_enabled": True,                   # Color output
+        "thinking_visible": False,               # Show model thinking
+        "current_team": None,                    # Currently selected team
+        "current_model": None,                   # Currently selected model
+        "awaiting_next_step": False              # Waiting for next step in step mode
+    }
     
-    console.print(f"[bold green]Interactive session started with {app.name}. Type 'quit' or 'exit' to end.[/bold green]")
-    console.print("Enter your message below:")
+    # Display welcome banner
+    display_logo(console)
+    
+    # Handle the case where app name might be None or empty
+    if app.name:
+        welcome_line1 = "Welcome to the interactive GLUE session for:"
+        welcome_line2 = app.name
+    else:
+        welcome_line1 = "Welcome to the interactive GLUE session!"
+        welcome_line2 = ""
+    
+    # Create tip text with styled commands
+    from rich.text import Text
+    
+    tip_text = Text("Type ", style="")
+    tip_text.append("/help", style="green bold")
+    tip_text.append(" to see available commands or ", style="")
+    tip_text.append("/exit", style="green bold")
+    tip_text.append(" to quit.", style="")
+    
+    welcome_panel = Panel(
+        Group(
+            Align.center(welcome_line1, style="cyan"),
+            Align.center(welcome_line2, style="bold cyan") if welcome_line2 else None,
+            Rule(style="dim"),
+            Align.center(tip_text)
+        ),
+        title="Interactive Mode",
+        border_style="green",
+        box=CLI_CONFIG["display"]["panel_box"],
+        padding=(1, 2)
+    )
+    console.print(welcome_panel)
+    
+    # Display session information
+    if CLI_CONFIG["display"]["show_emoji"]:
+        display_section_header(console, "Session Information", emoji="info")
+    else:
+        display_section_header(console, "Session Information")
+    
+    # Show application structure
+    columns = Columns([
+        create_status_panel(app, state),
+        create_model_tree(app.teams)
+    ], equal=True, expand=True)
+    console.print(columns)
+    
+    # Show available tools
+    if app.tools:
+        if CLI_CONFIG["display"]["show_emoji"]:
+            display_section_header(console, "Available Tools", emoji="tool")
+        else:
+            display_section_header(console, "Available Tools")
+        filtered_tools = {name: tool for name, tool in app.tools.items() if name != "communicate"}
+        console.print(create_tool_table(filtered_tools))
+    
+    # Display initial instructions
+    console.print("\n[info]Type your message or command below:[/info]")
+    
+    # Command history for arrow key navigation
+    command_history = []
+    history_index = 0
     
     while True:
         try:
-            user_input = await asyncio.to_thread(console.input, "> ")
+            # Create prompt based on current context
+            prompt_style = CLI_CONFIG["theme"]["prompt"]
+            input_style = CLI_CONFIG["theme"]["input"]
             
-            if user_input.lower() in ["quit", "exit"]:
-                console.print("[bold yellow]Exiting interactive session.[/bold yellow]")
+            if state["current_team"]:
+                team_style = "team"
+                prompt_text = f"[{prompt_style}][{team_style}]{state['current_team']}[/{team_style}]>[/{prompt_style}] "
+            elif state["current_model"]:
+                model_style = CLI_CONFIG["theme"]["model"].get(
+                    state["current_model"], CLI_CONFIG["theme"]["model"]["default"]
+                )
+                prompt_text = f"[{prompt_style}][{model_style}]{state['current_model']}[/{model_style}]>[/{prompt_style}] "
+            else:
+                prompt_text = f"[{prompt_style}]glue>[/{prompt_style}] "
+            
+            # Get user input
+            user_input = await asyncio.to_thread(
+                lambda: Prompt.ask(prompt_text, console=console)
+            )
+            
+            # Process exit commands
+            if user_input.lower() in ["quit", "exit", "/exit", "/quit"]:
+                console.print(f"[{CLI_CONFIG['theme']['success']}]Exiting interactive session.[/{CLI_CONFIG['theme']['success']}]")
                 break
                 
+            # Skip empty input
             if not user_input:
                 continue
                 
+            # Add to command history
+            if user_input not in command_history:
+                command_history.append(user_input)
+                history_index = len(command_history)
+            
+            # Process command if it starts with /
+            if user_input.startswith('/'):
+                command, args = parse_interactive_command(user_input)
+                
+                # Command parsing and handling
+                if command == "help":
+                    show_interactive_help(console)
+                    continue
+                    
+                elif command == "status":
+                    # Display current status information
+                    status_panel = create_status_panel(app, state)
+                    console.print(status_panel)
+                    continue
+                    
+                elif command == "tools":
+                    # Display available tools
+                    if CLI_CONFIG["display"]["show_emoji"]:
+                        display_section_header(console, "Available Tools", emoji="tool")
+                    else:
+                        display_section_header(console, "Available Tools")
+                    filtered_tools = {name: tool for name, tool in app.tools.items() if name != "communicate"}
+                    console.print(create_tool_table(filtered_tools))
+                    continue
+                    
+                elif command == "teams":
+                    # Display team structure
+                    if CLI_CONFIG["display"]["show_emoji"]:
+                        display_section_header(console, "Team Structure", emoji="team")
+                    else:
+                        display_section_header(console, "Team Structure")
+                    console.print(create_team_table(app.teams))
+                    continue
+                    
+                elif command == "models":
+                    # Display model structure as a tree
+                    if CLI_CONFIG["display"]["show_emoji"]:
+                        display_section_header(console, "Model Structure", emoji="model")
+                    else: 
+                        display_section_header(console, "Model Structure")
+                    console.print(create_model_tree(app.teams))
+                    continue
+                    
+                elif command == "clear":
+                    # Clear conversation history
+                    state["history"] = []
+                    console.print(f"[{CLI_CONFIG['theme']['success']}]Conversation history cleared.[/{CLI_CONFIG['theme']['success']}]")
+                    continue
+                    
+                elif command == "verbose":
+                    # Toggle verbose mode
+                    state["verbose_mode"] = not state["verbose_mode"]
+                    mode = "enabled" if state["verbose_mode"] else "disabled"
+                    icon = "✅" if state["verbose_mode"] else "❌"
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Verbose mode {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
+                    continue
+                    
+                elif command == "step":
+                    # Toggle step-by-step mode
+                    state["step_mode"] = not state["step_mode"]
+                    mode = "enabled" if state["step_mode"] else "disabled"
+                    icon = "✅" if state["step_mode"] else "❌"
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Step-by-step mode {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
+                    continue
+                    
+                elif command == "next" and state["step_mode"] and state["awaiting_next_step"]:
+                    # Proceed to next step in step mode
+                    state["awaiting_next_step"] = False
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Proceeding to next step...[/{CLI_CONFIG['theme']['info']}]")
+                    # Execution will continue below
+                
+                elif command == "color":
+                    # Toggle color output
+                    if len(args) > 0 and args[0].lower() in ["on", "off"]:
+                        state["color_enabled"] = args[0].lower() == "on"
+                        mode = "enabled" if state["color_enabled"] else "disabled"
+                        icon = "✅" if state["color_enabled"] else "❌"
+                        console.print(f"[{CLI_CONFIG['theme']['info']}]Color output {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
+                    else:
+                        console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /color [on|off][/{CLI_CONFIG['theme']['warning']}]")
+                    continue
+                
+                elif command == "team":
+                    # Switch to a specific team
+                    if len(args) > 0:
+                        team_name = args[0]
+                        if team_name in app.teams:
+                            state["current_team"] = team_name
+                            state["current_model"] = None
+                            console.print(f"[{CLI_CONFIG['theme']['success']}]Switched to team: [team]{team_name}[/team][/{CLI_CONFIG['theme']['success']}]")
+                        else:
+                            console.print(f"[{CLI_CONFIG['theme']['error']}]Team not found: {team_name}[/{CLI_CONFIG['theme']['error']}]")
+                    else:
+                        console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /team [team_name][/{CLI_CONFIG['theme']['warning']}]")
+                    continue
+                
+                elif command == "model":
+                    # Switch to a specific model
+                    if len(args) > 0:
+                        model_name = args[0]
+                        # Check if model exists in any team
+                        model_found = False
+                        for team_name, team in app.teams.items():
+                            if hasattr(team, "lead") and team.lead and team.lead.name == model_name:
+                                model_found = True
+                                break
+                            if hasattr(team, "members"):
+                                for member in team.members:
+                                    if member.name == model_name:
+                                        model_found = True
+                                        break
+                        
+                        if model_found:
+                            state["current_model"] = model_name
+                            state["current_team"] = None
+                            model_style = CLI_CONFIG["theme"]["model"].get(
+                                model_name, CLI_CONFIG["theme"]["model"]["default"]
+                            )
+                            console.print(f"[{CLI_CONFIG['theme']['success']}]Switched to model: [{model_style}]{model_name}[/{model_style}][/{CLI_CONFIG['theme']['success']}]")
+                        else:
+                            console.print(f"[{CLI_CONFIG['theme']['error']}]Model not found: {model_name}[/{CLI_CONFIG['theme']['error']}]")
+                    else:
+                        console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /model [model_name][/{CLI_CONFIG['theme']['warning']}]")
+                    continue
+                    
+                elif command == "thinking":
+                    # Toggle model thinking visibility
+                    state["thinking_visible"] = not state["thinking_visible"]
+                    mode = "visible" if state["thinking_visible"] else "hidden"
+                    icon = "✅" if state["thinking_visible"] else "❌"
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Model thinking is now {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
+                    continue
+                
+                elif command == "refresh":
+                    # Refresh the display
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Refreshing display...[/{CLI_CONFIG['theme']['info']}]")
+                    # Show application structure
+                    columns = Columns([
+                        create_status_panel(app, state),
+                        create_model_tree(app.teams)
+                    ], equal=True, expand=True)
+                    console.print(columns)
+                    continue
+                
+                else:
+                    console.print(f"[{CLI_CONFIG['theme']['error']}]Unknown command: {command}[/{CLI_CONFIG['theme']['error']}]")
+                    continue
+            
+            # Process regular input (non-command)
             logger.info(f"User input: {user_input}")
+            state["history"].append({"role": "user", "content": user_input})
             
-            # Run the application with the user input
-            console.print("[italic cyan]Processing...[/italic cyan]")
-            response = await app.run(user_input)
+            # Get appropriate spinner based on verbosity
+            spinner = CLI_CONFIG["layout"]["loading_animations"].get("dots", "dots")
             
-            # Format and print the response
-            console.print(f"\n[bold magenta]{app.name}:[/bold magenta]")
-            
-            if isinstance(response, str):
-                 # Check for JSON tool call using the utility function
-                 tool_call_data = extract_json(response)
-                 
-                 if tool_call_data:
-                     logger.info(f"Detected JSON in response (likely tool call): {tool_call_data}")
-                     # Pretty print the detected JSON
-                     json_str = json.dumps(tool_call_data, indent=2)
-                     syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                     console.print("[bold yellow]Detected Tool Call:[/bold yellow]")
-                     console.print(syntax)
-                     # Print the rest of the response text if any
-                     # (This assumes the JSON is the primary content if found)
-                     # A more sophisticated approach might try to print text around the JSON
-                     # For now, if JSON is found, we primarily display that.
-                 else:
-                     # If no JSON found, print the raw string response
-                     console.print(response)
-                     
-            elif isinstance(response, dict) or isinstance(response, list):
-                 # Pretty print dictionaries or lists
-                 json_str = json.dumps(response, indent=2)
-                 syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                 console.print(syntax)
+            # Run with or without status indicator based on verbosity level
+            if logger.level <= logging.INFO:
+                # In verbose mode, don't show spinner to avoid interfering with log output
+                logger.debug("Processing input without status indicator (verbose mode)")
+                if state["current_team"]:
+                    # Direct message to specific team
+                    response = await app.teams[state["current_team"]].process_message(user_input)
+                elif state["current_model"]:
+                    # Direct message to specific model
+                    model = None
+                    # Find model in teams
+                    for team_name, team in app.teams.items():
+                        if hasattr(team, "lead") and team.lead and team.lead.name == state["current_model"]:
+                            model = team.lead
+                            break
+                        if hasattr(team, "members"):
+                            for member in team.members:
+                                if member.name == state["current_model"]:
+                                    model = member
+                                    break
+                    
+                    if model:
+                        response = await model.generate_response(messages=[{"role": "user", "content": user_input}])
+                    else:
+                        console.print(f"[{CLI_CONFIG['theme']['error']}]Error: Model {state['current_model']} not found or not accessible.[/{CLI_CONFIG['theme']['error']}]")
+                        continue
+                else:
+                    # Default routing through app
+                    response = await app.run(user_input)
             else:
-                 # Print any other type of response as string
-                 console.print(str(response))
-
-            console.print("\nEnter your message below:")
+                # In normal mode, show spinner status indicator
+                with Status(f"[info]Processing...[/info]", spinner=spinner, console=console):
+                    if state["current_team"]:
+                        # Direct message to specific team
+                        response = await app.teams[state["current_team"]].process_message(user_input)
+                    elif state["current_model"]:
+                        # Direct message to specific model
+                        model = None
+                        # Find model in teams
+                        for team_name, team in app.teams.items():
+                            if hasattr(team, "lead") and team.lead and team.lead.name == state["current_model"]:
+                                model = team.lead
+                                break
+                            if hasattr(team, "members"):
+                                for member in team.members:
+                                    if member.name == state["current_model"]:
+                                        model = member
+                                        break
+                        
+                        if model:
+                            response = await model.generate_response(messages=[{"role": "user", "content": user_input}])
+                        else:
+                            console.print(f"[{CLI_CONFIG['theme']['error']}]Error: Model {state['current_model']} not found or not accessible.[/{CLI_CONFIG['theme']['error']}]")
+                            continue
+                    else:
+                        # Default routing through app
+                        response = await app.run(user_input)
+            
+            # Determine the source (current team, model or app name)
+            source = state.get("current_team") or state.get("current_model") or app.name
+            
+            # Check for warnings in the response if it's a string
+            if isinstance(response, str):
+                # Look for different warning patterns
+                warning_patterns = [
+                    "does not support tool use", 
+                    "Warning:", 
+                    "Error:",
+                    "Retrying with"
+                ]
+                
+                # Check if any pattern is in the response
+                has_warning = any(pattern in response for pattern in warning_patterns)
+                
+                if has_warning:
+                    # Process multi-line response to extract warnings
+                    lines = response.split('\n')
+                    warning_lines = []
+                    content_lines = []
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if any(pattern in line for pattern in warning_patterns):
+                            # Clean up the warning line
+                            clean_line = line
+                            if "Warning:" in line:
+                                clean_line = line[line.find("Warning:") + 8:].strip()
+                            warning_lines.append(clean_line)
+                        elif line:  # Skip empty lines
+                            content_lines.append(line)
+                    
+                    # Display all warnings in a single panel
+                    if warning_lines:
+                        combined_warning = "\n".join(warning_lines)
+                        display_warning(console, combined_warning)
+                    
+                    # Update response to only include content
+                    if content_lines:
+                        response = "\n".join(content_lines)
+                    else:
+                        response = "I'll try to process your request."
+            
+            # Format and display the response
+            display_response(console, response, source, state)
+            
+            # In step mode, wait for user to continue
+            if state["step_mode"]:
+                state["awaiting_next_step"] = True
+                next_step_panel = Panel(
+                    "Type [command]/next[/command] to continue or enter a new input to proceed",
+                    title="Step Completed",
+                    border_style="info",
+                    box=CLI_CONFIG["display"]["panel_box"]
+                )
+                console.print(next_step_panel)
                 
         except KeyboardInterrupt:
-            console.print("\n[bold yellow]Interrupted. Exiting session.[/bold yellow]")
+            console.print(f"\n[{CLI_CONFIG['theme']['warning']}]Interrupted. Exiting session.[/{CLI_CONFIG['theme']['warning']}]")
             break
         except Exception as e:
             logger.error(f"Error during interactive session: {e}", exc_info=True)
-            console.print(f"[bold red]An error occurred: {e}[/bold red]")
-            # Optionally, continue the loop or break
-            # continue 
+            if CLI_CONFIG["display"]["verbose_errors"]:
+                console.print_exception()
+            else:
+                error_panel = Panel(
+                    str(e),
+                    title="Error Occurred",
+                    border_style="danger",
+                    box=CLI_CONFIG["display"]["panel_box"]
+                )
+                console.print(error_panel)
 
-    logger.info("Interactive session ended.")
+    logger.debug("Interactive session ended.")
+    console.print(f"[{CLI_CONFIG['theme']['success']}]Interactive session ended. Thank you for using GLUE![/{CLI_CONFIG['theme']['success']}]")
 
-def display_available_tools(app: GlueApp) -> None:
-    """Display the available tools in the GLUE application.
+def display_response(console: Console, response: Any, source: str, state: Dict[str, Any]) -> None:
+    """Display a response from the application with enhanced visuals.
     
     Args:
-        app: The GLUE application
+        console: Rich console to use for display
+        response: The response to display
+        source: Source of the response (team or model name)
+        state: The current session state
     """
-    print("\nAvailable tools:")
-    # Implementation depends on how tools are stored in the app
-    for tool_name, tool in app.tools.items():
-        if isinstance(tool, dict):
-            description = tool.get("description", "No description available")
+    # Create a panel for the response
+    console.print("")  # Add space before response
+    
+    # Determine the appropriate styling based on the source
+    if state.get("current_team"):
+        panel_style = "team"
+        emoji = CLI_CONFIG["emoji"]["team"] if CLI_CONFIG["display"]["show_emoji"] else ""
+    elif state.get("current_model"):
+        model_name = state.get("current_model")
+        panel_style = CLI_CONFIG["theme"]["model"].get(model_name, CLI_CONFIG["theme"]["model"]["default"])
+        emoji = CLI_CONFIG["emoji"]["model"] if CLI_CONFIG["display"]["show_emoji"] else ""
+    else:
+        panel_style = "app.name"
+        emoji = CLI_CONFIG["emoji"]["app"] if CLI_CONFIG["display"]["show_emoji"] else ""
+    
+    title = f"{emoji} Response from {source}" if emoji else f"Response from {source}"
+    
+    # Format the response based on its type
+    if isinstance(response, str):
+        # Check for JSON tool call using the utility function
+        tool_call_data = extract_json(response)
+        
+        if tool_call_data:
+            # Format JSON for tool calls
+            json_str = json.dumps(tool_call_data, indent=2)
+            syntax = Syntax(json_str, "json", theme="monokai", line_numbers=False)
+            
+            # Add tool emoji if enabled
+            tool_emoji = CLI_CONFIG["emoji"]["tool"] if CLI_CONFIG["display"]["show_emoji"] else ""
+            tool_title = f"{tool_emoji} Tool Call" if tool_emoji else "Tool Call"
+            
+            # Create nested panels for tool calls
+            tool_panel = Panel(
+                syntax,
+                title=tool_title,
+                border_style="tool",
+                box=CLI_CONFIG["display"]["panel_box"]
+            )
+            
+            response_panel = Panel(
+                tool_panel,
+                title=title,
+                border_style=panel_style,
+                box=CLI_CONFIG["display"]["panel_box"],
+                padding=(1, 2)
+            )
+            
+            console.print(response_panel)
+            
+            # Save to history
+            state["history"].append({"role": "assistant", "content": response, "is_tool_call": True})
         else:
-            description = getattr(tool, "description", "No description available")
-        print(f"  {tool_name} - {description}")
+            # For plain text, try to detect and render markdown
+            try:
+                md = Markdown(response)
+                # Print directly without animation, even if animation is enabled in config
+                response_panel = Panel(
+                    md,
+                    title=title,
+                    border_style=panel_style,
+                    box=CLI_CONFIG["display"]["panel_box"],
+                    padding=(1, 2)
+                )
+                console.print(response_panel)
+            except Exception:
+                # Fall back to plain text if markdown rendering fails
+                response_panel = Panel(
+                    response,
+                    title=title,
+                    border_style=panel_style,
+                    box=CLI_CONFIG["display"]["panel_box"],
+                    padding=(1, 2)
+                )
+                console.print(response_panel)
+            
+            # Save to history
+            state["history"].append({"role": "assistant", "content": response})
+    
+    elif isinstance(response, dict) or isinstance(response, list):
+        # Pretty print structured data
+        json_str = json.dumps(response, indent=2)
+        syntax = Syntax(json_str, "json", theme="monokai", line_numbers=False)
+        
+        response_panel = Panel(
+            syntax,
+            title=title,
+            border_style=panel_style,
+            box=CLI_CONFIG["display"]["panel_box"],
+            padding=(1, 2)
+        )
+        
+        console.print(response_panel)
+        
+        # Save to history
+        state["history"].append({"role": "assistant", "content": response})
+    
+    else:
+        # Handle any other type of response
+        response_panel = Panel(
+            str(response),
+            title=title,
+            border_style=panel_style,
+            box=CLI_CONFIG["display"]["panel_box"],
+            padding=(1, 2)
+        )
+        
+        console.print(response_panel)
+        
+        # Save to history
+        state["history"].append({"role": "assistant", "content": str(response)})
 
 # ==================== Logging Setup ====================
 def setup_logging(level=logging.INFO):
@@ -424,20 +1042,99 @@ def setup_logging(level=logging.INFO):
     # Ensure log directory exists
     os.makedirs(LOGS_DIR, exist_ok=True)
     
+    # Set up main logging configuration
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.StreamHandler(),
             logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode='a')
         ]
     )
     
-    # Create logger
-    logger = logging.getLogger("glue")
-    logger.setLevel(level)
+    # Create console handler with a higher log level
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
     
-    return logger
+    # Define a simpler format for console output
+    if level <= logging.INFO:
+        # Detailed format for verbose mode
+        console_fmt = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+        formatter = logging.Formatter(console_fmt)
+        console_handler.setFormatter(formatter)
+    else:
+        # In normal mode, use a custom formatter that renders warnings in Rich style
+        class RichWarningFormatter(logging.Formatter):
+            def format(self, record):
+                import io
+                from rich.console import Console
+                from rich.text import Text
+                
+                if record.levelno >= logging.WARNING:
+                    # Get color based on level
+                    if record.levelno >= logging.ERROR:
+                        color = "red"
+                        prefix = "✗ Error: "
+                    elif record.levelno >= logging.WARNING:
+                        color = "yellow"
+                        prefix = "⚠ Warning: "
+                    else:
+                        color = "blue"
+                        prefix = "ℹ Info: "
+                    
+                    # Format the message
+                    message = record.getMessage()
+                    
+                    # Create a styled Text object like the welcome message
+                    text = Text()
+                    text.append(prefix, style=f"bold {color}")
+                    text.append(message, style="dim")
+                    
+                    # We need to convert to string for the logging system
+                    console = Console(file=io.StringIO())
+                    console.print(text)
+                    return console.file.getvalue().strip()
+                
+                # For non-warnings, use simple text
+                return f"[{record.levelname}] {record.getMessage()}"
+        
+        console_handler.setFormatter(RichWarningFormatter())
+    
+    # Create deduplication filter to prevent duplicate warnings
+    class DuplicateFilter(logging.Filter):
+        def __init__(self):
+            super().__init__()
+            self._logged = set()
+            
+        def filter(self, record):
+            # Create a unique key from the message and name
+            key = (record.getMessage(), record.name)
+            # Only log new messages, suppress duplicates
+            if key in self._logged:
+                return False
+            self._logged.add(key)
+            return True
+    
+    # Add filter to console handler
+    console_handler.addFilter(DuplicateFilter())
+    
+    # Configure GLUE logger
+    glue_logger = logging.getLogger("glue")
+    glue_logger.setLevel(level)
+    glue_logger.addHandler(console_handler)
+    glue_logger.propagate = False  # Prevent double logging
+    
+    # Configure third-party loggers - always set to WARNING unless in DEBUG mode
+    third_party_level = logging.DEBUG if level == logging.DEBUG else logging.WARNING
+    for logger_name in ["httpcore", "httpx", "openai", "markdown_it", "rich"]:
+        third_party_logger = logging.getLogger(logger_name)
+        third_party_logger.setLevel(third_party_level)
+        # Only log to file, not console
+        for handler in third_party_logger.handlers:
+            third_party_logger.removeHandler(handler)
+        third_party_logger.addHandler(logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode='a'))
+        third_party_logger.propagate = False  # Prevent double logging
+    
+    return glue_logger
 
 # ... (rest of the code remains the same)
 
@@ -1378,207 +2075,715 @@ def run_forge_command():
 # ==================== Utility Functions ====================
 def list_models():
     """List available models."""
-    # Define available models by provider
-    AVAILABLE_MODELS = {
-        "openai": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-        "anthropic": ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
-        "google": ["gemini-pro", "gemini-ultra"],
-        "openrouter": ["meta-llama/llama-3.1-8b-instruct", "anthropic/claude-3-opus", "google/gemini-pro"]
-    }
+    # Import provider modules dynamically to get available models
+    from glue.core.providers import get_available_providers, get_provider_models
     
     print("Available models:")
-    for provider, models in AVAILABLE_MODELS.items():
-        print(f"\n{provider.capitalize()} Models:")
-        for model in models:
-            print(f"  - {model}")
-            
-def display_tools():
-    """Display information about available tools to the console."""
-    # Use the global AVAILABLE_TOOLS constant
-    print("Available tools:")
-    for tool_name, tool_info in AVAILABLE_TOOLS.items():
-        print(f"\n{tool_name}:")
-        print(f"  Description: {tool_info.get('description', 'No description')}")
-        print(f"  Parameters: {tool_info.get('parameters', 'No parameters')}")
+    
+    try:
+        # Get all available providers
+        providers = get_available_providers()
         
-def validate_glue_file(config_file):
-    """Validate a GLUE configuration file.
+        # For each provider, get and display their available models
+        for provider_name in providers:
+            models = get_provider_models(provider_name)
+            if models:
+                print(f"\n{provider_name.capitalize()} Models:")
+                for model in models:
+                    print(f"  - {model}")
+    except Exception as e:
+        print(f"Error retrieving models: {str(e)}")
+        # Fallback to basic info if dynamic retrieval fails
+        FALLBACK_MODELS = {
+            "openai": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
+            "anthropic": ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
+            "google": ["gemini-pro", "gemini-ultra"]
+        }
+        print("\nFallback model information:")
+        for provider, models in FALLBACK_MODELS.items():
+            print(f"\n{provider.capitalize()} Models:")
+            for model in models:
+                print(f"  - {model}")
+            
+def display_tools(args: argparse.Namespace) -> int:
+    """Display available tools.
+
+    Args:
+        args: The arguments from the parser.
+
+    Returns:
+        Exit code.
+    """
+    tools = get_available_tools()
+    
+    if not tools:
+        print("No tools are currently available.")
+        return 1
+        
+    print("Available tools:")
+    for tool_name, tool_info in tools.items():
+        description = tool_info.get("description", "No description available")
+        
+        print(f"\n{tool_name}:")
+        print(f"  Description: {description}")
+    
+    return 0
+
+def validate_glue_file(config_file: str, strict: bool = False) -> None:
+    """Validate a GLUE file for syntax and semantic correctness.
     
     Args:
         config_file: Path to the GLUE configuration file
+        strict: Whether to enable strict validation
     """
     logger = logging.getLogger("glue.validate")
-    logger.info(f"Validating GLUE file: {config_file}")
+    console = Console()
     
     try:
-        # Read the GLUE file
+        # Check if file exists
+        if not os.path.exists(config_file):
+            console.print(f"[{CLI_CONFIG['theme']['error']}]Error: File not found: {config_file}[/{CLI_CONFIG['theme']['error']}]")
+            sys.exit(1)
+        
+        # Read the file
         with open(config_file, 'r') as f:
-            glue_content = f.read()
+            content = f.read()
         
-        # Create lexer and parser
-        from .dsl.lexer import GlueLexer
-        from .dsl.parser import GlueDSLParser
+        # Display file info
+        file_stats = os.stat(config_file)
+        file_size = file_stats.st_size
+        file_modified = datetime.datetime.fromtimestamp(file_stats.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
         
+        display_section_header(console, "File Information")
+        console.print(f"File: [cyan]{config_file}[/cyan]")
+        console.print(f"Size: {file_size:,} bytes")
+        console.print(f"Last Modified: {file_modified}")
+        console.print(f"Lines: {len(content.splitlines())}")
+        console.print("")
+        
+        # Parse the file with lexer
         lexer = GlueLexer()
         parser = GlueDSLParser()
         
-        # Parse the GLUE file
-        tokens = lexer.tokenize(glue_content)
-        ast = parser.parse(tokens)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console
+        ) as progress:
+            # Lexical analysis
+            task1 = progress.add_task("[cyan]Performing lexical analysis...", total=1)
+            try:
+                tokens = lexer.tokenize(content)
+                # Convert tokens to a list so they can be iterated multiple times
+                tokens_list = list(tokens)
+                progress.update(task1, advance=1, description="[green]Lexical analysis completed")
+                syntax_errors = []
+            except Exception as e:
+                progress.update(task1, advance=1, description="[red]Lexical analysis failed")
+                console.print(f"[{CLI_CONFIG['theme']['error']}]Lexical error: {str(e)}[/{CLI_CONFIG['theme']['error']}]")
+                sys.exit(1)
+            
+            # Syntax analysis
+            task2 = progress.add_task("[cyan]Performing syntax analysis...", total=1)
+            try:
+                ast = parser.parse(iter(tokens_list))
+                progress.update(task2, advance=1, description="[green]Syntax analysis completed")
+            except Exception as e:
+                progress.update(task2, advance=1, description="[red]Syntax analysis failed")
+                console.print(f"[{CLI_CONFIG['theme']['error']}]Syntax error: {str(e)}[/{CLI_CONFIG['theme']['error']}]")
+                sys.exit(1)
+            
+            # Semantic analysis
+            task3 = progress.add_task("[cyan]Performing semantic validation...", total=1)
+            semantic_errors = []
+            warnings = []
+            
+            # Check for app section
+            if "app" not in ast:
+                semantic_errors.append("Missing 'app' section")
+            else:
+                app_config = ast["app"]
+                # Check for app name
+                if "name" not in app_config:
+                    semantic_errors.append("Missing app name in 'app' section")
+            
+            # Check for models
+            if "models" not in ast:
+                warnings.append("No models defined")
+            else:
+                models = ast["models"]
+                for model_name, model_config in models.items():
+                    # Check for required model fields
+                    if "provider" not in model_config:
+                        semantic_errors.append(f"Model '{model_name}' is missing required 'provider' field")
+            
+            # Check for teams (magnetize section)
+            if "magnetize" not in ast:
+                warnings.append("No teams defined (missing 'magnetize' section)")
+            else:
+                teams = ast["magnetize"]
+                for team_name, team_config in teams.items():
+                    # Check for lead model
+                    if "lead" not in team_config:
+                        semantic_errors.append(f"Team '{team_name}' is missing required 'lead' field")
+            
+            # Check for adhesives
+            if "apply" not in ast:
+                warnings.append("No adhesives applied (missing 'apply' section)")
+            
+            # Additional strict checks if enabled
+            if strict:
+                # Check model configs
+                if "models" in ast:
+                    for model_name, model_config in ast["models"].items():
+                        if "config" in model_config:
+                            config = model_config["config"]
+                            # Check if model specified for OpenAI
+                            if model_config.get("provider") == "openai" and "model" not in config:
+                                semantic_errors.append(f"OpenAI model '{model_name}' is missing 'model' in config")
+                        else:
+                            warnings.append(f"Model '{model_name}' has no configuration section")
+                
+                # Check tool configs
+                if "tools" in ast:
+                    for tool_name, tool_config in ast["tools"].items():
+                        if tool_name not in AVAILABLE_TOOLS:
+                            warnings.append(f"Unknown tool: '{tool_name}'")
+            
+            if semantic_errors:
+                progress.update(task3, advance=1, description="[red]Semantic validation failed")
+            else:
+                progress.update(task3, advance=1, description="[green]Semantic validation completed")
         
-        # If we get here, the file is valid
-        print(f"✅ GLUE file {config_file} is valid")
+        # Display validation results
+        display_section_header(console, "Validation Results")
         
-        # Print some basic information about the configuration
-        if "app" in ast:
-            app_name = ast["app"].get("name", "Unnamed App")
-            app_version = ast["app"].get("version", "Unknown Version")
-            print(f"App: {app_name} (Version: {app_version})")
-            
-        if "models" in ast:
-            print(f"Models: {len(ast['models'])}")
-            
-        if "tools" in ast:
-            print(f"Tools: {len(ast['tools'])}")
-            
-        if "magnetize" in ast:
-            print(f"Teams: {len(ast['magnetize'])}")
-            
-        if "flows" in ast:
-            print(f"Flows: {len(ast['flows'])}")
+        if not syntax_errors and not semantic_errors:
+            console.print(f"[{CLI_CONFIG['theme']['success']}]✓ File is valid![/{CLI_CONFIG['theme']['success']}]")
+        
+        if syntax_errors:
+            console.print(f"[{CLI_CONFIG['theme']['error']}]Syntax Errors:[/{CLI_CONFIG['theme']['error']}]")
+            for i, error in enumerate(syntax_errors, 1):
+                console.print(f"  {i}. {error}")
+        
+        if semantic_errors:
+            console.print(f"[{CLI_CONFIG['theme']['error']}]Semantic Errors:[/{CLI_CONFIG['theme']['error']}]")
+            for i, error in enumerate(semantic_errors, 1):
+                console.print(f"  {i}. {error}")
+        
+        if warnings:
+            console.print(f"[{CLI_CONFIG['theme']['warning']}]Warnings:[/{CLI_CONFIG['theme']['warning']}]")
+            for i, warning in enumerate(warnings, 1):
+                console.print(f"  {i}. {warning}")
+        
+        # Display AST if no errors and strict mode
+        if strict and not syntax_errors and not semantic_errors:
+            display_section_header(console, "AST Structure")
+            json_str = json.dumps(ast, indent=2)
+            syntax = Syntax(json_str, "json", theme="monokai", line_numbers=True)
+            console.print(syntax)
+        
+        # Exit with appropriate code
+        if syntax_errors or semantic_errors:
+            sys.exit(1)
             
     except Exception as e:
-        print(f"❌ Error validating GLUE file: {e}")
+        logger.error(f"Error validating file: {e}", exc_info=True)
+        console.print_exception()
+        console.print(f"[{CLI_CONFIG['theme']['error']}]Error validating file: {e}[/{CLI_CONFIG['theme']['error']}]")
         sys.exit(1)
+
+# ==================== Display Helpers ====================
+def get_console(theme: bool = True) -> Console:
+    """Get a rich console with the GLUE theme.
+    
+    Args:
+        theme: Whether to apply the GLUE theme
+        
+    Returns:
+        A configured Console object
+    """
+    if theme:
+        return Console(theme=GLUE_THEME, highlight=True)
+    return Console(highlight=True)
+
+def display_logo(console: Console, show_version: bool = True) -> None:
+    """Display the GLUE framework logo.
+    
+    Args:
+        console: Rich console to use for display
+        show_version: Whether to include version information
+    """
+    logo = GLUE_LOGO.format(__version__=__version__ if show_version else "")
+    align = Align.center(logo)
+    console.print(align)
+    console.print(Rule(style="dim cyan"))
+
+def create_app_layout() -> Layout:
+    """Create a rich layout for the application display.
+    
+    Returns:
+        A rich Layout object
+    """
+    layout = Layout()
+    
+    # Split into header, main, and footer
+    layout.split(
+        Layout(name="header", size=5),
+        Layout(name="main"),
+        Layout(name="footer", size=3)
+    )
+    
+    # Split main area into sidebar and content
+    layout["main"].split_row(
+        Layout(name="sidebar", size=30),
+        Layout(name="content")
+    )
+    
+    # Add sub-layouts in content area
+    layout["content"].split(
+        Layout(name="output", ratio=3),
+        Layout(name="input", size=5)
+    )
+    
+    return layout
+
+def create_tool_table(tools: Dict[str, Any]) -> Table:
+    """Create a table displaying the available tools.
+    
+    Args:
+        tools: Dictionary of tools with name as key
+        
+    Returns:
+        A rich Table object
+    """
+    table = Table(
+        title="Available Tools", 
+        show_header=True, 
+        header_style="bold yellow",
+        box=CLI_CONFIG["display"]["table_box"],
+        title_style="tool"
+    )
+    
+    # Add emoji if enabled
+    tool_emoji = CLI_CONFIG["emoji"]["tool"] + " " if CLI_CONFIG["display"]["show_emoji"] else ""
+    
+    table.add_column(f"{tool_emoji}Tool", style="tool")
+    table.add_column("Description")
+    
+    for name, tool in tools.items():
+        # Extract tool information
+        if isinstance(tool, dict):
+            description = tool.get("description", "No description available")
+        else:
+            description = getattr(tool, "description", "No description available")
+        
+        table.add_row(name, description)
+    
+    return table
+
+def create_team_table(teams: Dict[str, Any]) -> Table:
+    """Create a table displaying the team structure.
+    
+    Args:
+        teams: Dictionary of teams
+        
+    Returns:
+        A rich Table object
+    """
+    table = Table(
+        title="Team Structure", 
+        show_header=True, 
+        header_style="bold blue",
+        box=CLI_CONFIG["display"]["table_box"],
+        title_style="team"
+    )
+    
+    # Add emoji if enabled
+    team_emoji = CLI_CONFIG["emoji"]["team"] + " " if CLI_CONFIG["display"]["show_emoji"] else ""
+    model_emoji = CLI_CONFIG["emoji"]["model"] + " " if CLI_CONFIG["display"]["show_emoji"] else ""
+    tool_emoji = CLI_CONFIG["emoji"]["tool"] + " " if CLI_CONFIG["display"]["show_emoji"] else ""
+    
+    table.add_column(f"{team_emoji}Team", style="team")
+    table.add_column(f"{model_emoji}Lead", style="model.researcher")
+    table.add_column("Members", style="model.assistant")
+    table.add_column(f"{tool_emoji}Tools", style="tool")
+    
+    for team_name, team in teams.items():
+        lead_name = team.lead.name if hasattr(team, "lead") and team.lead else "None"
+        members = ", ".join([m.name for m in team.members]) if hasattr(team, "members") else "None"
+        tools = ", ".join([t for t in team.tools]) if hasattr(team, "tools") else "None"
+        
+        table.add_row(team_name, lead_name, members, tools)
+    
+    return table
+
+def create_model_tree(teams: Dict[str, Any]) -> Tree:
+    """Create a tree view of models organized by teams.
+    
+    Args:
+        teams: Dictionary of teams
+        
+    Returns:
+        A rich Tree object
+    """
+    # Add emoji if enabled
+    team_emoji = CLI_CONFIG["emoji"]["team"] if CLI_CONFIG["display"]["show_emoji"] else "●"
+    model_emoji = CLI_CONFIG["emoji"]["model"] if CLI_CONFIG["display"]["show_emoji"] else "○"
+    
+    # Create root tree
+    tree = Tree("[bold]Model Structure[/bold]")
+    
+    # Add teams and models
+    for team_name, team in teams.items():
+        team_node = tree.add(f"[team]{team_emoji} {team_name}[/team]")
+        
+        # Add lead model
+        if hasattr(team, "lead") and team.lead:
+            style = CLI_CONFIG["theme"]["model"].get(team.lead.name, CLI_CONFIG["theme"]["model"]["default"])
+            team_node.add(f"[{style}]{model_emoji} {team.lead.name} (Lead)[/{style}]")
+        
+        # Add member models
+        if hasattr(team, "members"):
+            for member in team.members:
+                style = CLI_CONFIG["theme"]["model"].get(member.name, CLI_CONFIG["theme"]["model"]["default"])
+                team_node.add(f"[{style}]{model_emoji} {member.name}[/{style}]")
+    
+    return tree
+
+def display_model_info(console: Console, model: Dict[str, Any]) -> None:
+    """Display detailed information about a model.
+    
+    Args:
+        console: Rich console to use for display
+        model: Model information dictionary
+    """
+    # Add emoji if enabled
+    model_emoji = CLI_CONFIG["emoji"]["model"] + " " if CLI_CONFIG["display"]["show_emoji"] else ""
+    
+    # Determine model style
+    model_name = model.get("name", "Unknown")
+    style = CLI_CONFIG["theme"]["model"].get(model_name, CLI_CONFIG["theme"]["model"]["default"])
+    
+    # Create model info
+    model_info = Group(
+        Text(f"Provider: {model.get('provider', 'Unknown')}", style="muted"),
+        Text(f"Base Model: {model.get('base_model', 'Unknown')}", style="app.value"),
+        Text(f"Temperature: {model.get('temperature', 0.7)}", style="muted"),
+        Rule(style="dim"),
+        Markdown(f"**Role:** {model.get('role', 'No role defined')}"),
+        Text(f"Adhesives: {', '.join(model.get('adhesives', []))}", style="code")
+    )
+    
+    panel = Panel(
+        model_info,
+        title=f"{model_emoji}{model_name}",
+        title_align="left",
+        border_style=style,
+        box=CLI_CONFIG["display"]["panel_box"],
+        padding=(1, 2)
+    )
+    
+    console.print(panel)
+
+def show_interactive_help(console: Console) -> None:
+    """Display help information for interactive mode.
+    
+    Args:
+        console: Rich console to use for display
+    """
+    help_text = get_interactive_help_text()
+    
+    # Create the help content with sections
+    commands_section = Table.grid(padding=(0, 2))
+    commands_section.add_column(style="command")
+    commands_section.add_column()
+    
+    # Add command explanations from help text
+    for line in help_text.strip().split("\n"):
+        if line.startswith("/"):
+            parts = line.split(" - ", 1)
+            if len(parts) == 2:
+                cmd, desc = parts
+                commands_section.add_row(cmd.strip(), desc.strip())
+    
+    # Create a panel with the help information
+    panel = Panel(
+        Group(
+            Text("Use these commands to interact with the GLUE application:", style="info"),
+            commands_section,
+            Text("\nTip: You can type a message directly to interact with the active model or team.", style="muted")
+        ),
+        title="Interactive Mode Help",
+        title_align="center",
+        border_style="blue",
+        box=CLI_CONFIG["display"]["panel_box"],
+        padding=(1, 2)
+    )
+    
+    console.print(panel)
+
+def create_status_panel(app: Any, state: Dict[str, Any]) -> Panel:
+    """Create a panel showing the current application status.
+    
+    Args:
+        app: The GLUE application
+        state: Current state dictionary
+        
+    Returns:
+        A rich Panel object
+    """
+    # Build status information
+    status_table = Table.grid(padding=(0, 1))
+    status_table.add_column(style="muted", justify="right")
+    status_table.add_column(style="app.value")
+    
+    # Add app details
+    status_table.add_row("App Name:", Text(app.name, style="app.name" if app.name else "Undefined"))
+    status_table.add_row("Teams:", str(len(app.teams)))
+    
+    # Calculate total models correctly (leads + members)
+    total_models = 0
+    for team in app.teams.values():
+        # Count lead if it exists
+        if hasattr(team, "lead") and team.lead is not None:
+            total_models += 1
+        # Count members if they exist
+        if hasattr(team, "members") and team.members is not None:
+            total_models += len(team.members)
+    
+    status_table.add_row("Models:", str(total_models))
+    status_table.add_row("Tools:", str(len(app.tools)-1))
+    
+    # Add mode settings
+    status_table.add_row("Verbose Mode:", "✅ Enabled" if state.get("verbose_mode") else "❌ Disabled")
+    status_table.add_row("Step Mode:", "✅ Enabled" if state.get("step_mode") else "❌ Disabled")
+    status_table.add_row("Color Output:", "✅ Enabled" if state.get("color_enabled") else "❌ Disabled")
+    
+    # Add context info
+    if state.get("current_team"):
+        status_table.add_row("Active Team:", Text(state["current_team"], style="team"))
+    elif state.get("current_model"):
+        style = CLI_CONFIG["theme"]["model"].get(
+            state["current_model"], CLI_CONFIG["theme"]["model"]["default"])
+        status_table.add_row("Active Model:", Text(state["current_model"], style=style))
+    
+    # Create panel
+    panel = Panel(
+        status_table,
+        title="Application Status",
+        title_align="center",
+        border_style="blue",
+        box=CLI_CONFIG["display"]["panel_box"],
+        padding=(1, 2)
+    )
+    
+    return panel
+
+def animate_typing(console: Console, text: str, speed: float = 0.03) -> None:
+    """Animate text as if it's being typed.
+    
+    Args:
+        console: Rich console to use for display
+        text: Text to animate
+        speed: Speed of typing in seconds per character
+    """
+    # Always print directly without animation for better UX
+    console.print(text)
+    return
+
+def display_warning(console: Console, message: str) -> None:
+    """Display a warning in a styled panel.
+    
+    Args:
+        console: Rich console to use for display
+        message: Warning message to display
+    """
+    from rich.panel import Panel
+    from rich.text import Text
+    
+    warning_text = Text()
+    warning_text.append("⚠ ", style="bold yellow")
+    warning_text.append(message, style="yellow")
+    
+    panel = Panel(
+        warning_text,
+        title="Warning",
+        border_style="yellow dim",
+        box=CLI_CONFIG["display"]["panel_box"],
+        padding=(1, 2),
+        width=100
+    )
+    
+    # Print an empty line before the warning for better spacing
+    console.print()
+    console.print(panel)
+    console.print()
 
 # ==================== Main CLI Entry Point ====================
 def main():
     """Main CLI entry point"""
-    # Set up argument parser
-    parser = argparse.ArgumentParser(
-        description="GLUE Framework CLI - GenAI Linking & Unification Engine"
-    )
+    # Get a themed console
+    console = get_console()
     
-    # Create subparsers for commands
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    # Track verbosity level for later use
+    verbosity_level = 0
     
-    # Run command
-    run_parser = subparsers.add_parser("run", help="Run a GLUE application")
-    run_parser.add_argument("config", help="Path to GLUE config file")
-    run_parser.add_argument("--input", "-i", help="Input text for the app")
-    run_parser.add_argument("--interactive", "-I", action="store_true", 
-                         help="Run in interactive mode")
-    run_parser.add_argument("--verbose", "-v", action="store_true",
-                         help="Enable verbose logging")
-    run_parser.add_argument("--env", "-e", help="Path to .env file")
-    
-    # New command
-    new_parser = subparsers.add_parser("new", help="Create a new GLUE project")
-    new_parser.add_argument("project", help="Project name")
-    new_parser.add_argument("--template", "-t", 
-                          choices=["basic", "research", "chat", "agent"],
-                          default="basic",
-                          help="Project template to use")
-    
-    # Forge command (for creating custom components)
-    forge_parser = subparsers.add_parser("forge", help="Create custom components with AI assistance")
-    forge_subparsers = forge_parser.add_subparsers(dest="forge_type", help="Type of component to forge")
-    
-    # Forge tool
-    forge_tool_parser = forge_subparsers.add_parser("tool", help="Create a custom tool")
-    forge_tool_parser.add_argument("name", help="Tool name")
-    forge_tool_parser.add_argument("--description", "-d", required=True, help="Tool description")
-    forge_tool_parser.add_argument("--template", "-t", 
-                                choices=["basic", "api", "data"],
-                                default="basic",
-                                help="Tool template to use")
-    
-    # Forge MCP
-    forge_mcp_parser = forge_subparsers.add_parser("mcp", help="Create a custom MCP integration")
-    forge_mcp_parser.add_argument("name", help="MCP name")
-    forge_mcp_parser.add_argument("--description", "-d", required=True, help="MCP description")
-    
-    # Forge API
-    forge_api_parser = forge_subparsers.add_parser("api", help="Create a custom API integration")
-    forge_api_parser.add_argument("name", help="API name")
-    forge_api_parser.add_argument("--description", "-d", required=True, help="API description")
-    
-    # List tools command
-    subparsers.add_parser("list-tools", help="List available tools")
-    
-    # List models command
-    subparsers.add_parser("list-models", help="List available models")
-    
-    # Validate command
-    validate_parser = subparsers.add_parser("validate", help="Validate a GLUE file")
-    validate_parser.add_argument("file", help="Path to GLUE file to validate")
-    
-    # Version command
-    subparsers.add_parser("version", help="Show GLUE version")
-    
-    # Parse arguments
-    args = parser.parse_args()
-    
-    # Set up logging
-    log_level = logging.DEBUG if getattr(args, 'verbose', False) else logging.INFO
-    logger = setup_logging(log_level)
-    
-    # Process commands
     try:
-        if args.command == "run":
-            # Load environment variables if specified
-            if args.env:
-                from dotenv import load_dotenv
-                load_dotenv(args.env)
-            elif os.path.exists(DEFAULT_ENV_FILE):
-                # Load default .env file if it exists
-                from dotenv import load_dotenv
-                load_dotenv(DEFAULT_ENV_FILE)
-            
-            # Run the application
-            asyncio.run(run_app(args.config, args.interactive, args.input))
-            
-        elif args.command == "new":
-            create_new_project(args.project, args.template)
-            
-        elif args.command == "forge":
-            if not args.forge_type:
-                # Run interactive forge command if no subcommand is specified
-                run_forge_command()
-            elif args.forge_type == "tool":
-                import re  # Import here to avoid unnecessary import
-                forge_tool(args.name, args.description, args.template)
-            elif args.forge_type == "mcp":
-                import re  # Import here to avoid unnecessary import
-                forge_mcp(args.name, args.description)
-            elif args.forge_type == "api":
-                import re  # Import here to avoid unnecessary import
-                forge_api(args.name, args.description)
-            else:
-                forge_parser.print_help()
-            
-        elif args.command == "list-tools":
-            display_tools()
-            
-        elif args.command == "list-models":
-            list_models()
-            
-        elif args.command == "validate":
-            validate_glue_file(args.file)
-            
-        elif args.command == "version":
-            print(f"GLUE Framework version {__version__}")
-            
+        # Display logo if not in a script or piped environment
+        if sys.stdout.isatty():
+            display_logo(console)
+        
+        # Set up argument parser with rich description
+        parser = argparse.ArgumentParser(
+            description="GLUE Framework CLI - GenAI Linking & Unification Engine",
+            formatter_class=argparse.RawDescriptionHelpFormatter,
+            epilog=f"""
+Examples:
+  glue run examples/basic.glue --interactive      Run a GLUE app in interactive mode
+  glue new my_research_app --template research    Create a new research project
+  glue forge tool my_tool --description "..."     Create a custom tool
+  glue list-models                                List available models
+  glue --help                                     Show this help message
+            """
+        )
+        
+        # Create subparsers for commands
+        subparsers = parser.add_subparsers(dest="command", help="Command to run")
+        
+        # Run command
+        run_parser = subparsers.add_parser("run", help="Run a GLUE application")
+        run_parser.add_argument("config", help="Path to GLUE config file")
+        run_parser.add_argument("--input", "-i", help="Input text for the app")
+        run_parser.add_argument("--interactive", "-I", action="store_true", 
+                             help="Run in interactive mode")
+        run_parser.add_argument("--verbose", "-v", action="count", default=0,
+                             help="Enable verbose logging (use -vv for debug level)")
+        run_parser.add_argument("--env", "-e", help="Path to .env file")
+        
+        # New command
+        new_parser = subparsers.add_parser("new", help="Create a new GLUE project")
+        new_parser.add_argument("project", help="Project name")
+        new_parser.add_argument("--template", "-t", 
+                              choices=["basic", "research", "chat", "agent"],
+                              default="basic",
+                              help="Project template to use")
+        
+        # Forge command (for creating custom components)
+        forge_parser = subparsers.add_parser("forge", help="Create custom components with AI assistance")
+        forge_subparsers = forge_parser.add_subparsers(dest="forge_type", help="Type of component to forge")
+        
+        # Forge tool
+        forge_tool_parser = forge_subparsers.add_parser("tool", help="Create a custom tool")
+        forge_tool_parser.add_argument("name", help="Tool name")
+        forge_tool_parser.add_argument("--description", "-d", required=True, help="Tool description")
+        forge_tool_parser.add_argument("--template", "-t", 
+                                    choices=["basic", "api", "data"],
+                                    default="basic",
+                                    help="Tool template to use")
+        
+        # Forge MCP
+        forge_mcp_parser = forge_subparsers.add_parser("mcp", help="Create a custom MCP integration")
+        forge_mcp_parser.add_argument("name", help="MCP name")
+        forge_mcp_parser.add_argument("--description", "-d", required=True, help="MCP description")
+        
+        # Forge API
+        forge_api_parser = forge_subparsers.add_parser("api", help="Create a custom API integration")
+        forge_api_parser.add_argument("name", help="API name")
+        forge_api_parser.add_argument("--description", "-d", required=True, help="API description")
+        
+        # List tools command
+        subparsers.add_parser("list-tools", help="List available tools")
+        
+        # List models command
+        subparsers.add_parser("list-models", help="List available models")
+        
+        # Validate command
+        validate_parser = subparsers.add_parser("validate", help="Validate a GLUE file")
+        validate_parser.add_argument("file", help="Path to GLUE file to validate")
+        
+        # Version command
+        subparsers.add_parser("version", help="Show GLUE version")
+        
+        # Parse arguments
+        args = parser.parse_args()
+        
+        # Set up logging
+        if getattr(args, 'verbose', 0) > 1:
+            log_level = logging.DEBUG
+        elif getattr(args, 'verbose', 0) == 1:
+            log_level = logging.INFO
         else:
-            # If no command or unrecognized command, show help
-            parser.print_help()
+            log_level = logging.WARNING
+            
+        # Store verbosity level globally
+        verbosity_level = getattr(args, 'verbose', 0)
+        
+        logger = setup_logging(log_level)
+        
+        # Process commands
+        try:
+            if args.command == "run":
+                # Load environment variables if specified
+                if args.env:
+                    from dotenv import load_dotenv
+                    load_dotenv(args.env)
+                elif os.path.exists(DEFAULT_ENV_FILE):
+                    # Load default .env file if it exists
+                    from dotenv import load_dotenv
+                    load_dotenv(DEFAULT_ENV_FILE)
+                
+                # Run the application
+                asyncio.run(run_app(args.config, args.interactive, args.input))
+                
+            elif args.command == "new":
+                create_new_project(args.project, args.template)
+                
+            elif args.command == "forge":
+                if not args.forge_type:
+                    # Run interactive forge command if no subcommand is specified
+                    run_forge_command()
+                elif args.forge_type == "tool":
+                    import re  # Import here to avoid unnecessary import
+                    forge_tool(args.name, args.description, args.template)
+                elif args.forge_type == "mcp":
+                    import re  # Import here to avoid unnecessary import
+                    forge_mcp(args.name, args.description)
+                elif args.forge_type == "api":
+                    import re  # Import here to avoid unnecessary import
+                    forge_api(args.name, args.description)
+                else:
+                    forge_parser.print_help()
+                
+            elif args.command == "list-tools":
+                display_tools(args)
+                
+            elif args.command == "list-models":
+                list_models()
+                
+            elif args.command == "validate":
+                validate_glue_file(args.file)
+                
+            elif args.command == "version":
+                print(f"GLUE Framework version {__version__}")
+                
+            else:
+                # If no command or unrecognized command, show help
+                parser.print_help()
+                
+        except KeyboardInterrupt:
+            print("\nOperation cancelled by user")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Error executing command: {str(e)}", exc_info=True)
+            print(f"Error: {str(e)}")
+            sys.exit(1)
             
     except KeyboardInterrupt:
         print("\nOperation cancelled by user")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"Error executing command: {str(e)}", exc_info=True)
-        print(f"Error: {str(e)}")
+        print(f"Unexpected error: {str(e)}")
         sys.exit(1)
 
 if __name__ == "__main__":
