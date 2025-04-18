@@ -16,28 +16,17 @@ import logging
 import re
 import uuid
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Union
 from rich import print
 from rich.console import Console
 from rich.syntax import Syntax
 
 # Import framework modules
 # Use direct imports to avoid circular imports
-from glue.core import GlueApp, AdhesiveType
+from glue.core import GlueApp
 from glue.dsl import GlueDSLParser, GlueLexer
-from glue.tools import SimpleBaseTool, register_tool
-
-# Import from cliHelpers for backward compatibility with tests
-from glue.cliHelpers import (
-    colorize_agent_output,
-    format_agent_message,
-    parse_interactive_command,
-    get_interactive_help_text,
-    format_agent_interactions
-)
 
 # Import new utilities
-from .utils.json_utils import extract_json, JSON_EXTRACT_REGEX
+from .utils.json_utils import extract_json
 
 # Constants for tools
 AVAILABLE_TOOLS = {
@@ -184,7 +173,7 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         elif input_text:
             logger.info(f"Running non-interactive agentic workflow with initial input: {input_text}")
             current_input = input_text
-            max_turns = 10 # Set a limit to prevent infinite loops
+            max_turns = 10  # Set a limit to prevent infinite loops
             turn_count = 0
             final_response = None
 
@@ -193,17 +182,15 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                 logger.error("No teams defined in the application.")
                 console.print("[bold red]Error: No teams defined.[/bold red]")
                 return False
-            # Get the first team name (requires Python 3.7+ for insertion order)
-            # TODO: Allow specifying the entry point team/model via config or argument
             first_team_name = next(iter(app.teams))
             if not hasattr(app.teams[first_team_name], 'lead') or not app.teams[first_team_name].lead:
-                 logger.error(f"Lead model not found for the first team '{first_team_name}'. Check team config.")
-                 console.print(f"[bold red]Error: Lead model not found for team '{first_team_name}'.[/bold red]")
-                 return False
-            lead_model = app.teams[first_team_name].lead # Use the lead attribute
+                logger.error(f"Lead model not found for the first team '{first_team_name}'. Check team config.")
+                console.print(f"[bold red]Error: Lead model not found for team '{first_team_name}'.[/bold red]")
+                return False
+            lead_model = app.teams[first_team_name].lead
             logger.info(f"Using lead model '{lead_model.name}' from team '{first_team_name}' as entry point.")
 
-            messages = [{"role": "user", "content": current_input}] # Initialize messages list
+            messages = [{"role": "user", "content": current_input}]
 
             while turn_count < max_turns:
                 turn_count += 1
@@ -213,170 +200,122 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                 # --- Generate response ---
                 response_content = None
                 try:
-                    logger.debug(f"Calling model {lead_model.name} with {len(messages)} messages.") # Use lead_model variable
-                    # Ensure messages are passed correctly
-                    # Pass app.tools which should contain all initialized tools
-                    response_content = await lead_model.generate_response(messages=messages, tools=app.tools) # Use lead_model variable
-                    logger.debug(f"Raw response from model: {response_content}")
+                    logger.debug(f"Calling model {lead_model.name} with {len(messages)} messages.")
+                    response_content = await lead_model.generate_response(messages=messages, tools=app.tools)
                     
                     # Display assistant thinking/response
-                    console.print(f"[bold yellow]{lead_model.name}:[/bold yellow]") # Use lead_model variable
+                    console.print(f"[bold yellow]{lead_model.name}:[/bold yellow]")
                     if isinstance(response_content, str):
-                        # Check if the response contains JSON and print appropriately
                         potential_json = extract_json(response_content)
                         if potential_json:
                             json_str = json.dumps(potential_json, indent=2)
                             syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
                             console.print(syntax)
-                            # Also log the full string if it contains more than just JSON
-                            if response_content.strip() != json_str:
-                                logger.debug(f"Response string contained non-JSON parts: {response_content}")
                         else:
                             console.print(response_content)
                     else:
-                        # Handle non-string responses if necessary (e.g., raw tool call objects)
                         console.print(str(response_content))
                         logger.warning(f"Received non-string response: {type(response_content)}")
 
                     # --- Append Assistant Response to History ---
-                    # Append regardless of tool calls, representing the model's thought/output
                     if response_content is not None:
-                         messages.append({"role": "assistant", "content": str(response_content)}) # Ensure content is string
+                        messages.append({"role": "assistant", "content": str(response_content)})
 
                 except Exception as e:
                     logger.error(f"Error during model generation: {e}", exc_info=True)
                     console.print(f"[bold red]Error during model generation: {e}[/bold red]")
-                    break # Exit loop on generation error
+                    break
 
                 # --- Process potential tool calls in the response ---
                 tool_calls_found_in_response = False
-                tool_results_for_next_turn = [] # Store results for this turn
-                processed_json_blocks = set() # Track processed JSON to avoid duplicates
+                tool_results_for_next_turn = []
 
                 if isinstance(response_content, str):
-                    # Regex specifically looking for the {"tool_name": ..., "arguments": ...} structure
-                    # Allows optional whitespace around JSON and captures the JSON block
-                    tool_call_json_regex = re.compile(r"^\s*(\{\s*\"tool_name\"\s*:\s*\".*?\"\s*,\s*\"arguments\"\s*:\s*\{.*?\}\s*\})\s*$", re.DOTALL | re.MULTILINE)
-                    
-                    potential_tool_call_match = tool_call_json_regex.search(response_content)
-                    
-                    if potential_tool_call_match:
-                        json_string = potential_tool_call_match.group(1)
-                        # Check if we already processed this exact block (less likely with UUID but possible)
-                        if json_string in processed_json_blocks:
-                            continue 
-                        processed_json_blocks.add(json_string)
-                        
+                    # Use extract_json to detect tool calls
+                    potential_tool_call = extract_json(response_content)
+                    if potential_tool_call and isinstance(potential_tool_call, dict) and "tool_name" in potential_tool_call and "arguments" in potential_tool_call:
+                        tool_name = potential_tool_call["tool_name"]
+                        arguments = potential_tool_call["arguments"]
+                        tool_call_id = f"call_{uuid.uuid4()}"
+                        logger.info(f"Extracted tool call: {tool_name} (ID: {tool_call_id}) with args {arguments}")
+                        tool_calls_found_in_response = True
+
+                        # --- Execute Tool with Error Handling ---
+                        tool_result_message = None
                         try:
-                            tool_call_data = json.loads(json_string.strip())
-                            # Double-check structure just in case regex was too broad
-                            if isinstance(tool_call_data, dict) and "tool_name" in tool_call_data and "arguments" in tool_call_data:
-                                tool_name = tool_call_data["tool_name"]
-                                arguments = tool_call_data["arguments"]
-                                tool_call_id = f"call_{uuid.uuid4()}" 
-                                logger.info(f"Extracted simulated tool call: {tool_name} (ID: {tool_call_id}) with args {arguments}")
-                                tool_calls_found_in_response = True
-
-                                # --- Execute Tool with Error Handling --- 
-                                tool_result_message = None
-                                try:
-                                    if hasattr(app, 'execute_tool') and callable(app.execute_tool):
-                                        # Check if the tool actually exists and is a proper tool instance
-                                        if tool_name in app.tools:
-                                            tool = app.tools[tool_name]
-                                            # Check if the tool is a proper instance with an execute method
-                                            if hasattr(tool, 'execute') and callable(tool.execute):
-                                                tool_result = await app.execute_tool(tool_name, arguments)
-                                                logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
-                                                
-                                                # --- Format result message --- 
-                                                content_for_llm = str(tool_result) # Default to stringified result
-                                                # Check if result is a dict from communicate tool (or similar)
-                                                if isinstance(tool_result, dict) and 'success' in tool_result and 'response' in tool_result:
-                                                    if tool_result['success']:
-                                                        content_for_llm = tool_result['response']
-                                                    else:
-                                                        # Keep error details
-                                                        content_for_llm = f"Tool execution failed: {tool_result.get('response', 'Unknown error')}"
-                                                elif tool_result is None:
-                                                     content_for_llm = "Tool executed successfully with no return value."
-
-                                                tool_result_message = {
-                                                    "role": "tool", 
-                                                    "tool_call_id": tool_call_id, 
-                                                    "name": tool_name, 
-                                                    "content": content_for_llm
-                                                }
-                                            else:
-                                                logger.error(f"Tool {tool_name} exists but has no execute method. Tool might be a config dictionary, not an instance.")
-                                                error_content = f"Tool execution failed: '{tool_name}' is not properly initialized."
-                                                tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
+                            if tool_name in app.tools:
+                                tool = app.tools[tool_name]
+                                if hasattr(tool, 'execute') and callable(tool.execute):
+                                    tool_result = await app.execute_tool(tool_name, arguments)
+                                    logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
+                                    
+                                    content_for_llm = str(tool_result)
+                                    if isinstance(tool_result, dict) and 'success' in tool_result and 'response' in tool_result:
+                                        if tool_result['success']:
+                                            content_for_llm = tool_result['response']
                                         else:
-                                            logger.error(f"Tool {tool_name} not found in app.tools.")
-                                            error_content = f"Tool execution failed: '{tool_name}' not found."
-                                            tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
-                                    else:
-                                        logger.error(f"App cannot execute tool {tool_name} (ID: {tool_call_id}).")
-                                        error_content = f"Tool execution failed: App cannot execute tool '{tool_name}'."
-                                        tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
-                                except Exception as e:
-                                    logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
-                                    error_content = f"Error executing tool '{tool_name}': {e}"
+                                            content_for_llm = f"Tool execution failed: {tool_result.get('response', 'Unknown error')}"
+                                    elif tool_result is None:
+                                        content_for_llm = "Tool executed successfully with no return value."
+
+                                    tool_result_message = {
+                                        "role": "tool",
+                                        "tool_call_id": tool_call_id,
+                                        "name": tool_name,
+                                        "content": content_for_llm
+                                    }
+                                else:
+                                    logger.error(f"Tool {tool_name} exists but has no execute method.")
+                                    error_content = f"Tool execution failed: '{tool_name}' is not properly initialized."
                                     tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
-                                
-                                # Add the result/error message to the list for the next turn's input
-                                if tool_result_message:
-                                    tool_results_for_next_turn.append(tool_result_message)
                             else:
-                                # Parsed JSON, but not the specific tool call format we looked for
-                                logger.debug(f"JSON found but not the expected tool call format: {json_string[:100]}...")
-                        except json.JSONDecodeError:
-                            # Regex matched, but it wasn't valid JSON after all?
-                            logger.debug(f"Regex matched potential JSON, but failed to parse: {json_string[:100]}...")
+                                logger.error(f"Tool {tool_name} not found in app.tools.")
+                                error_content = f"Tool execution failed: '{tool_name}' not found."
+                                tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
                         except Exception as e:
-                             logger.error(f"Error processing potential tool call block: {e}", exc_info=True)
+                            logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
+                            error_content = f"Error executing tool '{tool_name}': {e}"
+                            tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
+
+                        if tool_result_message:
+                            tool_results_for_next_turn.append(tool_result_message)
                     else:
-                         logger.debug("No specific tool call JSON block found in response string.")
-                else:
-                    logger.debug("Response was not a string, skipping tool call check.")
+                        logger.debug("No valid tool call JSON found in response.")
 
                 # --- Append Tool Results and Decide Next Step ---
                 if tool_calls_found_in_response:
                     if tool_results_for_next_turn:
                         logger.info(f"Adding {len(tool_results_for_next_turn)} tool results to conversation history.")
-                        messages.extend(tool_results_for_next_turn) # Append tool results to messages list
-                        # Loop continues automatically
+                        messages.extend(tool_results_for_next_turn)
+                        continue
                     else:
-                         logger.warning("Tool calls were detected in response, but no results were generated/appended.")
-                         # Decide how to handle this: maybe break or log error? For now, let it continue.
-                    continue # Continue to the next turn
+                        logger.warning("Tool call detected but no results generated.")
+                        continue
                 else:
-                    # No tool calls in the latest response, this is the final answer
                     logger.info("No tool calls found in the latest response. Ending agentic loop.")
-                    final_response = response_content # Store the final response
-                    break # Exit the loop
+                    final_response = response_content
+                    break
 
-            # --- After the loop --- 
+            # --- After the loop ---
             if turn_count >= max_turns:
-                 logger.warning(f"Agentic loop reached maximum turns ({max_turns}). Returning last response.")
+                logger.warning(f"Agentic loop reached maximum turns ({max_turns}). Returning last response.")
 
             # Print the final response
             console.print("\n[bold green]Final Response:[/bold green]")
             if isinstance(final_response, str):
-                 # Check if the final response itself contains JSON (e.g., if loop ended on error)
-                 final_json = extract_json(final_response)
-                 if final_json:
-                     json_str = json.dumps(final_json, indent=2)
-                     syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                     console.print(syntax)
-                 else:
-                     console.print(final_response)
+                final_json = extract_json(final_response)
+                if final_json:
+                    json_str = json.dumps(final_json, indent=2)
+                    syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
+                    console.print(syntax)
+                else:
+                    console.print(final_response)
             elif isinstance(final_response, (dict, list)):
-                 json_str = json.dumps(final_response, indent=2)
-                 syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                 console.print(syntax)
+                json_str = json.dumps(final_response, indent=2)
+                syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
+                console.print(syntax)
             else:
-                 console.print(str(final_response))
+                console.print(str(final_response))
                  
             return True
         else:

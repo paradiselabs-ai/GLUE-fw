@@ -278,12 +278,13 @@ class GlueApp:
                             for team in self.teams.values():
                                 if team.models:  # Only add if the team has models
                                     team._tools["communicate"] = communicate_tool
-                                    # Add to each model in the team
+                                    # Add to each model in the team without redundant logging
                                     for model_name, model in team.models.items():
                                         if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
                                             model.add_tool_sync("communicate", communicate_tool)
+                                            logger.debug(f"Added tool communicate to model {model_name} in team {team.name}")
                         
-                            logger.info("Registered communication tool with all teams")
+                            logger.info("Registered communication with all teams")
                         else:
                             logger.warning("Failed to create CommunicateTool instance.")
                     except ImportError as ie:
@@ -305,19 +306,27 @@ class GlueApp:
                 # Get the lead model
                 lead_model = self.models.get(lead_model_name)
                 if lead_model:
-                    # Get member model names
-                    member_names = team_config.get("members", [])
+                    # Get member model names, excluding the lead
+                    all_member_names = team_config.get("members", [])
+                    # Filter out the lead from members to avoid duplication
+                    member_names = [name for name in all_member_names if name != lead_model_name]
                     
                     # Create the team with the lead model
                     team_config_obj = TeamConfig(name=team_name, lead=lead_model_name, members=member_names, tools=[])
+                    logger.debug(f"Creating team {team_name} with config: lead={lead_model_name}, members={member_names}")
                     team = Team(name=team_name, config=team_config_obj, lead=lead_model)
+                    
+                    # Set a reference to this app on the team
+                    if not hasattr(team, '_app'):
+                        team._app = self
                     
                     # Add member models to the team
                     for member_name in member_names:
                         member_model = self.models.get(member_name)
-                        if member_model:
-                            team.add_member_sync(member_model)
-                            logger.info(f"Added member model {member_name} to team {team_name}")
+                        if member_model and member_model != lead_model:  # Skip if it's the lead model
+                            # Check if member is already in team before adding
+                            if member_name not in team.models:
+                                team.add_member_sync(member_model)
                     
                     # Add tools to the team
                     tools_list = team_config.get("tools", [])
@@ -346,12 +355,17 @@ class GlueApp:
                             for member_name in member_names:
                                 member_model = self.models.get(member_name)
                                 if member_model and hasattr(member_model, 'add_tool_sync'):
-                                    member_model.add_tool_sync(tool_name, self.tools[tool_name])
-                                    logger.debug(f"Added tool {tool_name} to member model {member_name}")
-                            
-                            logger.info(f"Added tool {tool_name} to team {team_name}")
+                                    # Check if tool is already in model's tools to avoid duplicate logging
+                                    tool_already_added = hasattr(member_model, 'tools') and tool_name in member_model.tools
+                                    if not tool_already_added:
+                                        member_model.add_tool_sync(tool_name, self.tools[tool_name])
+                                    else:
+                                        member_model.add_tool_sync(tool_name, self.tools[tool_name])  # Will be skipped internally
+                            if tool_name != "communicate":
+                                logger.info(f"Added tool {tool_name} to team {team_name}")
                     
                     self.teams[team_name] = team
+                    logger.info(f"Finished setting up team {team_name}")
         
         # Set up flows
         for flow_config in config.get("flows", []):

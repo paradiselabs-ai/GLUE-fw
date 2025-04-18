@@ -186,7 +186,6 @@ class WebSearchTool(Tool):
         api_key = self.provider_config.get("api_key")
         if not api_key:
             # Try getting from environment variable if not in config
-            logger.debug(f"API key not found in provider_config for {self.provider_type}. Checking environment variable SERP_API_KEY...")
             api_key = os.getenv("SERP_API_KEY")
         
         if not api_key:
