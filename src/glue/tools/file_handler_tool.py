@@ -25,6 +25,28 @@ class FileOperation(str, Enum):
 class FileHandlerTool(Tool):
     """Tool for handling file operations"""
     
+    description = "Read, write, or list files/directories in the workspace"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "description": "Action to perform (read, write, list_dir)",
+                "enum": ["read", "write", "list_dir"]
+            },
+            "path": {
+                "type": "string",
+                "description": "Path to the file or directory relative to the workspace root"
+            },
+            "content": {
+                "type": "string",
+                "description": "Content to write (only required for write action)"
+            }
+        },
+        "required": ["action", "path"]
+        # 'content' is conditionally required, handled in execute logic
+    }
+
     def __init__(
         self,
         name: str = "file_handler",
@@ -70,6 +92,15 @@ class FileHandlerTool(Tool):
         Raises:
             ValueError: If the operation or file_path is missing or invalid
         """
+        # Handle string input by assuming it's a file path for a read operation
+        if isinstance(input_data, str):
+            # If input is a string, assume it's a file path for a read operation
+            input_data = {
+                "operation": "read",
+                "file_path": input_data
+            }
+            logger.info(f"Converted string input to read operation for path: {input_data['file_path']}")
+        
         # Get the operation
         operation_str = input_data.get("operation")
         if not operation_str:

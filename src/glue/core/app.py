@@ -16,6 +16,11 @@ from .flow import Flow
 from .schemas import ModelConfig, ToolConfig, MagnetConfig
 from ..magnetic.field import MagneticField
 
+# Import built-in tool classes
+from glue.tools.web_search_tool import WebSearchTool
+from glue.tools.file_handler_tool import FileHandlerTool
+from glue.tools.code_interpreter_tool import CodeInterpreterTool
+
 
 # Set up logging
 logger = logging.getLogger("glue.app")
@@ -46,9 +51,31 @@ def create_tool(config: Dict[str, Any]) -> Any:
     Returns:
         Tool instance
     """
-    # In a real implementation, this would create a tool instance
-    # For now, just return the config for test compatibility
-    return config
+    # Get the tool class from the registry
+    from ..tools.tool_registry import get_tool_class
+    
+    tool_name = config.get("name", "unknown_tool")
+    tool_provider = config.get("provider", "")
+    
+    try:
+        # Try to get the tool class based on the provider
+        tool_class = get_tool_class(tool_provider)
+        
+        # Create an instance of the tool
+        tool_instance = tool_class(
+            name=tool_name,
+            description=config.get("description", ""),
+            provider_type=tool_provider,
+            provider_config=config.get("config", {}),
+            config=config
+        )
+        
+        logger.info(f"Created tool instance: {tool_name} using provider {tool_provider}")
+        return tool_instance
+    except (ValueError, ImportError) as e:
+        logger.warning(f"Failed to create tool instance for {tool_name}: {e}")
+        # For backward compatibility, return the config if we can't create a tool instance
+        return config
 
 
 class AppConfig:
@@ -193,9 +220,81 @@ class GlueApp:
                 if isinstance(tool_config, dict) and "name" not in tool_config:
                     tool_config["name"] = tool_name
                 
-                # Store the tool configuration for now
-                # We'll handle actual tool creation later or in a real implementation
-                self.tools[tool_name] = tool_config
+                # Instantiate built-in tool classes
+                if tool_name == "web_search":
+                    try:
+                        tool_instance = WebSearchTool(**tool_config) if isinstance(tool_config, dict) else WebSearchTool()
+                        self.tools[tool_name] = tool_instance
+                    except Exception:
+                        self.tools[tool_name] = WebSearchTool()
+                elif tool_name == "file_handler":
+                    try:
+                        tool_instance = FileHandlerTool(**tool_config) if isinstance(tool_config, dict) else FileHandlerTool()
+                        self.tools[tool_name] = tool_instance
+                    except Exception:
+                        self.tools[tool_name] = FileHandlerTool()
+                elif tool_name == "code_interpreter":
+                    try:
+                        tool_instance = CodeInterpreterTool(**tool_config) if isinstance(tool_config, dict) else CodeInterpreterTool()
+                        self.tools[tool_name] = tool_instance
+                    except Exception:
+                        self.tools[tool_name] = CodeInterpreterTool()
+                elif tool_name == "communicate":
+                    # Explicitly instantiate CommunicateTool
+                    try:
+                        # Try different import paths to handle various project structures
+                        communicate_tool = None
+                        
+                        # First try direct import
+                        try:
+                            from glue.tools.communicate import CommunicateTool
+                            communicate_tool = CommunicateTool(app=self)
+                        except ImportError:
+                            logger.debug("Failed to import CommunicateTool from glue.tools.communicate, trying relative import...")
+                        
+                        # Try relative import if direct import fails
+                        if communicate_tool is None:
+                            try:
+                                from ..tools.communicate import CommunicateTool
+                                communicate_tool = CommunicateTool(app=self)
+                            except ImportError:
+                                logger.debug("Failed to import CommunicateTool from ..tools.communicate, trying src path...")
+                                
+                        # Try src path as last resort
+                        if communicate_tool is None:
+                            try:
+                                from src.glue.tools.communicate import CommunicateTool
+                                communicate_tool = CommunicateTool(app=self)
+                            except ImportError:
+                                logger.error("All import attempts for CommunicateTool failed.")
+                                raise ImportError("Could not import CommunicateTool from any known location.")
+                        
+                        # Only proceed if we successfully created a tool instance
+                        if communicate_tool is not None:
+                            # Add to tools dictionary
+                            self.tools["communicate"] = communicate_tool
+                            
+                            # Add to all teams - but check if the team has models first
+                            for team in self.teams.values():
+                                if team.models:  # Only add if the team has models
+                                    team._tools["communicate"] = communicate_tool
+                                    # Add to each model in the team without redundant logging
+                                    for model_name, model in team.models.items():
+                                        if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
+                                            model.add_tool_sync("communicate", communicate_tool)
+                                            logger.debug(f"Added tool communicate to model {model_name} in team {team.name}")
+                        
+                            logger.info("Registered communication with all teams")
+                        else:
+                            logger.warning("Failed to create CommunicateTool instance.")
+                    except ImportError as ie:
+                        logger.warning(f"Communication tool not available: {ie}, skipping registration")
+                    except Exception as e:
+                        logger.warning(f"Error registering communication tool: {e}, skipping registration")
+                else:
+                    # For other custom or unknown tools, store the config
+                    logger.debug(f"Storing config for unknown/custom tool: {tool_name}")
+                    self.tools[tool_name] = tool_config
         
         # Set up teams
         magnetize_dict = config.get("magnetize", {})
@@ -205,11 +304,29 @@ class GlueApp:
                 lead_model_name = team_config.get("lead", "")
                 
                 # Get the lead model
-                model = self.models.get(lead_model_name)
-                if model:
+                lead_model = self.models.get(lead_model_name)
+                if lead_model:
+                    # Get member model names, excluding the lead
+                    all_member_names = team_config.get("members", [])
+                    # Filter out the lead from members to avoid duplication
+                    member_names = [name for name in all_member_names if name != lead_model_name]
+                    
                     # Create the team with the lead model
-                    team_config_obj = TeamConfig(name=team_name, lead=lead_model_name, members=[], tools=[])
-                    team = Team(name=team_name, config=team_config_obj, lead=model)
+                    team_config_obj = TeamConfig(name=team_name, lead=lead_model_name, members=member_names, tools=[])
+                    logger.debug(f"Creating team {team_name} with config: lead={lead_model_name}, members={member_names}")
+                    team = Team(name=team_name, config=team_config_obj, lead=lead_model)
+                    
+                    # Set a reference to this app on the team
+                    if not hasattr(team, '_app'):
+                        team._app = self
+                    
+                    # Add member models to the team
+                    for member_name in member_names:
+                        member_model = self.models.get(member_name)
+                        if member_model and member_model != lead_model:  # Skip if it's the lead model
+                            # Check if member is already in team before adding
+                            if member_name not in team.models:
+                                team.add_member_sync(member_model)
                     
                     # Add tools to the team
                     tools_list = team_config.get("tools", [])
@@ -219,9 +336,9 @@ class GlueApp:
                             team._tools[tool_name] = self.tools[tool_name]
                             
                             # Also add the tool to the lead model
-                            if model and hasattr(model, 'add_tool_sync'):
-                                model.add_tool_sync(tool_name, self.tools[tool_name])
-                            elif model and hasattr(model, 'add_tool'):
+                            if lead_model and hasattr(lead_model, 'add_tool_sync'):
+                                lead_model.add_tool_sync(tool_name, self.tools[tool_name])
+                            elif lead_model and hasattr(lead_model, 'add_tool'):
                                 # Note: This is an async method being called in a sync context
                                 # This is not ideal, but it's necessary for backward compatibility
                                 import asyncio
@@ -229,14 +346,26 @@ class GlueApp:
                                     # Try to run the async method in a new event loop
                                     loop = asyncio.new_event_loop()
                                     asyncio.set_event_loop(loop)
-                                    loop.run_until_complete(model.add_tool(tool_name, self.tools[tool_name]))
+                                    loop.run_until_complete(lead_model.add_tool(tool_name, self.tools[tool_name]))
                                     loop.close()
                                 except Exception as e:
                                     logger.warning(f"Failed to add tool {tool_name} to model {lead_model_name}: {e}")
                             
-                            logger.info(f"Added tool {tool_name} to team {team_name}")
+                            # Add the tool to all member models
+                            for member_name in member_names:
+                                member_model = self.models.get(member_name)
+                                if member_model and hasattr(member_model, 'add_tool_sync'):
+                                    # Check if tool is already in model's tools to avoid duplicate logging
+                                    tool_already_added = hasattr(member_model, 'tools') and tool_name in member_model.tools
+                                    if not tool_already_added:
+                                        member_model.add_tool_sync(tool_name, self.tools[tool_name])
+                                    else:
+                                        member_model.add_tool_sync(tool_name, self.tools[tool_name])  # Will be skipped internally
+                            if tool_name != "communicate":
+                                logger.info(f"Added tool {tool_name} to team {team_name}")
                     
                     self.teams[team_name] = team
+                    logger.info(f"Finished setting up team {team_name}")
         
         # Set up flows
         for flow_config in config.get("flows", []):
@@ -292,6 +421,15 @@ class GlueApp:
                 # For test compatibility, just continue
                 pass
         
+        # Initialize tools first
+        for tool_name, tool in self.tools.items():
+            try:
+                if hasattr(tool, "initialize") and callable(tool.initialize):
+                    await tool.initialize()
+                    logger.info(f"Initialized tool: {tool_name}")
+            except Exception as e:
+                logger.warning(f"Failed to initialize tool {tool_name}: {e}")
+        
         # Set up teams
         for team in self.teams.values():
             # Get tools from config
@@ -325,12 +463,26 @@ class GlueApp:
                 # For test compatibility, just continue
                 pass
         
-        # Set up tools
-        # In a real implementation, we would set up tools here
-        
         # Set up flows
+        logger.info(f"Setting up {len(self.flows)} flows")
         for flow in self.flows:
-            await flow.setup()
+            try:
+                logger.debug(f"Setting up flow from {flow.source.name} to {flow.target.name} ({flow.flow_type.name})")
+                await flow.setup()
+                
+                # Establish relationships between teams
+                if flow.flow_type == FlowType.BIDIRECTIONAL:
+                    flow.source.relationships[flow.target.name] = FlowType.BIDIRECTIONAL.value
+                    flow.target.relationships[flow.source.name] = FlowType.BIDIRECTIONAL.value
+                    logger.info(f"Established bidirectional relationship between {flow.source.name} and {flow.target.name}")
+                elif flow.flow_type == FlowType.PUSH:
+                    flow.source.relationships[flow.target.name] = FlowType.PUSH.value
+                    logger.info(f"Established push relationship from {flow.source.name} to {flow.target.name}")
+                elif flow.flow_type == FlowType.PULL:
+                    flow.target.relationships[flow.source.name] = FlowType.PULL.value
+                    logger.info(f"Established pull relationship from {flow.target.name} to {flow.source.name}")
+            except Exception as e:
+                logger.error(f"Error setting up flow: {e}")
     
     async def run(self, input_text: str = None) -> str:
         """Run the application with the given input.
@@ -502,3 +654,51 @@ class GlueApp:
         
         # Call cleanup after handling flows
         await self.cleanup()
+
+    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Execute a tool registered with the application."""
+        logger.info(f"App attempting to execute tool: {tool_name} with args: {arguments}")
+        if tool_name in self.tools:
+            tool = self.tools[tool_name]
+            try:
+                if hasattr(tool, "execute") and callable(tool.execute):
+                    # Note: Context might be missing here compared to team-based execution
+                    # Add app context to arguments
+                    arguments_with_context = arguments.copy()
+                    
+                    # Add app reference if not already present
+                    if 'app' not in arguments_with_context:
+                        arguments_with_context['app'] = self
+                        
+                    # If this is the communicate tool, ensure it has necessary context
+                    if tool_name == "communicate":
+                        # Try to deduce calling context if not provided
+                        if 'calling_team' not in arguments_with_context:
+                            # Default to the first team if not specified
+                            if self.teams:
+                                arguments_with_context['calling_team'] = next(iter(self.teams.keys()))
+                                logger.debug(f"Added default calling_team: {arguments_with_context['calling_team']}")
+                        
+                        if 'calling_model' not in arguments_with_context:
+                            # If we have a calling team, use its lead model
+                            if 'calling_team' in arguments_with_context and arguments_with_context['calling_team'] in self.teams:
+                                team = self.teams[arguments_with_context['calling_team']]
+                                if team.config.lead:
+                                    arguments_with_context['calling_model'] = team.config.lead
+                                    logger.debug(f"Added default calling_model: {arguments_with_context['calling_model']}")
+                    
+                    # Execute with enhanced context
+                    result = await tool.execute(**arguments_with_context)
+                    logger.info(f"Tool {tool_name} executed successfully by app.")
+                    # Tools might return complex objects, let's return them directly for now
+                    # The calling loop might need to serialize/deserialize if needed
+                    return result 
+                else:
+                    logger.error(f"Tool {tool_name} found but has no callable execute method.")
+                    return {"error": f"Tool {tool_name} has no execute method"} # Return error dict
+            except Exception as e:
+                logger.error(f"Error executing tool {tool_name} via app: {e}", exc_info=True)
+                return {"error": f"Error executing tool {tool_name}: {str(e)}"} # Return error dict
+        else:
+            logger.error(f"Tool '{tool_name}' not found in application tools.")
+            return {"error": f"Tool '{tool_name}' not found"} # Return error dict

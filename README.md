@@ -80,7 +80,7 @@ tool web_search {
 model researcher {
     provider = openrouter
     role = "Research topics online"
-    adhesives = [glue, velcro]
+      = [glue, velcro]
     config {
         model = "meta-llama/llama-3.1-70b-instruct:free"
         temperature = 0.7
@@ -177,7 +177,7 @@ magnetize {
 ### Modular Plugins
 - **Orchestration Module**: Advanced agent orchestration with real-time workflow optimization
 - **Multi-Role Module**: Multi-agent collaboration with dynamic role assignment
-- **Re-Cache Module**: Integrated prompt caching, and enhanced reasoning (cut 40% of your API costs!)
+- **Re-Cache Module**: Integrated prompt caching, model capability caching, and enhanced reasoning (cut 40% of your API costs!)
 
 ### GLUE Studio
 - Visual development environment for creating GLUE applications

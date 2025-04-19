@@ -45,9 +45,11 @@ class BaseModel:
         self.config = config or {}
         self.name = self.config.get('name', 'unnamed_model')
         self.provider_name = self.config.get('provider', 'gemini')
-        # Look inside the nested 'config' block first, then top-level, then default
+        
+        # Check for model name in nested config first, then at top level
         nested_config = self.config.get('config', {})
-        self.model_name = nested_config.get('model', self.config.get('model', 'gemini-1.5-pro'))
+        self.model_name = nested_config.get('model') if nested_config and 'model' in nested_config else self.config.get('model', 'gpt-3.5-turbo')
+        
         self.temperature = self.config.get('temperature', 0.7)
         self.max_tokens = self.config.get('max_tokens', 1024)
         self.api_key = self.config.get('api_key')
@@ -156,17 +158,55 @@ class BaseModel:
         """Set the team this model belongs to."""
         self.team = team
     
-    def add_tool(self, name: str, tool: Any):
+    def add_tool_sync(self, name: str, tool: Any):
+        """Add a tool to this model (synchronous version).
+        
+        Args:
+            name: Tool name
+            tool: Tool instance
+        """
+        # Make sure the tool is callable
+        if hasattr(tool, "execute") and callable(tool.execute):
+            # Create a wrapper function that calls the tool's execute method
+            async def tool_wrapper(**kwargs):
+                # Initialize the tool if it's not already initialized
+                if hasattr(tool, "_initialized") and not tool._initialized and hasattr(tool, "initialize"):
+                    await tool.initialize()
+                
+                # Call the execute method
+                if asyncio.iscoroutinefunction(tool.execute):
+                    return await tool.execute(**kwargs)
+                else:
+                    return tool.execute(**kwargs)
+            
+            # Store the wrapper function
+            self.tools[name] = tool_wrapper
+            
+            # Store the original tool object as an attribute of the wrapper
+            tool_wrapper.tool_obj = tool
+            
+            # Copy important attributes from the tool to the wrapper
+            if hasattr(tool, "description"):
+                tool_wrapper.description = tool.description
+            
+            logger.info(f"Added callable tool wrapper for {name}")
+        else:
+            # Just store the tool as is (for backward compatibility)
+            self.tools[name] = tool
+            logger.warning(f"Added tool {name} without execute method")
+
+    async def add_tool(self, name: str, tool: Any):
         """Add a tool to this model.
         
         Args:
             name: Tool name
             tool: Tool instance
         """
-        self.tools[name] = tool
-    
+        # Just call the sync version
+        self.add_tool_sync(name, tool)
+
     async def generate(self, content: str) -> str:
-        """Generate a response from the model.
+        """Generate a response from the model, with tool call detection and execution loop.
         
         Args:
             content: The content to generate a response for
@@ -174,15 +214,252 @@ class BaseModel:
         Returns:
             The generated response
         """
-        # Create a simple message from the content
-        message = Message(role="user", content=content)
+        # Initialize conversation history
+        messages = [Message(role="user", content=content)]
         
-        # Generate a response using the provider
-        try:
-            return await self.generate_response([message])
-        except Exception as e:
-            logger.error(f"Error generating response: {e}")
-            return "I'm sorry, I encountered an error while generating a response."
+        # Prepare tool schemas if available
+        provider_tools = []
+        if hasattr(self, "_provider_tools") and self._provider_tools:
+            provider_tools = list(self._provider_tools.values())
+        elif hasattr(self, "tools") and self.tools:
+            # Fallback: format tools dict
+            for tool_name, tool in self.tools.items():
+                formatted = self._format_tool_for_provider(tool_name, tool)
+                provider_tools.append(formatted)
+        
+        # Tool call + execution loop
+        max_loops = 3  # prevent infinite loops
+        for _ in range(max_loops):
+            try:
+                response = await self.generate_response(messages, tools=provider_tools)
+            except Exception as e:
+                logger.error(f"Error generating response: {e}")
+                return "I'm sorry, I encountered an error while generating a response."
+            
+            # If response is dict with tool calls (Gemini style)
+            if isinstance(response, dict) and "tool_calls" in response:
+                tool_calls = response.get("tool_calls", [])
+                if not tool_calls:
+                    # No tool calls, return empty content or fallback
+                    return response.get("content", "")
+                
+                # Execute each tool call
+                tool_results = []
+                for call in tool_calls:
+                    fn = call.get("function", {})
+                    tool_name = fn.get("name")
+                    arguments = fn.get("arguments", {})
+                    # If arguments is stringified JSON, parse it
+                    if isinstance(arguments, str):
+                        try:
+                            import json as _json
+                            arguments = _json.loads(arguments)
+                        except Exception:
+                            # If it's not valid JSON, wrap it in a dictionary with a default key
+                            arguments = {"query": arguments}
+                    elif not isinstance(arguments, dict):
+                        # If it's not a string or dict, convert to a dict with a default key
+                        arguments = {"query": str(arguments)}
+                    
+                    # Find the tool
+                    tool_obj = None
+                    if hasattr(self, "tools") and self.tools:
+                        tool_obj = self.tools.get(tool_name)
+                    if not tool_obj:
+                        logger.warning(f"Tool '{tool_name}' not found for call, skipping execution")
+                        continue
+                    
+                    # Execute the tool
+                    try:
+                        if callable(tool_obj):
+                            if asyncio.iscoroutinefunction(tool_obj):
+                                result = await tool_obj(**arguments)
+                            else:
+                                result = tool_obj(**arguments)
+                        elif hasattr(tool_obj, "execute") and callable(tool_obj.execute):
+                            if asyncio.iscoroutinefunction(tool_obj.execute):
+                                result = await tool_obj.execute(**arguments)
+                            else:
+                                result = tool_obj.execute(**arguments)
+                        else:
+                            logger.warning(f"Tool '{tool_name}' is not callable")
+                            continue
+                        # Append tool result message
+                        tool_result_msg = Message(
+                            role="function",
+                            content=str(result),
+                            name=tool_name
+                        )
+                        messages.append(tool_result_msg)
+                    except Exception as e:
+                        logger.error(f"Error executing tool '{tool_name}': {e}")
+                        error_msg = Message(
+                            role="function",
+                            content=f"Error executing tool '{tool_name}': {e}",
+                            name=tool_name
+                        )
+                        messages.append(error_msg)
+                # Continue loop: re-call LLM with appended tool results
+                continue
+            
+            # If response is string, check for ```tool_code``` blocks (Gemini style)
+            if isinstance(response, str):
+                import re
+                import json
+                
+                # Check for ```tool_code``` blocks (Gemini style)
+                tool_code_pattern = r"```tool_code\s*(.*?)\s*```"
+                matches = re.findall(tool_code_pattern, response, re.DOTALL)
+                if matches:
+                    for code in matches:
+                        # Parse tool_name(args)
+                        m = re.match(r"(\w+)\s*\((.*)\)", code.strip())
+                        if not m:
+                            continue
+                        tool_name = m.group(1)
+                        args_str = m.group(2)
+                        # Parse args into dict
+                        args_dict = {}
+                        try:
+                            parts = [p.strip() for p in args_str.split(",") if "=" in p]
+                            for p in parts:
+                                k, v = p.split("=", 1)
+                                k = k.strip()
+                                v = v.strip().strip('"').strip("'")
+                                args_dict[k] = v
+                        except Exception:
+                            pass
+                        # Find tool
+                        tool_obj = None
+                        if hasattr(self, "tools") and self.tools:
+                            tool_obj = self.tools.get(tool_name)
+                        if not tool_obj:
+                            logger.warning(f"Tool '{tool_name}' not found for tool_code, skipping execution")
+                            continue
+                        # Execute tool
+                        try:
+                            if callable(tool_obj):
+                                if asyncio.iscoroutinefunction(tool_obj):
+                                    result = await tool_obj(**args_dict)
+                                else:
+                                    result = tool_obj(**args_dict)
+                            elif hasattr(tool_obj, "execute") and callable(tool_obj.execute):
+                                if asyncio.iscoroutinefunction(tool_obj.execute):
+                                    result = await tool_obj.execute(**args_dict)
+                                else:
+                                    result = tool_obj.execute(**args_dict)
+                            else:
+                                logger.warning(f"Tool '{tool_name}' is not callable")
+                                continue
+                            # Append tool result message
+                            tool_result_msg = Message(
+                                role="function",
+                                content=str(result),
+                                name=tool_name
+                            )
+                            messages.append(tool_result_msg)
+                        except Exception as e:
+                            logger.error(f"Error executing tool '{tool_name}': {e}")
+                            error_msg = Message(
+                                role="function",
+                                content=f"Error executing tool '{tool_name}': {e}",
+                                name=tool_name
+                            )
+                            messages.append(error_msg)
+                    # Continue loop: re-call LLM with appended tool results
+                    continue
+                
+                # Also check for ```tool_call``` blocks (for models without native tool support)
+                tool_call_pattern = r"```tool_call\s*(.*?)\s*```"
+                tool_call_matches = re.findall(tool_call_pattern, response, re.DOTALL)
+                
+                if tool_call_matches:
+                    logger.debug(f"Found {len(tool_call_matches)} tool_call blocks in response")
+                    
+                    for tool_call_content in tool_call_matches:
+                        # Parse the tool call content
+                        tool_name = None
+                        parameters = {}
+                        
+                        # Extract tool name and parameters
+                        for line in tool_call_content.strip().split('\n'):
+                            if line.startswith('tool_name:'):
+                                tool_name = line.replace('tool_name:', '').strip()
+                            elif line.startswith('parameters:'):
+                                param_str = line.replace('parameters:', '').strip()
+                                try:
+                                    # Try to parse as JSON
+                                    parameters = json.loads(param_str)
+                                except json.JSONDecodeError:
+                                    # If not valid JSON, try to parse as Python dict
+                                    try:
+                                        # Simple parsing for key-value pairs
+                                        param_str = param_str.strip('{}')
+                                        for pair in param_str.split(','):
+                                            if ':' in pair:
+                                                k, v = pair.split(':', 1)
+                                                parameters[k.strip().strip('"').strip("'")] = v.strip().strip('"').strip("'")
+                                    except Exception:
+                                        logger.warning(f"Failed to parse parameters: {param_str}")
+                        
+                        if not tool_name:
+                            logger.warning("Tool call block missing tool_name")
+                            continue
+                        
+                        # Find the tool
+                        tool_obj = None
+                        if hasattr(self, "tools") and self.tools:
+                            tool_obj = self.tools.get(tool_name)
+                        if not tool_obj:
+                            logger.warning(f"Tool '{tool_name}' not found for simulated tool call, skipping execution")
+                            continue
+                        
+                        # Execute the tool
+                        try:
+                            if callable(tool_obj):
+                                if asyncio.iscoroutinefunction(tool_obj):
+                                    result = await tool_obj(**parameters)
+                                else:
+                                    result = tool_obj(**parameters)
+                            elif hasattr(tool_obj, "execute") and callable(tool_obj.execute):
+                                if asyncio.iscoroutinefunction(tool_obj.execute):
+                                    result = await tool_obj.execute(**parameters)
+                                else:
+                                    result = tool_obj.execute(**parameters)
+                            else:
+                                logger.warning(f"Tool '{tool_name}' is not callable")
+                                continue
+                            
+                            # Append tool result message
+                            tool_result_msg = Message(
+                                role="function",
+                                content=str(result),
+                                name=tool_name
+                            )
+                            messages.append(tool_result_msg)
+                        except Exception as e:
+                            logger.error(f"Error executing tool '{tool_name}': {e}")
+                            error_msg = Message(
+                                role="function",
+                                content=f"Error executing tool '{tool_name}': {e}",
+                                name=tool_name
+                            )
+                            messages.append(error_msg)
+                    
+                    # Continue the loop to process the tool results
+                    continue
+            
+            # If response is plain string and no tool calls detected, return it
+            if isinstance(response, str):
+                return response
+            # If response dict with 'content', return it
+            if isinstance(response, dict) and "content" in response:
+                return response["content"]
+            # Else, return stringified response
+            return str(response)
+        
+        # If max loops exceeded, return last response as string
+        return str(response)
     
     def _format_messages_for_provider(self, messages: List[Message]) -> List[Message]:
         """Format messages for the provider, adding system prompt if needed.
@@ -226,137 +503,59 @@ class BaseModel:
         prompt_parts = []
         
         # Add the model identity
-        prompt_parts.append(f"# GLUE Model: {self.name}")
+        prompt_parts.append(f"# Model: {self.name}")
         
         # Add the model role if defined
         if self.role:
-            prompt_parts.append(f"\n## Your Role\nYou are a model in the GLUE framework with the role: {self.role}")
-        
-        # Add framework context
-        prompt_parts.append("""
-## GLUE Framework
-You are operating as part of the GLUE (GenAI Linking & Unification Engine) framework, which organizes AI models into teams with tools and defined communication patterns.
-
-### Key Concepts
-1. **Adhesive Tool Usage**: Tools can be used with different binding types.
-2. **Team Communication**: You can communicate freely with team members.
-3. **Magnetic Information Flow**: Information flows between teams in defined patterns.
-""")
+            prompt_parts.append(f"\n## Your Role\nYou are an AI assistant with the role: {self.role}")
         
         # Add team context if available
         if hasattr(self, 'team') and self.team is not None:
-            prompt_parts.append(f"\n## Your Team\nYou are part of the '{self.team.name}' team.")
+            prompt_parts.append(f"\n## Your Collaborators\nYou are part of the '{self.team.name}' group.")
             
             # Include team members if available
             if hasattr(self.team, 'models') and isinstance(self.team.models, dict):
                 team_members = [name for name in self.team.models.keys() if name != self.name]
                 if team_members:
                     members_str = ", ".join(team_members)
-                    prompt_parts.append(f"Team members: {members_str}")
+                    prompt_parts.append(f"Your collaborators: {members_str}")
                 else:
-                    prompt_parts.append("You are the only member of this team.")
+                    prompt_parts.append("You are the only member of this group.")
         
-        # Add adhesive capabilities
+        # Add tool result behavior descriptions
         adhesives = getattr(self, 'adhesives', set())
         if adhesives:
-            prompt_parts.append("\n## Your Adhesive Capabilities")
-            adhesive_types = []
+            prompt_parts.append("\n## Tool Result Behavior")
+            behavior_descriptions = []
             
             if AdhesiveType.GLUE in adhesives:
-                adhesive_types.append("**GLUE**: Permanent binding with team-wide persistence. Results are automatically shared with your team.")
-            
+                behavior_descriptions.append("**Shared Results**: Some tool results are automatically shared and persisted within your group.")
             if AdhesiveType.VELCRO in adhesives:
-                adhesive_types.append("**VELCRO**: Session-based binding with model-level persistence. Results persist for your current session and are private to you.")
+                behavior_descriptions.append("**Private Results**: Some tool results are kept private to you and persist only for the current session.")
             
-            if AdhesiveType.TAPE in adhesives:
-                adhesive_types.append("**TAPE**: One-time binding with no persistence. Results are used once and discarded.")
-            
-            prompt_parts.append("\n".join(adhesive_types))
-        
-        # Add tool information
-        if self.tools:
-            prompt_parts.append("\n## Available Tools")
-            for name, tool in self.tools.items():
-                # Get tool description
-                description = getattr(tool, 'description', 'No description available')
-                
-                # Add tool information
-                prompt_parts.append(f"- **{name}**: {description}")
-        
+            if behavior_descriptions:
+                 prompt_parts.append("\n".join(behavior_descriptions))
+
         # Add response guidelines
         prompt_parts.append("""
 ## Response Guidelines
 1. Stay focused on your role and the current task.
-2. Use tools appropriately based on their adhesive types.
-3. Collaborate effectively with team members.
-4. Follow team-specific communication patterns.
-5. Maintain a professional and helpful tone.
+2. **Goal Adherence:** After using tools or communicating with collaborators, always review the original request and ensure your final response directly addresses the primary objective.
+3. Consider how tool results are shared or persisted when choosing tools.
+4. Collaborate effectively with your collaborators.
+5. Follow established communication patterns.
+6. Maintain a professional and helpful tone.
 """)
-        
-        # Provider-specific instructions
-        provider_name = self.provider_name.lower()
-        if provider_name == "gemini":
-            prompt_parts.append("""
-## Tool Usage Instructions
-When using tools, follow this specific function calling syntax for Gemini models:
 
-```tool_code
-tool_name(parameter1="value1", parameter2="value2")
-```
+        # Add generic tool usage instructions
+        prompt_parts.append("""
+## Tool Usage Instructions
+To use the available tools:
+- If you support native tool calling (e.g., function calling), use that method. Provide all required parameters as specified in the tool description.
+- In some situations, you might be instructed to use a specific format (e.g., a JSON object or a specific code block) to trigger a tool call. Follow those instructions precisely if provided.
+- Always refer to the "Available Tools" section (added when tools are available) for names, descriptions, and parameters.
+""")
 
-Always use the exact tool names as provided below. Do not invent or modify tool names.
-""")
-            
-            # Add specific examples for each available tool
-            if self.tools:
-                prompt_parts.append("\n### Tool Usage Examples")
-                for name, tool in self.tools.items():
-                    # Create a simple example for each tool
-                    if name == "web_search":
-                        prompt_parts.append(f"""
-Example for {name}:
-```tool_code
-{name}(query="latest news in AI development")
-```
-""")
-                    elif name == "file_handler":
-                        prompt_parts.append(f"""
-Example for {name}:
-```tool_code
-{name}(action="read", file_path="example.txt")
-```
-""")
-                    else:
-                        # Generic example for other tools
-                        prompt_parts.append(f"""
-Example for {name}:
-```tool_code
-{name}(parameter="example")
-```
-""")
-        elif provider_name == "anthropic":
-            prompt_parts.append("""
-## Tool Usage Instructions
-When using tools, use the <tool></tool> XML tags to indicate tool calls. Always provide required parameters.
-""")
-        elif provider_name == "openai":
-            prompt_parts.append("""
-## Tool Usage Instructions
-When using tools (functions), clearly indicate your intent to call a function and provide all required parameters.
-""")
-        elif provider_name == "openrouter":
-            # Generic instructions for OpenRouter (which might route to different models)
-            prompt_parts.append("""
-## Tool Usage Instructions
-Follow the appropriate function calling format for the underlying model. Always provide all required parameters.
-""")
-        else:
-            # Generic instructions for other providers
-            prompt_parts.append("""
-## Tool Usage Instructions
-When using tools, clearly indicate which tool you're using and provide all required parameters.
-""")
-            
         # Join all parts
         return "\n".join(prompt_parts)
     
@@ -398,7 +597,7 @@ When using tools, clearly indicate which tool you're using and provide all requi
                     tool_desc.append(f"- `{param_name}`{req_marker}: {param_type} - {param_desc}")
             
             tool_descriptions.append("\n".join(tool_desc))
-        
+
         return "\n\n".join(tool_descriptions)
     
     def _add_prompt_engineering(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> List[Message]:
@@ -423,13 +622,56 @@ When using tools, clearly indicate which tool you're using and provide all requi
             )
             
             if not has_tool_description:
+                # Check if there's a communicate tool
+                communicate_tool = None
+                for tool in tools:
+                    if tool.get("name") == "communicate":
+                        communicate_tool = tool
+                        break
+                
                 # Append tool descriptions to the system message
                 for i, msg in enumerate(formatted_messages):
                     if (isinstance(msg, dict) and msg.get('role') == 'system') or (hasattr(msg, 'role') and msg.role == 'system'):
+                        tool_description = self._prepare_tools_description(tools)
+                        
+                        # Add special instructions for the communicate tool if it exists
+                        if communicate_tool:
+                            tool_description += "\n\n## Special Instructions for the Communicate Tool\n\n"
+                            tool_description += "The `communicate` tool allows you to send messages to other models or teams. "
+                            tool_description += "You can use it to collaborate with other models in your team or in other teams.\n\n"
+                            tool_description += "Example usage:\n\n"
+                            
+                            # Native tool call example
+                            tool_description += "Native tool call:\n"
+                            tool_description += "```\n"
+                            tool_description += "communicate(target_type=\"model\", target_name=\"assistant\", message=\"Hello, can you help me with this task?\")\n"
+                            tool_description += "```\n\n"
+                            
+                            # Simulated tool call example
+                            tool_description += "Simulated tool call (for models without native tool support):\n"
+                            tool_description += "```tool_call\n"
+                            tool_description += "tool_name: communicate\n"
+                            tool_description += "parameters: {\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello, can you help me with this task?\"}\n"
+                            tool_description += "```\n\n"
+                            
+                            # Add information about available models and teams
+                            if hasattr(self, 'team') and self.team:
+                                # List models in the same team
+                                tool_description += "Models in your team:\n"
+                                for model_name in self.team.models.keys():
+                                    if model_name != self.name:  # Don't include self
+                                        tool_description += f"- {model_name}\n"
+                                
+                                # List other teams if there are outgoing flows
+                                if hasattr(self.team, 'outgoing_flows') and self.team.outgoing_flows:
+                                    tool_description += "\nTeams you can communicate with:\n"
+                                    for flow in self.team.outgoing_flows:
+                                        tool_description += f"- {flow.target.name}\n"
+                        
                         if isinstance(msg, dict):
-                            msg['content'] += "\n\n" + self._prepare_tools_description(tools)
+                            msg['content'] += "\n\n" + tool_description
                         else:
-                            msg.content += "\n\n" + self._prepare_tools_description(tools)
+                            msg.content += "\n\n" + tool_description
                         break
         
         return formatted_messages
@@ -491,28 +733,58 @@ When using tools, clearly indicate which tool you're using and provide all requi
                     if isinstance(msg, dict):
                         provider_messages.append(msg)
                     elif hasattr(msg, '__dict__'):
-                        # Pass the Message object directly
-                        provider_messages.append(msg)
+                        provider_messages.append(msg.__dict__)
                     else:
                         # Handle case where message might be a string or other type
                         provider_messages.append({"role": "user", "content": str(msg)})
                 
-                # Get available tools if any
+                # Get available tools if any and format them for the provider
                 provider_tools = None
-                if tools:
-                    provider_tools = tools
+                tools_source = None
+                if tools is not None:
+                    # Prioritize tools passed as argument (e.g., from cli.py)
+                    tools_source = tools
+                    logger.debug(f"Formatting {len(tools_source)} tools passed as argument.")
                 elif hasattr(self, 'tools') and self.tools:
-                    # Convert tools dictionary to list of tool definitions
-                    provider_tools = []
-                    for tool_name, tool in self.tools.items():
-                        if isinstance(tool, dict) and "name" in tool:
-                            # Tool is already formatted
-                            provider_tools.append(tool)
-                        else:
-                            # Format the tool
-                            formatted_tool = self._format_tool_for_provider(tool_name, tool)
-                            provider_tools.append(formatted_tool)
+                    # Fallback to tools attached to the model instance
+                    tools_source = self.tools
+                    logger.debug(f"Formatting {len(tools_source)} tools attached to model.")
                 
+                if tools_source:
+                    provider_tools = []
+                    # Ensure tools_source is iterable (e.g., dict.items() or list)
+                    items_to_iterate = tools_source.items() if isinstance(tools_source, dict) else tools_source
+                    
+                    for item in items_to_iterate:
+                        tool_name = None
+                        tool_instance = None
+                        
+                        if isinstance(tools_source, dict):
+                            tool_name, tool_instance = item # item is (key, value) from .items()
+                        elif isinstance(item, dict) and "name" in item:
+                            # Handle case where a list of formatted tools might be passed
+                            provider_tools.append(item)
+                            continue
+                        else:
+                            # Attempt to handle list of tool instances (less common)
+                            if hasattr(item, 'name'):
+                                tool_name = item.name
+                                tool_instance = item
+                            else:
+                                logger.warning(f"Skipping tool formatting for unrecognized item type: {type(item)}")
+                                continue
+
+                        # Format the tool instance if we have one
+                        if tool_name and tool_instance:
+                            if isinstance(tool_instance, dict) and "name" in tool_instance:
+                                # Already formatted?
+                                provider_tools.append(tool_instance)
+                            else:
+                                formatted_tool = self._format_tool_for_provider(tool_name, tool_instance)
+                                provider_tools.append(formatted_tool)
+                        elif tool_name and not tool_instance:
+                             logger.warning(f"Tool '{tool_name}' found in source but instance is missing.")
+
                 # Generate response using the provider
                 if hasattr(self.provider, 'generate_response') and callable(self.provider.generate_response):
                     logger.debug("Calling provider's generate_response method")

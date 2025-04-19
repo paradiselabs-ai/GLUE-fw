@@ -7,11 +7,14 @@ between teams in a GLUE application.
 
 import asyncio
 import logging
+from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
 
 from .teams import Team
 from .types import FlowType
+from .schemas import Message
+
 
 
 class Flow:
@@ -196,8 +199,74 @@ class Flow:
                     message["metadata"]["target_team"] = receiver.name
                     message["metadata"]["timestamp"] = asyncio.get_event_loop().time()
                     
+                    # Check if there's a specific target model
+                    target_model = message.get("metadata", {}).get("target_model")
+                    
                     # Deliver the message to the receiver
                     await receiver.receive_message(message, sender)
+                    
+                    # If there's a specific target model, try to deliver directly to that model
+                    if target_model and target_model in receiver.models:
+                        try:
+                            # Get the target model
+                            model = receiver.models[target_model]
+                            
+                            # Get the source model name
+                            source_model = message.get("metadata", {}).get("source_model")
+                            source_team = message.get("metadata", {}).get("source_team")
+                            
+                            # Extract content
+                            content = message.get("content", "")
+                            if isinstance(content, dict) and "content" in content:
+                                content = content["content"]
+                                
+                            # Create a message for the model
+                            model_message = Message(
+                                role="system",  # Always use system role for messages from other models
+                                content=f"Message from {source_model or 'unknown'} in team {source_team or 'unknown'}: {content}"
+                            )
+                            
+                            # Generate a response
+                            response = await model.generate_response([model_message])
+                            
+                            # Store in team's conversation history
+                            receiver.conversation_history.append(Message(
+                                role="system",
+                                content=f"From {source_model or 'unknown'} in team {source_team or 'unknown'} to {target_model}: {content}"
+                            ))
+                            
+                            receiver.conversation_history.append(Message(
+                                role="assistant",  # Changed from "model" to "assistant" to match allowed roles
+                                content=f"From {target_model} to {source_model or 'unknown'} in team {source_team or 'unknown'}: {response}"
+                            ))
+                            
+                            # Send response back to sender if appropriate
+                            if "is_response" not in message.get("metadata", {}) or not message["metadata"]["is_response"]:
+                                response_message = {
+                                    "content": response,
+                                    "metadata": {
+                                        "source_team": receiver.name,
+                                        "target_team": sender.name,
+                                        "source_model": target_model,
+                                        "target_model": source_model,
+                                        "is_response": True,
+                                        "in_reply_to": message.get("metadata", {}).get("timestamp")
+                                    }
+                                }
+                                
+                                # Send response back through the appropriate direction
+                                if self.flow_type == FlowType.PUSH:
+                                    await self.send_from_target(response_message)
+                                elif self.flow_type == FlowType.PULL:
+                                    await self.send_from_source(response_message)
+                                elif self.flow_type == FlowType.BIDIRECTIONAL:
+                                    # In bidirectional flow, send from the receiver's side
+                                    if sender == self.source:
+                                        await self.send_from_target(response_message)
+                                    else:
+                                        await self.send_from_source(response_message)
+                        except Exception as e:
+                            self.logger.error(f"Error delivering message to model {target_model}: {e}")
                     
                 except Exception as e:
                     self.logger.error(f"Error processing message from {sender.name} to {receiver.name}: {e}")

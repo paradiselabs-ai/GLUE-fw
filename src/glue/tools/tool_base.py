@@ -74,37 +74,64 @@ class Tool(ABC):
             self._initialized = True
             logger.debug(f"Initialized tool: {self.name}")
 
-    async def execute(self, input_data: Any) -> Any:
-        """Execute tool with timeout and retries"""
+    async def execute(self, **kwargs) -> Any:
+        """Execute tool with timeout, retries, and filtered arguments."""
         if not self._initialized:
             await self.initialize()
             
         tries = 0
         max_tries = self.config.max_retries + 1  # Include the initial attempt
         
+        # --- Inspect the signature of the specific _execute method --- 
+        execute_sig = inspect.signature(self._execute)
+        expected_params = set(execute_sig.parameters.keys())
+        # Include support for **kwargs in _execute if present
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in execute_sig.parameters.values())
+        
+        # --- Filter kwargs to match the signature --- 
+        filtered_kwargs = {}
+        for key, value in kwargs.items():
+            if key in expected_params or accepts_kwargs:
+                filtered_kwargs[key] = value
+                
+        logger.debug(f"Executing {self.name}._execute with filtered args: {list(filtered_kwargs.keys())}")
+        
         while tries < max_tries:
             try:
                 async with asyncio.timeout(self.config.timeout):
-                    # Execute the tool
-                    return await self._execute(input_data)
+                    # Execute the tool with filtered arguments
+                    return await self._execute(**filtered_kwargs)
             except asyncio.TimeoutError:
                 tries += 1
                 if tries >= max_tries:
+                    logger.error(f"Tool {self.name} exceeded max retries ({max_tries-1}) after timeout.")
                     raise
-                logger.warning(f"Tool {self.name} timed out, attempt {tries}")
+                logger.warning(f"Tool {self.name} timed out, retrying attempt {tries+1}/{max_tries}")
             except Exception as e:
                 # Log and re-raise any other exceptions
-                logger.error(f"Tool {self.name} execution failed: {str(e)}")
+                logger.error(f"Tool {self.name} execution failed: {e}", exc_info=True)
                 raise
 
     @abstractmethod
-    async def _execute(self, input_data: Any) -> Any:
+    async def _execute(self, **kwargs) -> Any:
         """Core tool execution logic to be implemented by subclasses"""
         pass
 
     # ==================== Helper Methods ====================
     def _get_input_parameters(self) -> Dict[str, Any]:
-        """Extract parameters from execute method signature"""
+        """
+        Extract parameters for the tool schema.
+        Prioritizes explicitly defined self.inputs, otherwise inspects _execute.
+        """
+        # Prioritize explicitly defined inputs attribute
+        if hasattr(self, 'inputs') and self.inputs:
+             logger.debug(f"Using explicitly defined inputs for tool '{self.name}'")
+             # Ensure the format matches what inspection would produce if needed
+             # For now, assume self.inputs is already in the correct dictionary format
+             return self.inputs
+        
+        # Fallback to inspecting the _execute method signature
+        logger.debug(f"Inspecting _execute signature for tool '{self.name}'")
         sig = inspect.signature(self._execute)
         params = {}
         

@@ -13,7 +13,9 @@ from typing import Dict, List, Any, Optional, Callable, AsyncIterable
 import httpx
 import openai
 
+from rich.console import Console
 from glue.core.schemas import Message, ToolCall, ToolResult
+from glue.utils.ui_utils import display_warning
 
 # Set up logging
 logger = logging.getLogger("glue.model.openrouter")
@@ -21,6 +23,8 @@ logger = logging.getLogger("glue.model.openrouter")
 # Environment variable name for the API key
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 
+# Create a console instance for warnings
+_console = Console()
 
 class OpenrouterProvider:
     """Provider implementation for OpenRouter models.
@@ -28,6 +32,9 @@ class OpenrouterProvider:
     OpenRouter provides a unified API for accessing various LLM providers,
     including free models that are perfect for testing during development.
     """
+    
+    # Class-level cache of models that don't support tool use
+    _models_without_tool_support = set()
     
     def __init__(self, model):
         """Initialize a new OpenRouter provider.
@@ -37,7 +44,14 @@ class OpenrouterProvider:
         """
         self.model = model
         self.client = None
+        self._simulated_instructions_added_this_request = False
         self._initialize_client()
+        
+    @classmethod
+    def clear_capability_cache(cls):
+        """Clear the cached model capabilities."""
+        cls._models_without_tool_support.clear()
+        logger.info("Cleared model capability cache")
     
     def _initialize_client(self):
         """Initialize the OpenRouter client."""
@@ -54,7 +68,8 @@ class OpenrouterProvider:
                 api_key=api_key,
                 http_client=httpx.AsyncClient(timeout=60.0),
             )
-            logger.info(f"Initialized OpenRouter client for model {self.model.model_name}")
+            model_name = getattr(self.model, 'model_name', getattr(self.model, 'model', 'unknown'))
+            logger.info(f"Initialized OpenRouter client for model {model_name}")
         except ImportError:
             logger.error("Failed to import OpenAI client. Install with: pip install openai")
             # Create a mock client for testing
@@ -130,6 +145,63 @@ class OpenrouterProvider:
             logger.warning("python-dotenv not installed, cannot load .env file")
         
         return None
+        
+    def _add_simulated_tool_use_instructions(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]]) -> None:
+        """Add simulated tool use instructions to the messages.
+        
+        Args:
+            messages: List of messages to modify
+            tools: List of tools to include in the instructions
+        """
+        # Find the system message if it exists
+        system_msg_idx = None
+        for i, msg in enumerate(messages):
+            if msg.get('role') == 'system':
+                system_msg_idx = i
+                break
+        
+        # Create the tool simulation instructions
+        tool_simulation_instructions = "\n\n## ACTION REQUIRED: TOOL USE VIA JSON\n"
+        tool_simulation_instructions += "This model interface does not support native tool calls. **Your ability to use tools depends entirely on following the specific format below.**\n\n"
+        tool_simulation_instructions += "To execute a tool, you **MUST** respond with **ONLY** a single valid JSON object formatted **EXACTLY** like this:\n\n"
+        tool_simulation_instructions += "```json\n"
+        tool_simulation_instructions += "{\n"
+        tool_simulation_instructions += '  "tool_name": "<name_of_tool>",\n'
+        tool_simulation_instructions += '  "arguments": { <parameters_object> }\n'
+        tool_simulation_instructions += "}\n"
+        tool_simulation_instructions += "```\n\n"
+        tool_simulation_instructions += "Replace `<name_of_tool>` with the exact name of the tool you want to execute from the list below.\n"
+        tool_simulation_instructions += "Replace `<parameters_object>` with a valid JSON object containing the arguments for the tool (e.g., `{\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello!\"}`).\n\n"
+        tool_simulation_instructions += "**CRITICAL REQUIREMENT:** Your response **MUST** start *immediately* with the opening curly brace `{` of the JSON object. The very first character of your output must be `{`.\n"
+        tool_simulation_instructions += "- End your response immediately with the closing curly brace `}`.\n"
+        tool_simulation_instructions += "- No other text, explanation, or formatting before or after the JSON is permitted.\n"
+        tool_simulation_instructions += "- Failure to start with `{` means the tool call will **fail**.\n"
+
+        tool_simulation_instructions += "Available tools:\n"
+        for tool in tools:
+            tool_name = tool.get('name', 'unknown_tool')
+            tool_description = tool.get('description', 'No description available.')
+            tool_desc = f"- {tool_name}: {tool_description}\n"
+            parameters_schema = tool.get('parameters')
+            if isinstance(parameters_schema, dict) and 'properties' in parameters_schema:
+                tool_desc += "  Parameters:\n"
+                props = parameters_schema.get('properties', {})
+                required_params = parameters_schema.get('required', [])
+                for param_name, param_info in props.items():
+                    if isinstance(param_info, dict):
+                        req_marker = " (required)" if param_name in required_params else ""
+                        param_type = param_info.get('type', 'any')
+                        param_desc = param_info.get('description', '')
+                        tool_desc += f"    - {param_name}{req_marker} ({param_type}): {param_desc}\n"
+                    else:
+                        tool_desc += f"    - {param_name}: (details unavailable)\n"
+            tool_simulation_instructions += tool_desc
+        
+        # Add the instructions to the system message or create a new one
+        if system_msg_idx is not None:
+            messages[system_msg_idx]['content'] += tool_simulation_instructions
+        else:
+            messages.insert(0, {"role": "system", "content": tool_simulation_instructions})
     
     async def generate_response(
         self, 
@@ -145,15 +217,31 @@ class OpenrouterProvider:
         Returns:
             The generated response or a dict with tool calls
         """
+        # Reset the flag at the beginning of each generation request
+        self._simulated_instructions_added_this_request = False
+        
         # Convert messages to the format expected by OpenRouter
-        openrouter_messages = [
-            {"role": msg.role, "content": msg.content}
-            for msg in messages
-        ]
+        openrouter_messages = []
+        for msg in messages:
+            # Handle different message formats
+            if isinstance(msg, dict):
+                role = msg.get('role', 'user')
+                content = msg.get('content', '')
+            elif hasattr(msg, 'role') and hasattr(msg, 'content'):
+                role = msg.role
+                content = msg.content
+            else:
+                # Fallback for string or other types
+                role = 'user'
+                content = str(msg)
+            
+            openrouter_messages.append({"role": role, "content": content})
         
         # Prepare the API call parameters
+        # Use a valid default model for OpenRouter if none is specified
+        default_model = "meta-llama/llama-3.1-8b-instruct:free"
         api_params = {
-            "model": self.model.model_name,
+            "model": getattr(self.model, 'model_name', getattr(self.model, 'model', default_model)),
             "messages": openrouter_messages,
             "temperature": self.model.temperature,
             "max_tokens": self.model.max_tokens,
@@ -161,7 +249,34 @@ class OpenrouterProvider:
         }
         
         # Add tools if provided
-        if tools:
+        tools_originally_present = bool(tools) # Track if tools were passed initially
+        
+        # Get the model name for cache lookup
+        model_name = api_params["model"]
+        
+        # Check if this model is known to not support tool use
+        model_in_cache = model_name in self._models_without_tool_support
+        
+        # If tools are provided and the model is in the cache as not supporting tool use,
+        # skip the initial API call and go straight to simulated tool use
+        if tools and model_in_cache:
+            logger.info(f"Model {model_name} is known to not support tool use. Using simulated tool use instructions directly.")
+            # Skip adding tools to API params
+            if "tools" in api_params:
+                api_params.pop("tools")
+            if "tool_choice" in api_params:
+                api_params.pop("tool_choice")
+                
+            # Add simulated tool use instructions to the system message
+            self._add_simulated_tool_use_instructions(openrouter_messages, tools)
+            
+            # Update the messages in the API params
+            api_params["messages"] = openrouter_messages
+            
+            # Set the flag indicating instructions were added
+            self._simulated_instructions_added_this_request = True
+        elif tools:
+            # If tools are provided and the model is not in the cache, add them to the API params
             api_params["tools"] = tools
             api_params["tool_choice"] = "auto"
         
@@ -186,25 +301,44 @@ class OpenrouterProvider:
                 # Return the text response
                 return response.choices[0].message.content
         except openai.NotFoundError as e:
-            # Check if the error is the specific one about tool use incompatibility
-            if "No endpoints found that support tool use" in str(e):
-                logger.warning(
-                    f"Model {self.model.model_name} does not support tool use on OpenRouter. "
-                    f"Retrying without tools."
+            # Check the specific error, if tools were originally present, AND if instructions haven't been added yet
+            if tools_originally_present and "No endpoints found that support tool use" in str(e) and not self._simulated_instructions_added_this_request:
+                
+                #  Display warning using the warning function with a console instance
+                display_warning(
+                    _console,  # Pass the console instance
+                    f"Model {model_name} does not support tool use on OpenRouter. "
+                    f"Retrying with simulated tool use instructions."
                 )
-                # Remove tool parameters and retry
+                
+                # Add the model to the cache of models without tool support
+                if model_name not in self._models_without_tool_support:
+                    self._models_without_tool_support.add(model_name)
+                    logger.info(f"Added model {model_name} to the cache of models without tool support")
+                
+                # Remove tool parameters for the retry
                 api_params.pop("tools", None)
                 api_params.pop("tool_choice", None)
+                
+                # Add simulated tool use instructions
+                self._add_simulated_tool_use_instructions(openrouter_messages, tools)
+                
+                # Set the flag indicating instructions were added
+                self._simulated_instructions_added_this_request = True
+                
+                # Retry with the modified messages
+                api_params["messages"] = openrouter_messages
+                logger.debug("Retrying API call with simulated tool instructions.")
                 response = await self.client.chat.completions.create(**api_params)
             else:
-                # If it's a different NotFoundError, re-raise it
-                logger.error(f"Error generating response from OpenRouter (NotFound): {e}")
+                # If it's a different error, tools weren't present, or instructions already added, re-raise
+                logger.error(f"Error generating response from OpenRouter (NotFoundError not retryable or already retried): {e}")
                 raise
         except Exception as e:
             logger.error(f"Error generating response from OpenRouter: {e}")
             raise
         
-        # Process the response (moved the processing logic here to handle both original and retry responses)
+        # Process the response (from original call or retry)
         if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
             # Process tool calls
             tool_calls = []

@@ -23,32 +23,32 @@ tool code_interpreter {
 
 // Define models with Gemini as the primary provider
 model researcher {
-    provider = gemini
+    provider = openrouter
     role = "Research different topics and subjects online."
     adhesives = [glue, velcro]
     config {
-        model = "gemini-1.5-pro"
+        model = "meta-llama/llama-3.1-8b-instruct:free"
         temperature = 0.7
     }
 }
 
 model assistant {
-    provider = gemini
+    provider = openrouter
     role = "Help with research and coding tasks."
     adhesives = [glue, velcro]
     config {
-        model = "gemini-1.5-pro"
-        temperature = 0.5
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+        temperature = 0.7
     }
 }
 
 model writer {
-    provider = gemini
+    provider = openrouter
     role = "Write documentation summarizing findings."
     adhesives = [tape]
     config {
-        model = "gemini-1.5-pro"
-        temperature = 0.3
+        model = "meta-llama/llama-3.1-8b-instruct:free"
+        temperature = 0.7
     }
 }
 

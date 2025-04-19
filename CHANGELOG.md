@@ -3,6 +3,13 @@
 All notable changes to the GLUE framework will be documented in this file.
 
 
+## [Unreleased]
+
+### Added
+
+- Model capability caching to avoid repeated API failures with models that don't support certain features
+
+
 ## [0.1.0-alpha] - 2025-04-02
 
 
