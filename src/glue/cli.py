@@ -130,6 +130,9 @@ CLI_CONFIG = {
         "command": "command",
         "prompt": "prompt",
         "input": "input",
+        "tool_call": "tool",
+        "team_style": "team",
+        "danger_style": "error",
         "model": {
             "researcher": "model.researcher",
             "assistant": "model.assistant",
@@ -274,7 +277,7 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         True if successful, False otherwise
     """
     logger = logging.getLogger("glue.run_app")
-    console = Console()
+    console = get_console()  # Use get_console() instead of Console() to ensure theme is applied
     
     try:
         # Check if file exists
@@ -358,22 +361,79 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
             # Determine the lead model (assuming the first team's lead is the entry point)
             if not app.teams:
                 logger.error("No teams defined in the application.")
-                console.print("[bold red]Error: No teams defined.[/bold red]")
+                console.print(Panel(
+                    "[bold red]No teams defined in the application.[/bold red]",
+                    title="Error",
+                    border_style="error",
+                    box=CLI_CONFIG["display"]["panel_box"]
+                ))
                 return False
             first_team_name = next(iter(app.teams))
             if not hasattr(app.teams[first_team_name], 'lead') or not app.teams[first_team_name].lead:
                 logger.error(f"Lead model not found for the first team '{first_team_name}'. Check team config.")
-                console.print(f"[bold red]Error: Lead model not found for team '{first_team_name}'.[/bold red]")
+                console.print(Panel(
+                    f"[bold red]Lead model not found for team '{first_team_name}'.[/bold red]",
+                    title="Error",
+                    border_style="error",
+                    box=CLI_CONFIG["display"]["panel_box"]
+                ))
                 return False
             lead_model = app.teams[first_team_name].lead
             logger.info(f"Using lead model '{lead_model.name}' from team '{first_team_name}' as entry point.")
 
+            # Create a state dictionary similar to interactive mode for display helpers
+            state = {
+                "history": [],
+                "current_team": first_team_name,
+                "current_model": lead_model.name,
+                "color_enabled": True
+            }
+
+            # Display welcome banner
+            display_logo(console)
+            
+            welcome_panel = Panel(
+                Group(
+                    Align.center(f"Running non-interactive mode for:", style="cyan"),
+                    Align.center(app.name, style="bold cyan") if app.name else None,
+                    Rule(style="dim"),
+                    Align.center(Text(f"Using {lead_model.name} from team {first_team_name}", style="cyan"))
+                ),
+                title="GLUE App",
+                border_style="success",
+                box=CLI_CONFIG["display"]["panel_box"],
+                padding=(1, 2)
+            )
+            console.print(welcome_panel)
+
+            # Show initial input
+            if CLI_CONFIG["display"]["show_emoji"]:
+                display_section_header(console, "Initial Input", emoji="info")
+            else:
+                display_section_header(console, "Initial Input")
+            
+            input_panel = Panel(
+                Markdown(current_input),
+                title="User Input",
+                border_style="bright_blue",
+                box=CLI_CONFIG["display"]["panel_box"],
+                padding=(1, 2)
+            )
+            console.print(input_panel)
+
             messages = [{"role": "user", "content": current_input}]
+
+            if CLI_CONFIG["display"]["show_emoji"]:
+                display_section_header(console, "Agent Interactions", emoji="model")
+            else:
+                display_section_header(console, "Agent Interactions")
 
             while turn_count < max_turns:
                 turn_count += 1
                 logger.info(f"--- Agent Turn {turn_count} ---")
-                console.print(f"[dim]--- Turn {turn_count} ---[/dim]")
+                
+                # Display turn header
+                console.print(Rule(f"Turn {turn_count}", style="dim"))
 
                 # --- Generate response ---
                 response_content = None
@@ -381,19 +441,8 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                     logger.debug(f"Calling model {lead_model.name} with {len(messages)} messages.")
                     response_content = await lead_model.generate_response(messages=messages, tools=app.tools)
                     
-                    # Display assistant thinking/response
-                    console.print(f"[bold yellow]{lead_model.name}:[/bold yellow]")
-                    if isinstance(response_content, str):
-                        potential_json = extract_json(response_content)
-                        if potential_json:
-                            json_str = json.dumps(potential_json, indent=2)
-                            syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                            console.print(syntax)
-                        else:
-                            console.print(response_content)
-                    else:
-                        console.print(str(response_content))
-                        logger.warning(f"Received non-string response: {type(response_content)}")
+                    # Use display_response function for consistent styling with interactive mode
+                    display_response(console, response_content, lead_model.name, state)
 
                     # --- Append Assistant Response to History ---
                     if response_content is not None:
@@ -401,7 +450,12 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
 
                 except Exception as e:
                     logger.error(f"Error during model generation: {e}", exc_info=True)
-                    console.print(f"[bold red]Error during model generation: {e}[/bold red]")
+                    console.print(Panel(
+                        f"[bold red]Error during model generation: {e}[/bold red]",
+                        title="Error",
+                        border_style="error",
+                        box=CLI_CONFIG["display"]["panel_box"]
+                    ))
                     break
 
                 # --- Process potential tool calls in the response ---
@@ -418,13 +472,31 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                         logger.info(f"Extracted tool call: {tool_name} (ID: {tool_call_id}) with args {arguments}")
                         tool_calls_found_in_response = True
 
+                        # Display tool call notification
+                        tool_emoji = CLI_CONFIG["emoji"]["tool"] if CLI_CONFIG["display"]["show_emoji"] else ""
+                        tool_title = f"{tool_emoji} Tool Call: {tool_name}" if tool_emoji else f"Tool Call: {tool_name}"
+                        
+                        json_str = json.dumps(arguments, indent=2)
+                        syntax = Syntax(json_str, "json", theme="monokai", line_numbers=False)
+                        
+                        console.print(Panel(
+                            syntax,
+                            title=tool_title,
+                            border_style="tool",
+                            box=CLI_CONFIG["display"]["panel_box"],
+                            padding=(1, 2)
+                        ))
+
                         # --- Execute Tool with Error Handling ---
                         tool_result_message = None
                         try:
                             if tool_name in app.tools:
                                 tool = app.tools[tool_name]
                                 if hasattr(tool, 'execute') and callable(tool.execute):
-                                    tool_result = await app.execute_tool(tool_name, arguments)
+                                    # Display executing notification
+                                    with console.status(f"[yellow]Executing tool {tool_name}...[/yellow]"):
+                                        tool_result = await app.execute_tool(tool_name, arguments)
+                                    
                                     logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
                                     
                                     content_for_llm = str(tool_result)
@@ -436,6 +508,21 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                                     elif tool_result is None:
                                         content_for_llm = "Tool executed successfully with no return value."
 
+                                    # Display tool result
+                                    if isinstance(tool_result, (dict, list)):
+                                        json_str = json.dumps(tool_result, indent=2)
+                                        result_content = Syntax(json_str, "json", theme="monokai", line_numbers=False)
+                                    else:
+                                        result_content = str(tool_result)
+                                    
+                                    console.print(Panel(
+                                        result_content,
+                                        title=f"Tool Result: {tool_name}",
+                                        border_style="success",
+                                        box=CLI_CONFIG["display"]["panel_box"],
+                                        padding=(1, 2)
+                                    ))
+
                                     tool_result_message = {
                                         "role": "tool",
                                         "tool_call_id": tool_call_id,
@@ -445,14 +532,38 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                                 else:
                                     logger.error(f"Tool {tool_name} exists but has no execute method.")
                                     error_content = f"Tool execution failed: '{tool_name}' is not properly initialized."
+                                    
+                                    console.print(Panel(
+                                        f"[bold red]{error_content}[/bold red]",
+                                        title="Tool Error",
+                                        border_style="error",
+                                        box=CLI_CONFIG["display"]["panel_box"]
+                                    ))
+                                    
                                     tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
                             else:
                                 logger.error(f"Tool {tool_name} not found in app.tools.")
                                 error_content = f"Tool execution failed: '{tool_name}' not found."
+                                
+                                console.print(Panel(
+                                    f"[bold red]{error_content}[/bold red]",
+                                    title="Tool Error",
+                                    border_style="error",
+                                    box=CLI_CONFIG["display"]["panel_box"]
+                                ))
+                                
                                 tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
                         except Exception as e:
                             logger.error(f"Error executing tool '{tool_name}' (ID: {tool_call_id}): {e}", exc_info=True)
                             error_content = f"Error executing tool '{tool_name}': {e}"
+                            
+                            console.print(Panel(
+                                f"[bold red]{error_content}[/bold red]",
+                                title="Tool Error",
+                                border_style="error",
+                                box=CLI_CONFIG["display"]["panel_box"]
+                            ))
+                            
                             tool_result_message = {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": error_content, "is_error": True}
 
                         if tool_result_message:
@@ -477,23 +588,74 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
             # --- After the loop ---
             if turn_count >= max_turns:
                 logger.warning(f"Agentic loop reached maximum turns ({max_turns}). Returning last response.")
+                console.print(Panel(
+                    f"[yellow]Reached maximum turns ({max_turns}). Returning last response.[/yellow]",
+                    title="Warning",
+                    border_style="warning",
+                    box=CLI_CONFIG["display"]["panel_box"]
+                ))
 
             # Print the final response
-            console.print("\n[bold green]Final Response:[/bold green]")
+            if CLI_CONFIG["display"]["show_emoji"]:
+                display_section_header(console, "Final Response", emoji="success")
+            else:
+                display_section_header(console, "Final Response")
+            
             if isinstance(final_response, str):
                 final_json = extract_json(final_response)
                 if final_json:
                     json_str = json.dumps(final_json, indent=2)
-                    syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                    console.print(syntax)
+                    syntax = Syntax(json_str, "json", theme="monokai", line_numbers=False)
+                    console.print(Panel(
+                        syntax,
+                        title="Final JSON Response",
+                        border_style="success",
+                        box=CLI_CONFIG["display"]["panel_box"],
+                        padding=(1, 2)
+                    ))
                 else:
-                    console.print(final_response)
+                    try:
+                        md = Markdown(final_response)
+                        console.print(Panel(
+                            md,
+                            title="Final Response",
+                            border_style="success",
+                            box=CLI_CONFIG["display"]["panel_box"],
+                            padding=(1, 2)
+                        ))
+                    except Exception:
+                        console.print(Panel(
+                            final_response,
+                            title="Final Response",
+                            border_style="success",
+                            box=CLI_CONFIG["display"]["panel_box"],
+                            padding=(1, 2)
+                        ))
             elif isinstance(final_response, (dict, list)):
                 json_str = json.dumps(final_response, indent=2)
-                syntax = Syntax(json_str, "json", theme="default", line_numbers=False)
-                console.print(syntax)
+                syntax = Syntax(json_str, "json", theme="monokai", line_numbers=False)
+                console.print(Panel(
+                    syntax,
+                    title="Final JSON Response",
+                    border_style="success",
+                    box=CLI_CONFIG["display"]["panel_box"],
+                    padding=(1, 2)
+                ))
             else:
-                console.print(str(final_response))
+                console.print(Panel(
+                    str(final_response),
+                    title="Final Response",
+                    border_style="success",
+                    box=CLI_CONFIG["display"]["panel_box"],
+                    padding=(1, 2)
+                ))
+            
+            # Final success message
+            console.print(Panel(
+                Align.center("Thank you for using GLUE Framework!", style="cyan"),
+                border_style="success",
+                box=CLI_CONFIG["display"]["panel_box"]
+            ))
                  
             return True
         else:
@@ -908,7 +1070,7 @@ async def run_interactive_session(app: GlueApp) -> None:
                 error_panel = Panel(
                     str(e),
                     title="Error Occurred",
-                    border_style="danger",
+                    border_style="error",
                     box=CLI_CONFIG["display"]["panel_box"]
                 )
                 console.print(error_panel)
@@ -930,14 +1092,14 @@ def display_response(console: Console, response: Any, source: str, state: Dict[s
     
     # Determine the appropriate styling based on the source
     if state.get("current_team"):
-        panel_style = "team"
+        panel_style = CLI_CONFIG["theme"]["team_style"]
         emoji = CLI_CONFIG["emoji"]["team"] if CLI_CONFIG["display"]["show_emoji"] else ""
     elif state.get("current_model"):
         model_name = state.get("current_model")
         panel_style = CLI_CONFIG["theme"]["model"].get(model_name, CLI_CONFIG["theme"]["model"]["default"])
         emoji = CLI_CONFIG["emoji"]["model"] if CLI_CONFIG["display"]["show_emoji"] else ""
     else:
-        panel_style = "app.name"
+        panel_style = CLI_CONFIG["theme"]["app_name"]
         emoji = CLI_CONFIG["emoji"]["app"] if CLI_CONFIG["display"]["show_emoji"] else ""
     
     title = f"{emoji} Response from {source}" if emoji else f"Response from {source}"
@@ -2626,8 +2788,6 @@ def main():
     # Get a themed console
     console = get_console()
     
-    # Track verbosity level for later use
-    verbosity_level = 0
     
     try:
         # Display logo if not in a script or piped environment
@@ -2716,8 +2876,6 @@ Examples:
         else:
             log_level = logging.WARNING
             
-        # Store verbosity level globally
-        verbosity_level = getattr(args, 'verbose', 0)
         
         logger = setup_logging(log_level)
         
