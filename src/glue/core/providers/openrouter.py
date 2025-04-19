@@ -13,7 +13,9 @@ from typing import Dict, List, Any, Optional, Callable, AsyncIterable
 import httpx
 import openai
 
+from rich.console import Console
 from glue.core.schemas import Message, ToolCall, ToolResult
+from glue.utils.ui_utils import display_warning
 
 # Set up logging
 logger = logging.getLogger("glue.model.openrouter")
@@ -21,6 +23,8 @@ logger = logging.getLogger("glue.model.openrouter")
 # Environment variable name for the API key
 OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 
+# Create a console instance for warnings
+_console = Console()
 
 class OpenrouterProvider:
     """Provider implementation for OpenRouter models.
@@ -299,7 +303,10 @@ class OpenrouterProvider:
         except openai.NotFoundError as e:
             # Check the specific error, if tools were originally present, AND if instructions haven't been added yet
             if tools_originally_present and "No endpoints found that support tool use" in str(e) and not self._simulated_instructions_added_this_request:
-                logger.warning(
+                
+                #  Display warning using the warning function with a console instance
+                display_warning(
+                    _console,  # Pass the console instance
                     f"Model {model_name} does not support tool use on OpenRouter. "
                     f"Retrying with simulated tool use instructions."
                 )

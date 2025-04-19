@@ -357,7 +357,6 @@ def extract_json(
                     return None
                 normalized = normalize_glue_tool_call(data, strict=strict_tool_calls)
                 if normalized and ("tool_name" in normalized or "tool_name" in data):
-                    logger.info(f"Normalized tool call: {normalized}")
                     return normalized if glue_compatibility else {"data": normalized, "tool_call": True}
                 elif strict_tool_calls and normalized is None:
                     logger.debug("Not a valid tool call in strict mode")

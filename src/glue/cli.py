@@ -53,6 +53,7 @@ from glue.dsl import GlueDSLParser, GlueLexer
 # Import new utilities
 from .utils.json_utils import extract_json
 from .cliHelpers import parse_interactive_command, colorize_agent_output, format_agent_message, get_interactive_help_text
+from .utils.ui_utils import display_warning, set_cli_config
 
 # Constants for tools
 def get_available_tools():
@@ -190,6 +191,18 @@ CLI_CONFIG = {
         "stop": "⏹️",
     }
 }
+
+# Add a function to return the CLI_CONFIG
+def get_cli_config():
+    """Return the CLI configuration.
+    
+    Returns:
+        The CLI configuration dictionary
+    """
+    return CLI_CONFIG
+
+# Export the CLI_CONFIG to the ui_utils module
+set_cli_config(CLI_CONFIG)
 
 # ASCII art logo with gradient color styling
 GLUE_LOGO = r"""[bold blue]
@@ -430,7 +443,6 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
 
             while turn_count < max_turns:
                 turn_count += 1
-                logger.info(f"--- Agent Turn {turn_count} ---")
                 
                 # Display turn header
                 console.print(Rule(f"Turn {turn_count}", style="dim"))
@@ -497,7 +509,6 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
                                     with console.status(f"[yellow]Executing tool {tool_name}...[/yellow]"):
                                         tool_result = await app.execute_tool(tool_name, arguments)
                                     
-                                    logger.info(f"Tool {tool_name} (ID: {tool_call_id}) executed. Result: {tool_result}")
                                     
                                     content_for_llm = str(tool_result)
                                     if isinstance(tool_result, dict) and 'success' in tool_result and 'response' in tool_result:
@@ -1230,31 +1241,69 @@ def setup_logging(level=logging.INFO):
                 import io
                 from rich.console import Console
                 from rich.text import Text
+                from rich.panel import Panel
+                from rich.align import Align
                 
                 if record.levelno >= logging.WARNING:
                     # Get color based on level
                     if record.levelno >= logging.ERROR:
                         color = "red"
                         prefix = "✗ Error: "
+                        style = "bold red"
+                        title = "❌ Error" if CLI_CONFIG["display"]["show_emoji"] else "Error"
                     elif record.levelno >= logging.WARNING:
                         color = "yellow"
                         prefix = "⚠ Warning: "
+                        style = "bold yellow"
+                        title = "⚠️ Warning" if CLI_CONFIG["display"]["show_emoji"] else "Warning"
                     else:
                         color = "blue"
                         prefix = "ℹ Info: "
+                        style = "blue"
+                        title = "ℹ️ Info" if CLI_CONFIG["display"]["show_emoji"] else "Info"
                     
                     # Format the message
                     message = record.getMessage()
                     
-                    # Create a styled Text object like the welcome message
-                    text = Text()
-                    text.append(prefix, style=f"bold {color}")
-                    text.append(message, style="dim")
+                    # Create output buffer
+                    string_io = io.StringIO()
+                    temp_console = Console(file=string_io, highlight=False)
                     
-                    # We need to convert to string for the logging system
-                    console = Console(file=io.StringIO())
-                    console.print(text)
-                    return console.file.getvalue().strip()
+                    # Special highlighting for certain messages
+                    if "does not support tool use on OpenRouter" in message:
+                        # Create a panel for OpenRouter warnings (special case)
+                        warning_panel = Panel(
+                            f"[{style}]{message}[/{style}]",
+                            title="⚠️ OpenRouter Model Limitation" if CLI_CONFIG["display"]["show_emoji"] else "OpenRouter Model Limitation",
+                            border_style="yellow",
+                            box=CLI_CONFIG["display"]["panel_box"],
+                            width=100
+                        )
+                        # Add spacing and center the panel
+                        temp_console.print()  # Empty line before
+                        temp_console.print(Align.center(warning_panel))
+                        temp_console.print()  # Empty line after
+                    elif record.levelno >= logging.WARNING:
+                        # For other warnings/errors, create a panel with appropriate styling
+                        panel = Panel(
+                            f"[{style}]{message}[/{style}]",
+                            title=title,
+                            border_style=color,
+                            box=CLI_CONFIG["display"]["panel_box"],
+                            width=100
+                        )
+                        # Add spacing and center the panel
+                        temp_console.print()  # Empty line before
+                        temp_console.print(Align.center(panel))
+                        temp_console.print()  # Empty line after
+                    else:
+                        # For info messages, use a simpler format
+                        text = Text()
+                        text.append(prefix, style=f"bold {color}")
+                        text.append(message, style="dim")
+                        temp_console.print(text)
+                    
+                    return string_io.getvalue().strip()
                 
                 # For non-warnings, use simple text
                 return f"[{record.levelname}] {record.getMessage()}"
@@ -2743,44 +2792,17 @@ def create_status_panel(app: Any, state: Dict[str, Any]) -> Panel:
     return panel
 
 def animate_typing(console: Console, text: str, speed: float = 0.03) -> None:
-    """Animate text as if it's being typed.
+    """Animate typing text to the console character by character.
     
     Args:
         console: Rich console to use for display
         text: Text to animate
-        speed: Speed of typing in seconds per character
+        speed: Delay between characters in seconds
     """
-    # Always print directly without animation for better UX
-    console.print(text)
-    return
-
-def display_warning(console: Console, message: str) -> None:
-    """Display a warning in a styled panel.
-    
-    Args:
-        console: Rich console to use for display
-        message: Warning message to display
-    """
-    from rich.panel import Panel
-    from rich.text import Text
-    
-    warning_text = Text()
-    warning_text.append("⚠ ", style="bold yellow")
-    warning_text.append(message, style="yellow")
-    
-    panel = Panel(
-        warning_text,
-        title="Warning",
-        border_style="yellow dim",
-        box=CLI_CONFIG["display"]["panel_box"],
-        padding=(1, 2),
-        width=100
-    )
-    
-    # Print an empty line before the warning for better spacing
-    console.print()
-    console.print(panel)
-    console.print()
+    for char in text:
+        console.print(char, end="", highlight=False)
+        time.sleep(speed)
+    console.print()  # Print a newline at the end
 
 # ==================== Main CLI Entry Point ====================
 def main():
