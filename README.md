@@ -46,7 +46,9 @@ The alpha release includes all core components with passing tests, but with limi
 pip install glue-fw
 ```
 
-2. Set up your API keys:
+2. Create a GLUE application using `glue new`
+
+3. Set up your API keys:
 ```bash
 # Required
 export OPENROUTER_API_KEY=your_key_here
@@ -62,45 +64,15 @@ export PORTKEY_ENABLED=true
 export PORTKEY_API_KEY=your_portkey_api_key
 ```
 
-3. Create a GLUE application (e.g., `app.glue`):
-```glue
-glue app {
-    name = "My First App"
-    config {
-        development = true
-    }
-}
-
-// Define tools
-tool web_search {
-    provider = serp  // Uses SERP_API_KEY from environment
-}
-
-// Define models
-model researcher {
-    provider = openrouter
-    role = "Research topics online"
-      = [glue, velcro]
-    config {
-        model = "meta-llama/llama-3.1-70b-instruct:free"
-        temperature = 0.7
-    }
-}
-
-// Define teams
-magnetize {
-    research {
-        lead = researcher
-        tools = [web_search]
-    }
-}
-
-apply glue
-```
 
 4. Run your application:
+ Interactive mode:
 ```bash
-glue run app.glue
+glue run app.glue -I
+```
+ Non-Interactive mode:
+ ```bash
+glue run app.glue --input "..Define your task.."
 ```
 
 ## Core Concepts
