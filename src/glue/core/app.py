@@ -123,6 +123,7 @@ class GlueApp:
         self.description = "A GLUE application"
         self.version = "0.1.0"
         self.development = False
+        self.interactive = False  # Flag to indicate if app is running in interactive mode
         
         # Initialize magnetic field after setting default properties
         self.field = MagneticField(name=self.name)
@@ -432,6 +433,9 @@ class GlueApp:
         
         # Set up teams
         for team in self.teams.values():
+            # Set app reference to support interactive mode detection
+            team.app = self
+            
             # Get tools from config
             if hasattr(team.config, "tools") and team.config.tools:
                 for tool_name in team.config.tools:

@@ -97,25 +97,6 @@ class WebSearchTool(Tool):
         self.provider_config = provider_config or {}
         self.provider: Optional[SearchProvider] = None
     
-    # Override to provide the correct schema to the LLM
-    # def _get_input_parameters(self) -> Dict[str, Any]:
-    #     """Return the explicit input schema for this tool."""
-    #     return {
-    #         "query": {
-    #             "type": str, # Use type object, not string
-    #             "description": "The search query string.",
-    #             "required": True,
-    #             "optional": False, # Explicitly mark as not optional
-    #             "default": None
-    #         },
-    #         "max_results": {
-    #             "type": int,
-    #             "description": "Maximum number of results to return.",
-    #             "required": False,
-    #             "optional": True, # Explicitly mark as optional
-    #             "default": 5
-    #         }
-    #     }
     
     async def initialize(self, instance_data: Optional[Dict[str, Any]] = None) -> None:
         """

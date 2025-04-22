@@ -17,6 +17,13 @@ from datetime import datetime
 
 from .types import AdhesiveType, Message, ToolResult
 from .model import Model
+from ..prompts import (
+    format_reasoning_prompt, 
+    format_planning_prompt, 
+    format_observations,
+    format_thoughts,
+    format_results
+)
 
 # Set up logging
 logger = logging.getLogger("glue.agent_loop")
@@ -330,199 +337,261 @@ class AgentLoop:
         # For this example, we'll return an empty list
         return []
         
-    async def _generate_thoughts(self) -> List[Dict[str, Any]]:
-        """Generate thoughts based on observations
+    def _format_observations(self, observations: List[Dict[str, Any]]) -> str:
+        """Format observations for the model prompt.
+        
+        Args:
+            observations: List of observation dictionaries
         
         Returns:
-            List of thought objects
+            Formatted observations string
         """
-        # Prepare context for the model
-        context = {
-            "observations": self.memory["observations"][-10:],  # Last 10 observations
-            "thoughts": self.memory["thoughts"][-5:],  # Last 5 thoughts
-            "results": self.memory["results"][-5:],  # Last 5 results
-        }
-        
-        # Create a prompt for the model
-        prompt = f"""
-        You are an agent with ID {self.agent_id} in team {self.team_id}.
-        
-        Recent observations:
-        {self._format_observations(context['observations'])}
-        
-        Previous thoughts:
-        {self._format_thoughts(context['thoughts'])}
-        
-        Recent action results:
-        {self._format_results(context['results'])}
-        
-        Based on this information, generate new thoughts about what's happening and what to do next.
-        """
-        
-        # Call the model
-        try:
-            response = await self.model.generate(prompt)
-            
-            # Parse the response into thoughts
-            thought_text = response.strip()
-            
-            thought = {
-                "id": str(uuid.uuid4()),
-                "content": thought_text,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            return [thought]
-            
-        except Exception as e:
-            self.logger.error(f"Error generating thoughts: {str(e)}")
-            
-            # Return a fallback thought
-            return [{
-                "id": str(uuid.uuid4()),
-                "content": "I encountered an error while thinking. I should try a different approach.",
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }]
-    
-    def _format_observations(self, observations: List[Dict[str, Any]]) -> str:
-        """Format observations for inclusion in prompts"""
         if not observations:
-            return "No recent observations."
+            return "No observations recorded."
             
         formatted = []
-        for obs in observations:
-            if obs.get("type") == "team_message":
-                formatted.append(f"- Message from {obs.get('source')}: {obs.get('content')}")
-            elif obs.get("type") == "environment_change":
-                formatted.append(f"- Environment change: {obs.get('entity')} {obs.get('change')}")
-            elif obs.get("type") == "initial_input":
-                formatted.append(f"- Initial input: {obs.get('content')}")
-            else:
-                formatted.append(f"- {obs.get('type', 'Observation')}: {obs.get('content', str(obs))}")
-                
-        return "\n".join(formatted)
-        
+        for i, obs in enumerate(observations[-10:]):  # Only include last 10 observations
+            timestamp = obs.get("timestamp", "")
+            content = obs.get("content", "No content")
+            obs_type = obs.get("type", "general")
+            
+            formatted.append(f"{i+1}. [{timestamp}] Type: {obs_type}\n   {content}")
+            
+        return format_observations("\n".join(formatted))
+    
     def _format_thoughts(self, thoughts: List[Dict[str, Any]]) -> str:
-        """Format thoughts for inclusion in prompts"""
+        """Format thoughts for the model prompt.
+        
+        Args:
+            thoughts: List of thought dictionaries
+            
+        Returns:
+            Formatted thoughts string
+        """
         if not thoughts:
             return "No previous thoughts."
             
         formatted = []
-        for thought in thoughts:
-            formatted.append(f"- {thought.get('content')}")
-                
-        return "\n".join(formatted)
-        
+        for i, thought in enumerate(thoughts[-5:]):  # Only include last 5 thoughts
+            timestamp = thought.get("timestamp", "")
+            content = thought.get("content", "No content")
+            
+            formatted.append(f"{i+1}. [{timestamp}]\n   {content}")
+            
+        return format_thoughts("\n".join(formatted))
+    
     def _format_results(self, results: List[Dict[str, Any]]) -> str:
-        """Format results for inclusion in prompts"""
+        """Format action results for the model prompt.
+        
+        Args:
+            results: List of result dictionaries
+            
+        Returns:
+            Formatted results string
+        """
         if not results:
-            return "No recent action results."
+            return "No action results yet."
             
         formatted = []
-        for result in results:
-            if result.get("success", False):
-                formatted.append(f"- Action with {result.get('tool', 'unknown tool')} succeeded: {result.get('result', '')}")
-            else:
-                formatted.append(f"- Action with {result.get('tool', 'unknown tool')} failed: {result.get('error', 'Unknown error')}")
-                
-        return "\n".join(formatted)
+        for i, result in enumerate(results[-5:]):  # Only include last 5 results
+            timestamp = result.get("timestamp", "")
+            success = "Success" if result.get("success", False) else "Failure"
+            content = result.get("content", "No content")
+            
+            formatted.append(f"{i+1}. [{timestamp}] {success}\n   {content}")
+            
+        return format_results("\n".join(formatted))
         
-    async def _generate_plan(self) -> Dict[str, Any]:
-        """Generate a plan based on thoughts
+    async def _generate_thoughts(self) -> List[Dict[str, Any]]:
+        """Generate thoughts based on observations and memory.
+        
+        This method formats observations and current memory state into a prompt,
+        sends it to the model, and extracts structured thoughts.
         
         Returns:
-            Plan object
+            List of thought dictionaries
         """
-        # Prepare context for the model
-        context = {
-            "observations": self.memory["observations"][-10:],  # Last 10 observations
-            "thoughts": self.memory["thoughts"][-5:],  # Last 5 thoughts
-            "results": self.memory["results"][-5:],  # Last 5 results
-        }
+        # Format the observations
+        formatted_observations = self._format_observations(self.memory["observations"])
         
-        # Create a list of available tools
-        tool_descriptions = []
-        for tool_name in self.tools:
-            tool_func = self.tools[tool_name]
-            doc = tool_func.__doc__ or f"Tool: {tool_name}"
-            tool_descriptions.append(f"- {tool_name}: {doc}")
-            
-        tools_text = "\n".join(tool_descriptions) if tool_descriptions else "No tools available."
+        # Format existing thoughts for context
+        formatted_thoughts = self._format_thoughts(self.memory["thoughts"])
         
-        # Create a prompt for the model
-        prompt = f"""
-        You are an agent with ID {self.agent_id} in team {self.team_id}.
+        # Get goal or context if available
+        goal = "Complete the current task successfully."
+        if hasattr(self, "goal") and self.goal:
+            goal = self.goal
         
-        Recent observations:
-        {self._format_observations(context['observations'])}
+        # Create reasoning prompt
+        reasoning_prompt = format_reasoning_prompt(
+            observations=formatted_observations,
+            thoughts=formatted_thoughts,
+            goal=goal
+        )
         
-        Your thoughts:
-        {self._format_thoughts(context['thoughts'])}
-        
-        Available tools:
-        {tools_text}
-        
-        Based on this information, create a plan with specific actions to take.
-        For each action, specify:
-        1. The tool to use
-        2. The parameters to pass to the tool
-        3. The reason for using this tool
-        
-        Format your response as a list of actions.
-        """
-        
-        # Call the model
+        # Generate reasoning response from model
         try:
-            response = await self.model.generate(prompt)
+            self.logger.debug("Generating thoughts using model...")
+            response = await self.model.generate(reasoning_prompt)
+            self.logger.debug(f"Generated response: {response[:100]}...")
             
-            # Parse the response into a plan
-            # This is a simplified parsing that would need to be improved
+            # Process the response into thoughts
+            thoughts = []
+            
+            # Split into paragraphs
+            paragraphs = response.strip().split("\n\n")
+            
+            # Remove any paragraph that seems to be a plan or action rather than a thought
+            for i, paragraph in enumerate(paragraphs):
+                if paragraph and not paragraph.lower().startswith(("i'll", "i should", "i will", "i need to")):
+                    thought_id = str(uuid.uuid4())
+                    thoughts.append({
+                        "id": thought_id,
+                        "content": paragraph,
+                        "timestamp": datetime.now().isoformat(),
+                        "sources": [obs.get("id") for obs in self.memory["observations"][-3:]]
+                    })
+            
+            return thoughts
+            
+        except Exception as e:
+            self.logger.error(f"Error generating thoughts: {str(e)}", exc_info=True)
+            return [{
+                "id": str(uuid.uuid4()),
+                "content": f"I encountered an error while thinking: {str(e)}",
+                "timestamp": datetime.now().isoformat(),
+                "error": True
+            }]
+        
+    async def _generate_plan(self) -> Dict[str, Any]:
+        """Generate a plan based on thoughts and observations.
+        
+        This method formats thoughts and observations into a prompt,
+        sends it to the model, and extracts a structured plan.
+        
+        Returns:
+            Plan dictionary
+        """
+        # Format the thoughts
+        formatted_thoughts = self._format_thoughts(self.memory["thoughts"])
+        
+        # Format any recent results
+        formatted_results = self._format_results(self.memory["results"][-5:] if self.memory["results"] else [])
+        
+        # Get goal or context
+        goal = "Complete the current task successfully."
+        if hasattr(self, "goal") and self.goal:
+            goal = self.goal
+            
+        # Current context
+        context = f"Recent results:\n{formatted_results}"
+        
+        # Format available tools
+        available_tools = ""
+        if self.tools:
+            tool_descriptions = []
+            for name, tool in self.tools.items():
+                description = getattr(tool, 'description', 'No description')
+                tool_descriptions.append(f"- {name}: {description}")
+            available_tools = "\n".join(tool_descriptions)
+        
+        # Create planning prompt
+        planning_prompt = format_planning_prompt(
+            goal=goal,
+            context=context,
+            formatted_thoughts=formatted_thoughts,
+            available_tools=available_tools
+        )
+        
+        # Generate plan from model
+        try:
+            self.logger.debug("Generating plan using model...")
+            response = await self.model.generate(planning_prompt)
+            self.logger.debug(f"Generated response: {response[:100]}...")
+            
+            # Process the response into a plan
+            plan_id = str(uuid.uuid4())
+            
+            # Extract actions from the response
             actions = []
-            for line in response.strip().split("\n"):
-                if line.startswith("- ") or line.startswith("* "):
-                    parts = line[2:].split(":", 1)
-                    if len(parts) == 2:
-                        tool_name = parts[0].strip()
-                        action_desc = parts[1].strip()
+            
+            # First, check if there's a tool call format in the response
+            if "```" in response and ("json" in response.lower() or "tool" in response.lower()):
+                # Try to extract JSON blocks
+                import re
+                import json
+                
+                # Find code blocks
+                code_blocks = re.findall(r"```(?:json|tool(?:_call)?|)\n(.*?)```", response, re.DOTALL)
+                
+                # Process each block
+                for block in code_blocks:
+                    try:
+                        # Parse the JSON
+                        action_data = json.loads(block.strip())
                         
-                        if tool_name in self.tools:
+                        # Check if it's a properly formatted tool call
+                        if isinstance(action_data, dict) and "name" in action_data:
+                            tool_name = action_data.get("name")
+                            parameters = action_data.get("parameters", {})
+                            
+                            # Add to actions
                             actions.append({
                                 "id": str(uuid.uuid4()),
-                                "type": "tool_use",
+                                "type": "tool",
                                 "tool": tool_name,
-                                "parameters": {"input": action_desc},  # Simplified parameters
-                                "reason": "Generated from plan"
+                                "parameters": parameters
+                            })
+                    except json.JSONDecodeError:
+                        # Not valid JSON, skip
+                        continue
+            
+            # If no tool calls found, check for plaintext action descriptions
+            if not actions:
+                # Split into paragraphs and look for action descriptions
+                paragraphs = response.strip().split("\n\n")
+                
+                for paragraph in paragraphs:
+                    paragraph = paragraph.strip()
+                    if paragraph.lower().startswith(("action:", "step:", "i'll ", "i will ", "let's ")):
+                        # This looks like an action description
+                        actions.append({
+                        "id": str(uuid.uuid4()),
+                                "type": "message",  # Default to message if no specific tool identified
+                                "content": paragraph
                             })
             
-            # If no actions were parsed, create a default action
-            if not actions and self.tools:
-                tool_name = next(iter(self.tools.keys()))
+            # If still no actions found, use the whole response as a message action
+            if not actions:
                 actions.append({
-                    "id": str(uuid.uuid4()),
-                    "type": "tool_use",
-                    "tool": tool_name,
-                    "parameters": {"input": "Default action"},
-                    "reason": "Default action when no specific actions were identified"
-                })
-                
-            plan = {
                 "id": str(uuid.uuid4()),
+                    "type": "message",
+                    "content": response
+                })
+            
+            # Create the plan
+            plan = {
+                "id": plan_id,
+                "timestamp": datetime.now().isoformat(),
+                "description": response,
                 "actions": actions,
-                "timestamp": datetime.now().isoformat()
+                "based_on": [thought.get("id") for thought in self.memory["thoughts"][-3:]]
             }
             
             return plan
             
         except Exception as e:
-            self.logger.error(f"Error generating plan: {str(e)}")
-            
-            # Return a fallback plan
+            self.logger.error(f"Error generating plan: {str(e)}", exc_info=True)
             return {
                 "id": str(uuid.uuid4()),
-                "actions": [],
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "description": f"Error generating plan: {str(e)}",
+                "actions": [{
+                    "id": str(uuid.uuid4()),
+                    "type": "message",
+                    "content": f"I encountered an error while planning: {str(e)}"
+                }],
+                "error": True
             }
         
     async def _execute_action(self, action: Dict[str, Any]) -> Dict[str, Any]:

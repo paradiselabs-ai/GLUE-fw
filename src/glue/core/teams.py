@@ -7,10 +7,13 @@ import logging
 from pydantic import BaseModel
 import uuid
 import json
+import copy
+from enum import Enum
 
 from .types import AdhesiveType, TeamConfig, ToolResult, FlowType
 from .schemas import Message, ToolCall
 from ..utils.json_utils import extract_json
+from ..prompts import format_team_communication_prompt
 
 # Import Flow class conditionally to avoid circular imports
 try:
@@ -88,6 +91,9 @@ class Team:
         # Agent loop management
         self.agent_loops: Dict[str, AgentLoop] = {}
         self.loop_coordinator: Optional[TeamLoopCoordinator] = None
+        
+        # Reference to parent app
+        self.app = None
         
         # Metadata
         self.created_at = datetime.now()
@@ -1255,10 +1261,34 @@ class Team:
         if not source_model or source_model not in self.models:
             logger.warning(f"No valid source model for communication in team {self.name}")
             return False
+        
+        # Get context for communication
+        communication_context = f"From Team: {self.name}\nSource Model: {source_model}"
+        
+        # Get previous communication if any
+        previous_communication = ""
+        if hasattr(self, "communication_history") and target_team in self.communication_history:
+            # Get last 3 messages from history
+            last_messages = self.communication_history[target_team][-3:]
+            if last_messages:
+                previous_communication = "\n".join([
+                    f"{msg.get('metadata', {}).get('source_team', 'Unknown')}: {msg.get('content', '')}"
+                    for msg in last_messages
+                ])
+        
+        # Format the communication using our prompt template
+        formatted_content = format_team_communication_prompt(
+            target_team=target_team,
+            communication_context=communication_context,
+            previous_communication=previous_communication
+        )
+        
+        # Add the actual message content
+        formatted_content += f"\n{content}"
             
         # Create message
         message = {
-            "content": content,
+            "content": formatted_content,
             "metadata": {
                 "source_team": self.name,
                 "target_team": target_team,
@@ -1267,6 +1297,13 @@ class Team:
                 "initiated": True
             }
         }
+        
+        # Store in communication history
+        if not hasattr(self, "communication_history"):
+            self.communication_history = {}
+        if target_team not in self.communication_history:
+            self.communication_history[target_team] = []
+        self.communication_history[target_team].append(message)
         
         # Send information to target team
         return await self.send_information(target_team, message)

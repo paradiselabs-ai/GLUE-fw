@@ -9,12 +9,18 @@ import os
 import importlib
 import logging
 import uuid
-import json
-from typing import Dict, List, Any, Optional, Union, Type
+from typing import Dict, List, Any, Optional, Union, Type, Callable
 import asyncio
 from enum import Enum
 
 from .types import Message, ToolResult, AdhesiveType
+from ..prompts import (
+    format_team_lead_prompt, 
+    format_team_member_prompt,
+    format_team_lead_tool_usage_prompt,
+    format_team_member_tool_usage_prompt,
+    format_communicate_tool_instructions
+)
 
 # Set up logging
 logger = logging.getLogger("glue.core.base_model")
@@ -494,111 +500,139 @@ class BaseModel:
         return formatted_messages
     
     def _generate_system_prompt(self) -> str:
-        """Generate a system prompt for the model based on its configuration and context.
+        """Generate a system prompt for the model.
+        
+        This method generates a complete system prompt that includes role information,
+        team context, and capabilities.
         
         Returns:
-            System prompt string
+            Complete system prompt
         """
-        # Build the prompt
-        prompt_parts = []
+        # Get the role from config
+        role_description = self.role
         
-        # Add the model identity
-        prompt_parts.append(f"# Model: {self.name}")
-        
-        # Add the model role if defined
-        if self.role:
-            prompt_parts.append(f"\n## Your Role\nYou are an AI assistant with the role: {self.role}")
+        # Prepare tool descriptions if tools are available
+        tools_description = ""
+        if hasattr(self, 'tools') and self.tools:
+            # Convert tools dictionary to a list for _prepare_tools_description
+            tools_list = []
+            for name, tool in self.tools.items():
+                # Create a simple dict with name to pass to _prepare_tools_description
+                tools_list.append({"name": name})
+            
+            # Get formatted tool descriptions
+            tools_description = self._prepare_tools_description(tools_list)
+            
+            # Check for communicate tool
+            if 'communicate' in self.tools:
+                models_list = ""
+                teams_list = ""
+                
+                # Add information about available models and teams
+                if hasattr(self, 'team') and self.team:
+                    # List models in the same team
+                    models_in_team = []
+                    for model_name in self.team.models.keys():
+                        if model_name != self.name:  # Don't include self
+                            models_in_team.append(f"- {model_name}")
+                    if models_in_team:
+                        models_list = "\n".join(models_in_team)
+                    
+                    # List other teams if there are outgoing flows
+                    if hasattr(self.team, 'outgoing_flows') and self.team.outgoing_flows:
+                        teams_to_communicate = []
+                        for flow in self.team.outgoing_flows:
+                            teams_to_communicate.append(f"- {flow.target.name}")
+                        if teams_to_communicate:
+                            teams_list = "\n".join(teams_to_communicate)
+                
+                # Add communicate tool instructions
+                tools_description += "\n\n" + format_communicate_tool_instructions(
+                    models_list=models_list,
+                    teams_list=teams_list
+                )
         
         # Add team context if available
-        if hasattr(self, 'team') and self.team is not None:
-            prompt_parts.append(f"\n## Your Collaborators\nYou are part of the '{self.team.name}' group.")
+        if hasattr(self, 'team') and self.team:
+            team_name = self.team.name 
             
-            # Include team members if available
-            if hasattr(self.team, 'models') and isinstance(self.team.models, dict):
-                team_members = [name for name in self.team.models.keys() if name != self.name]
-                if team_members:
-                    members_str = ", ".join(team_members)
-                    prompt_parts.append(f"Your collaborators: {members_str}")
-                else:
-                    prompt_parts.append("You are the only member of this group.")
-        
-        # Add tool result behavior descriptions
-        adhesives = getattr(self, 'adhesives', set())
-        if adhesives:
-            prompt_parts.append("\n## Tool Result Behavior")
-            behavior_descriptions = []
+            # Check if this model is the team lead
+            is_team_lead = hasattr(self.team, 'lead') and self.team.lead and self.team.lead.name == self.name
             
-            if AdhesiveType.GLUE in adhesives:
-                behavior_descriptions.append("**Shared Results**: Some tool results are automatically shared and persisted within your group.")
-            if AdhesiveType.VELCRO in adhesives:
-                behavior_descriptions.append("**Private Results**: Some tool results are kept private to you and persist only for the current session.")
+            # Check if interactive mode is enabled
+            # First check if the team has an app attribute with interactive flag
+            interactive_mode = False
+            if hasattr(self.team, 'app') and hasattr(self.team.app, 'interactive'):
+                interactive_mode = self.team.app.interactive
+            # Fallback to config if team.app.interactive is not available
+            else:
+                interactive_mode = self.config.get('interactive_mode', False)
             
-            if behavior_descriptions:
-                 prompt_parts.append("\n".join(behavior_descriptions))
-
-        # Add response guidelines
-        prompt_parts.append("""
-## Response Guidelines
-1. Stay focused on your role and the current task.
-2. **Goal Adherence:** After using tools or communicating with collaborators, always review the original request and ensure your final response directly addresses the primary objective.
-3. Consider how tool results are shared or persisted when choosing tools.
-4. Collaborate effectively with your collaborators.
-5. Follow established communication patterns.
-6. Maintain a professional and helpful tone.
-""")
-
-        # Add generic tool usage instructions
-        prompt_parts.append("""
-## Tool Usage Instructions
-To use the available tools:
-- If you support native tool calling (e.g., function calling), use that method. Provide all required parameters as specified in the tool description.
-- In some situations, you might be instructed to use a specific format (e.g., a JSON object or a specific code block) to trigger a tool call. Follow those instructions precisely if provided.
-- Always refer to the "Available Tools" section (added when tools are available) for names, descriptions, and parameters.
-""")
-
-        # Join all parts
-        return "\n".join(prompt_parts)
+            if is_team_lead:
+                # Use team lead prompt
+                return format_team_lead_prompt(
+                    team_name=team_name,
+                    role_description=role_description,
+                    additional_context=self.config.get('additional_context', ''),
+                    interactive_mode=interactive_mode,
+                    tools_given_prompts_for_this_lead=tools_description
+                )
+            else:
+                # Use team member prompt
+                return format_team_member_prompt(
+                    team_name=team_name,
+                    role_description=role_description,
+                    additional_context=self.config.get('additional_context', ''),
+                    tools_given_prompts_for_this_agent=tools_description
+                )
     
-    def _prepare_tools_description(self, tools: List[Dict[str, Any]]) -> str:
-        """Prepare a detailed description of available tools for the model.
-        
+    def _prepare_tools_description(self, tools: List[Union[Dict[str, Any], Any]]) -> str:
+        """Prepare prompts with tool descriptions and usage instructions for *all* provided tools.
+
         Args:
-            tools: List of tools to describe
-            
+            tools: List of tool dictionaries or tool objects (must have a 'name' attribute/key).
+
         Returns:
-            Tool description string
+            A single string containing descriptions and usage instructions
+            for all valid tools found in the input list, separated by double newlines.
+            Returns an empty string if the tools list is empty or no valid tools are found.
         """
         if not tools:
             return ""
-        
-        tool_descriptions = ["## Available Tools\n"]
-        
-        for i, tool in enumerate(tools):
-            name = tool.get("name", f"tool_{i}")
-            description = tool.get("description", "No description available")
-            
-            # Get parameters info
-            parameters = tool.get("parameters", {})
-            required_params = parameters.get("required", [])
-            properties = parameters.get("properties", {})
-            
-            # Format tool description
-            tool_desc = [f"### {name}"]
-            tool_desc.append(description)
-            
-            if properties:
-                tool_desc.append("\nParameters:")
-                for param_name, param_info in properties.items():
-                    is_required = param_name in required_params
-                    param_type = param_info.get("type", "any")
-                    param_desc = param_info.get("description", "")
-                    req_marker = " (required)" if is_required else ""
-                    
-                    tool_desc.append(f"- `{param_name}`{req_marker}: {param_type} - {param_desc}")
-            
-            tool_descriptions.append("\n".join(tool_desc))
 
-        return "\n\n".join(tool_descriptions)
+        # Determine role once
+        is_team_lead = False
+        if hasattr(self, 'team') and self.team:
+            is_team_lead = hasattr(self.team, 'lead') and self.team.lead and self.team.lead.name == self.name
+
+        # Choose the appropriate formatter function based on role
+        formatter: Callable[[str], str] = format_team_lead_tool_usage_prompt if is_team_lead else format_team_member_tool_usage_prompt
+
+
+        all_descriptions = []
+        for tool in tools:
+            tool_name = 'unknown_tool'
+            # Handle both dictionary and non-dictionary tool objects
+            if isinstance(tool, dict):
+                tool_name = tool.get('name', 'unknown_tool')
+            else:
+                # Try to get 'name' attribute from object
+                tool_name = getattr(tool, 'name', 'unknown_tool')
+
+            if tool_name != 'unknown_tool':
+                # Get the description for the *current* tool using the selected formatter
+                description = formatter(tool_name)
+                if description: # Only add if formatter returned something
+                    if tool_name == "communicate":
+                        continue
+                    else:
+                        all_descriptions.append(description.strip()) # Add the formatted description
+            else:
+                logging.warning(f"Skipping tool with no name: {tool}")
+
+
+        # Join all collected descriptions with a separator for readability
+        return "\n\n".join(all_descriptions)
     
     def _add_prompt_engineering(self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None) -> List[Message]:
         """Add prompt engineering to the messages before sending to the provider.
@@ -613,67 +647,11 @@ To use the available tools:
         # Format messages for the provider
         formatted_messages = self._format_messages_for_provider(messages)
         
-        # If tools are provided and there's no explicit tool description, add one
-        if tools:
-            # Check if there's already a tool description in the messages
-            has_tool_description = any(
-                "Available Tools" in (msg.get('content', '') if isinstance(msg, dict) else getattr(msg, 'content', ''))
-                for msg in formatted_messages
-            )
-            
-            if not has_tool_description:
-                # Check if there's a communicate tool
-                communicate_tool = None
-                for tool in tools:
-                    if tool.get("name") == "communicate":
-                        communicate_tool = tool
-                        break
-                
-                # Append tool descriptions to the system message
-                for i, msg in enumerate(formatted_messages):
-                    if (isinstance(msg, dict) and msg.get('role') == 'system') or (hasattr(msg, 'role') and msg.role == 'system'):
-                        tool_description = self._prepare_tools_description(tools)
-                        
-                        # Add special instructions for the communicate tool if it exists
-                        if communicate_tool:
-                            tool_description += "\n\n## Special Instructions for the Communicate Tool\n\n"
-                            tool_description += "The `communicate` tool allows you to send messages to other models or teams. "
-                            tool_description += "You can use it to collaborate with other models in your team or in other teams.\n\n"
-                            tool_description += "Example usage:\n\n"
-                            
-                            # Native tool call example
-                            tool_description += "Native tool call:\n"
-                            tool_description += "```\n"
-                            tool_description += "communicate(target_type=\"model\", target_name=\"assistant\", message=\"Hello, can you help me with this task?\")\n"
-                            tool_description += "```\n\n"
-                            
-                            # Simulated tool call example
-                            tool_description += "Simulated tool call (for models without native tool support):\n"
-                            tool_description += "```tool_call\n"
-                            tool_description += "tool_name: communicate\n"
-                            tool_description += "parameters: {\"target_type\": \"model\", \"target_name\": \"assistant\", \"message\": \"Hello, can you help me with this task?\"}\n"
-                            tool_description += "```\n\n"
-                            
-                            # Add information about available models and teams
-                            if hasattr(self, 'team') and self.team:
-                                # List models in the same team
-                                tool_description += "Models in your team:\n"
-                                for model_name in self.team.models.keys():
-                                    if model_name != self.name:  # Don't include self
-                                        tool_description += f"- {model_name}\n"
-                                
-                                # List other teams if there are outgoing flows
-                                if hasattr(self.team, 'outgoing_flows') and self.team.outgoing_flows:
-                                    tool_description += "\nTeams you can communicate with:\n"
-                                    for flow in self.team.outgoing_flows:
-                                        tool_description += f"- {flow.target.name}\n"
-                        
-                        if isinstance(msg, dict):
-                            msg['content'] += "\n\n" + tool_description
-                        else:
-                            msg.content += "\n\n" + tool_description
-                        break
+        # We no longer need to append tool descriptions here
+        # because they are now included directly in the system prompt
+        # through _generate_system_prompt
         
+        logger.debug(f"Formatted prompt engineering messages: {formatted_messages}")
         return formatted_messages
     
     def _format_tool_for_provider(self, name: str, tool: Any) -> Dict[str, Any]:
@@ -687,11 +665,11 @@ To use the available tools:
             Formatted tool dictionary
         """
         # Get tool description
-        description = getattr(tool, 'description', 'No description available')
+        description = tool.description
         
         # Get parameters info
-        parameters = getattr(tool, 'parameters', {})
-        required_params = parameters.get("required", [])
+        parameters = tool.parameters
+        required_params = parameters.required
         properties = parameters.get("properties", {})
         
         # Format tool description

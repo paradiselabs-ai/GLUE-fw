@@ -27,22 +27,17 @@ from rich.syntax import Syntax
 from rich.panel import Panel
 from rich.markdown import Markdown
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn
-from rich.prompt import Prompt, Confirm, IntPrompt
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.prompt import Prompt
 from rich.layout import Layout
-from rich.live import Live
 from rich.traceback import install as install_rich_traceback
 from rich.align import Align
 from rich.box import ROUNDED, DOUBLE, HEAVY, Box
 from rich.columns import Columns
-from rich.highlighter import ReprHighlighter
-from rich.style import Style
 from rich.text import Text
 from rich.tree import Tree
 from rich.rule import Rule
 from rich.theme import Theme
-from rich.emoji import Emoji
-from rich.segment import Segment
 from rich.status import Status
 
 # Import framework modules
@@ -337,6 +332,10 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         
         # Create a new GlueApp instance with the parsed config
         app = GlueApp(config=ast)
+        
+        # Set the interactive flag on the app instance
+        app.interactive = interactive
+        logger.debug(f"Set app.interactive to {interactive}")
         
         # Setup the app first
         logger.debug("Setting up application")
@@ -1351,10 +1350,6 @@ def create_new_project(project_name: Optional[str] = None,
     """
     from rich.panel import Panel
     from rich.prompt import Prompt
-    from rich.markdown import Markdown
-    from rich.console import Console
-    from rich.progress import Progress, SpinnerColumn, TextColumn
-    from rich.text import Text
     
     console = get_console()
     
