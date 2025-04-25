@@ -261,6 +261,98 @@ def display_section_header(console: Console, title: str, emoji: Optional[str] = 
     rule = Rule(f"{emoji_str}{title}", style=CLI_CONFIG["theme"]["section_title"])
     console.print(rule)
 
+# Add a helper for enhanced prompts with help and choices
+from rich.panel import Panel
+from rich.text import Text
+
+def prompt_with_help(prompt_text, default=None, help_text=None, icon=None, console=None, choices=None, 
+                   style="cyan", help_style="blue", choice_style="yellow"):
+    """
+    Enhanced prompt for user input with rich visual styling, help text, icons, and choices.
+    
+    Args:
+        prompt_text: The main prompt/question (str)
+        default: Default value (optional)
+        help_text: Help or tooltip to show below the prompt (optional)
+        icon: Emoji or icon to show before the prompt (optional)
+        console: Rich Console to use (optional)
+        choices: List of choices to show (optional)
+        style: Color style for the main prompt text (default: "cyan")
+        help_style: Color style for the help panel (default: "blue")
+        choice_style: Color style for the choice numbers (default: "yellow")
+        
+    Returns:
+        User input (str), or default if input is empty
+    """
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich.prompt import Prompt
+    from rich.box import ROUNDED, HEAVY, DOUBLE
+    from rich import get_console
+
+    if console is None:
+        console = get_console()
+
+    # Show choices as a styled table if provided
+    if choices:
+        from rich.table import Table
+        from rich.padding import Padding
+        
+        # Create a more visually appealing table with better spacing
+        table = Table(show_header=False, box=ROUNDED, expand=False, padding=(0, 1))
+        table.add_column("#", style=f"bold {choice_style}", justify="right", width=4)
+        table.add_column("Option", style=f"bold {style}")
+        
+        for i, choice in enumerate(choices, 1):
+            table.add_row(str(i), str(choice))
+        
+        # Add padding around the table for better visual spacing
+        padded_table = Padding(table, (1, 0))
+        console.print(padded_table)
+
+    # Compose the prompt line with improved styling
+    prompt_line = Text()
+    
+    # Add icon with proper spacing if provided
+    if icon:
+        prompt_line.append(f"{icon} ", style="bold")
+    
+    # Add the main prompt text with specified style
+    prompt_line.append(prompt_text, style=f"bold {style}")
+    
+    # Add styled default value in the exact format requested
+    if default is not None:
+        default_text = f" [default: {default}]"
+        prompt_line.append(default_text, style=f"dim {style}")
+
+    # Print help text with enhanced styling if provided
+    if help_text:
+        from rich.markdown import Markdown
+        
+        # Handle help text as markdown for better formatting options
+        if help_text.startswith("#") or "*" in help_text:
+            help_content = Markdown(help_text)
+        else:
+            help_content = Text(help_text, style="dim")
+            
+        help_panel = Panel(
+            help_content,
+            title="[dim]Help[/dim]",
+            border_style=help_style,
+            box=HEAVY,  # More prominent box style
+            padding=(1, 2)  # Better internal padding
+        )
+        console.print(help_panel)
+
+    # Ask for input with a visual separator before
+    console.print("─" * console.width, style=f"dim {style}")
+    
+    # Use show_default=False to prevent Rich from adding its own default display format
+    user_input = Prompt.ask(prompt_line, default=default, console=console, show_default=False)
+    console.print("─" * console.width, style=f"dim {style}")
+    
+    return user_input
+
 # ==================== Application Functions ====================
 async def run_app(config_file: str, interactive: bool = False, input_text: str = None) -> bool:
     """Run a GLUE application from a configuration file.
@@ -668,7 +760,11 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         return False
 
 async def run_interactive_session(app: GlueApp) -> None:
-    """Run an interactive session with the GLUE application.
+    """Run an enhanced interactive session with the GLUE application.
+    
+    This function provides a command-line interface for interacting with GLUE applications,
+    allowing users to communicate with AI teams and models, execute commands, and manage
+    the conversation flow.
     
     Args:
         app: The GLUE application to run
@@ -676,84 +772,89 @@ async def run_interactive_session(app: GlueApp) -> None:
     logger = logging.getLogger("glue.interactive")
     console = get_console()
     
-    # State management for interactive session
+    # State management for interactive session with better comments
     state = {
-        "history": [],                           # Message history
-        "verbose_mode": False,                   # Show internal messages 
-        "step_mode": False,                      # Step by step execution
-        "color_enabled": True,                   # Color output
-        "thinking_visible": False,               # Show model thinking
-        "current_team": None,                    # Currently selected team
-        "current_model": None,                   # Currently selected model
-        "awaiting_next_step": False              # Waiting for next step in step mode
+        "history": [],                           # Complete message history (user & AI)
+        "verbose_mode": False,                   # Show detailed processing messages
+        "step_mode": False,                      # Enable step-by-step execution
+        "color_enabled": True,                   # Enable/disable colored output
+        "thinking_visible": False,               # Show model reasoning process
+        "current_team": None,                    # Active team context (if any)
+        "current_model": None,                   # Active model context (if any)
+        "awaiting_next_step": False,             # Step mode pause state
+        "last_command": None,                    # Track last command for repeats
+        "auto_refresh": True                     # Auto-refresh display after operations
     }
     
-    # Display welcome banner
+    # Display welcome banner with improved styling
     display_logo(console)
     
-    # Handle the case where app name might be None or empty
-    if app.name:
-        welcome_line1 = "Welcome to the interactive GLUE session for:"
-        welcome_line2 = app.name
-    else:
-        welcome_line1 = "Welcome to the interactive GLUE session!"
-        welcome_line2 = ""
+    # Create welcome message with better fallback handling
+    app_name = app.name or "Anonymous Application"
+    welcome_lines = [
+        "Welcome to the interactive GLUE session for:" if app.name else "Welcome to the interactive GLUE session!",
+        app.name if app.name else ""
+    ]
     
-    # Create tip text with styled commands
+    # Create enhanced tip text with more helpful information
     from rich.text import Text
     
     tip_text = Text("Type ", style="")
     tip_text.append("/help", style="green bold")
-    tip_text.append(" to see available commands or ", style="")
+    tip_text.append(" for commands • ", style="")
     tip_text.append("/exit", style="green bold")
-    tip_text.append(" to quit.", style="")
+    tip_text.append(" to quit • ", style="")
+    tip_text.append("/status", style="green bold")
+    tip_text.append(" for system info", style="")
     
+    # Create enhanced welcome panel with better padding and styling
     welcome_panel = Panel(
         Group(
-            Align.center(welcome_line1, style="cyan"),
-            Align.center(welcome_line2, style="bold cyan") if welcome_line2 else None,
+            Align.center(welcome_lines[0], style="cyan"),
+            Align.center(welcome_lines[1], style="bold cyan") if welcome_lines[1] else None,
             Rule(style="dim"),
             Align.center(tip_text)
         ),
-        title="Interactive Mode",
+        title="🤖 Interactive Mode",
+        title_align="center",
         border_style="green",
         box=CLI_CONFIG["display"]["panel_box"],
-        padding=(1, 2)
+        padding=(1, 3)
     )
     console.print(welcome_panel)
     
-    # Display session information
-    if CLI_CONFIG["display"]["show_emoji"]:
-        display_section_header(console, "Session Information", emoji="info")
-    else:
-        display_section_header(console, "Session Information")
+    # Display comprehensive session information
+    emoji_enabled = CLI_CONFIG["display"]["show_emoji"]
+    emoji = "info" if emoji_enabled else None
+    display_section_header(console, "Session Information", emoji=emoji)
     
-    # Show application structure
+    # Show improved application structure with equal column sizing
     columns = Columns([
         create_status_panel(app, state),
         create_model_tree(app.teams)
     ], equal=True, expand=True)
     console.print(columns)
     
-    # Show available tools
+    # Show available tools with better filtering
     if app.tools:
-        if CLI_CONFIG["display"]["show_emoji"]:
-            display_section_header(console, "Available Tools", emoji="tool")
-        else:
-            display_section_header(console, "Available Tools")
-        filtered_tools = {name: tool for name, tool in app.tools.items() if name != "communicate"}
+        emoji = "tool" if emoji_enabled else None
+        display_section_header(console, "Available Tools", emoji=emoji)
+        # Filter out internal communication tools for cleaner display
+        filtered_tools = {name: tool for name, tool in app.tools.items() 
+                        if name not in ["communicate", "_internal"]}
         console.print(create_tool_table(filtered_tools))
     
-    # Display initial instructions
-    console.print("\n[info]Type your message or command below:[/info]")
+    # Enhanced initial instructions
+    console.print("\n[info]Type your message or command below (commands start with '/'):[/info]")
     
-    # Command history for arrow key navigation
+    # Command history with improved navigation
     command_history = []
     history_index = 0
     
+    # Main interaction loop with enhanced error handling
     while True:
         try:
-            # Create prompt based on current context
+            # Create prompt based on current context with better styling
             prompt_style = CLI_CONFIG["theme"]["prompt"]
             input_style = CLI_CONFIG["theme"]["input"]
             
@@ -768,135 +869,207 @@ async def run_interactive_session(app: GlueApp) -> None:
             else:
                 prompt_text = f"[{prompt_style}]glue>[/{prompt_style}] "
             
-            # Get user input
+            # Get user input using Rich's Prompt.ask for styled prompt
             user_input = await asyncio.to_thread(
-                lambda: Prompt.ask(prompt_text, console=console)
+                Prompt.ask, prompt_text, console=console, show_default=False
             )
             
-            # Process exit commands
-            if user_input.lower() in ["quit", "exit", "/exit", "/quit"]:
+            # More robust exit command handling
+            if user_input.lower() in ["quit", "exit", "/exit", "/quit", "q", ":q"]:
                 console.print(f"[{CLI_CONFIG['theme']['success']}]Exiting interactive session.[/{CLI_CONFIG['theme']['success']}]")
                 break
                 
-            # Skip empty input
+            # Skip empty input but handle special case for repeating last command
             if not user_input:
-                continue
-                
-            # Add to command history
+                if state["last_command"]:
+                    user_input = state["last_command"]
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Repeating last command: {user_input}[/{CLI_CONFIG['theme']['info']}]")
+                else:
+                    continue
+            
+            # Smart command history management - avoid duplicates
             if user_input not in command_history:
                 command_history.append(user_input)
                 history_index = len(command_history)
+            elif command_history and command_history[-1] != user_input:
+                # Move repeated command to end for better history navigation
+                command_history.remove(user_input)
+                command_history.append(user_input)
+                history_index = len(command_history)
             
-            # Process command if it starts with /
+            # Process command if it starts with / with enhanced parsing
             if user_input.startswith('/'):
+                # Save last command for potential repeat
+                state["last_command"] = user_input
+                
+                # Parse command with better arg handling
                 command, args = parse_interactive_command(user_input)
                 
-                # Command parsing and handling
+                # Enhanced command parsing and handling with better organization
                 if command == "help":
                     show_interactive_help(console)
                     continue
                     
                 elif command == "status":
-                    # Display current status information
+                    # Display enhanced status information
                     status_panel = create_status_panel(app, state)
                     console.print(status_panel)
                     continue
                     
                 elif command == "tools":
-                    # Display available tools
-                    if CLI_CONFIG["display"]["show_emoji"]:
-                        display_section_header(console, "Available Tools", emoji="tool")
-                    else:
-                        display_section_header(console, "Available Tools")
-                    filtered_tools = {name: tool for name, tool in app.tools.items() if name != "communicate"}
+                    # Display available tools with better categorization
+                    emoji = "tool" if emoji_enabled else None
+                    display_section_header(console, "Available Tools", emoji=emoji)
+                    filtered_tools = {name: tool for name, tool in app.tools.items() 
+                                    if name not in ["communicate", "_internal"]}
                     console.print(create_tool_table(filtered_tools))
                     continue
                     
                 elif command == "teams":
-                    # Display team structure
-                    if CLI_CONFIG["display"]["show_emoji"]:
-                        display_section_header(console, "Team Structure", emoji="team")
-                    else:
-                        display_section_header(console, "Team Structure")
+                    # Enhanced team structure display
+                    emoji = "team" if emoji_enabled else None
+                    display_section_header(console, "Team Structure", emoji=emoji)
                     console.print(create_team_table(app.teams))
                     continue
                     
                 elif command == "models":
-                    # Display model structure as a tree
-                    if CLI_CONFIG["display"]["show_emoji"]:
-                        display_section_header(console, "Model Structure", emoji="model")
-                    else: 
-                        display_section_header(console, "Model Structure")
+                    # Enhanced model structure display
+                    emoji = "model" if emoji_enabled else None
+                    display_section_header(console, "Model Structure", emoji=emoji)
                     console.print(create_model_tree(app.teams))
                     continue
                     
                 elif command == "clear":
-                    # Clear conversation history
+                    # Clear conversation history with confirmation
+                    if len(state["history"]) > 0:
+                        console.print(f"[{CLI_CONFIG['theme']['warning']}]Clearing {len(state['history'])} message(s) from history.[/{CLI_CONFIG['theme']['warning']}]")
                     state["history"] = []
                     console.print(f"[{CLI_CONFIG['theme']['success']}]Conversation history cleared.[/{CLI_CONFIG['theme']['success']}]")
                     continue
                     
                 elif command == "verbose":
-                    # Toggle verbose mode
+                    # Toggle verbose mode with better feedback
                     state["verbose_mode"] = not state["verbose_mode"]
                     mode = "enabled" if state["verbose_mode"] else "disabled"
                     icon = "✅" if state["verbose_mode"] else "❌"
+                    
+                    # Adjust logger level based on verbose mode
+                    if state["verbose_mode"]:
+                        logger.setLevel(logging.DEBUG)
+                    else:
+                        logger.setLevel(logging.INFO)
+                        
                     console.print(f"[{CLI_CONFIG['theme']['info']}]Verbose mode {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
                     continue
                     
                 elif command == "step":
-                    # Toggle step-by-step mode
+                    # Toggle step-by-step mode with better feedback
                     state["step_mode"] = not state["step_mode"]
                     mode = "enabled" if state["step_mode"] else "disabled"
                     icon = "✅" if state["step_mode"] else "❌"
+                    
+                    # Reset awaiting flag when turning off step mode
+                    if not state["step_mode"]:
+                        state["awaiting_next_step"] = False
+                        
                     console.print(f"[{CLI_CONFIG['theme']['info']}]Step-by-step mode {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
                     continue
                     
                 elif command == "next" and state["step_mode"] and state["awaiting_next_step"]:
-                    # Proceed to next step in step mode
+                    # Proceed to next step in step mode with better feedback
                     state["awaiting_next_step"] = False
                     console.print(f"[{CLI_CONFIG['theme']['info']}]Proceeding to next step...[/{CLI_CONFIG['theme']['info']}]")
                     # Execution will continue below
                 
                 elif command == "color":
-                    # Toggle color output
-                    if len(args) > 0 and args[0].lower() in ["on", "off"]:
-                        state["color_enabled"] = args[0].lower() == "on"
+                    # Toggle color output with improved argument handling
+                    if len(args) > 0 and args[0].lower() in ["on", "off", "true", "false", "1", "0"]:
+                        # Support more input formats
+                        state["color_enabled"] = args[0].lower() in ["on", "true", "1"]
                         mode = "enabled" if state["color_enabled"] else "disabled"
                         icon = "✅" if state["color_enabled"] else "❌"
                         console.print(f"[{CLI_CONFIG['theme']['info']}]Color output {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
                     else:
-                        console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /color [on|off][/{CLI_CONFIG['theme']['warning']}]")
+                        # Toggle if no args provided
+                        if len(args) == 0:
+                            state["color_enabled"] = not state["color_enabled"]
+                            mode = "enabled" if state["color_enabled"] else "disabled"
+                            icon = "✅" if state["color_enabled"] else "❌"
+                            console.print(f"[{CLI_CONFIG['theme']['info']}]Color output {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
+                        else:
+                            console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /color [on|off][/{CLI_CONFIG['theme']['warning']}]")
                     continue
                 
                 elif command == "team":
-                    # Switch to a specific team
+                    # Switch to a specific team with better feedback
                     if len(args) > 0:
                         team_name = args[0]
                         if team_name in app.teams:
                             state["current_team"] = team_name
                             state["current_model"] = None
                             console.print(f"[{CLI_CONFIG['theme']['success']}]Switched to team: [team]{team_name}[/team][/{CLI_CONFIG['theme']['success']}]")
+                            
+                            # Show team info for better context
+                            team = app.teams[team_name]
+                            if hasattr(team, "lead") and team.lead:
+                                console.print(f"[{CLI_CONFIG['theme']['info']}]Team lead: [model]{team.lead.name}[/model][/{CLI_CONFIG['theme']['info']}]")
+                            if hasattr(team, "members") and team.members:
+                                members = ", ".join([f"[model]{m.name}[/model]" for m in team.members])
+                                console.print(f"[{CLI_CONFIG['theme']['info']}]Team members: {members}[/{CLI_CONFIG['theme']['info']}]")
+                                
                         else:
+                            # Show available teams when not found
                             console.print(f"[{CLI_CONFIG['theme']['error']}]Team not found: {team_name}[/{CLI_CONFIG['theme']['error']}]")
+                            console.print(f"[{CLI_CONFIG['theme']['info']}]Available teams: {', '.join(app.teams.keys())}[/{CLI_CONFIG['theme']['info']}]")
                     else:
-                        console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /team [team_name][/{CLI_CONFIG['theme']['warning']}]")
+                        # List available teams if no argument provided
+                        if app.teams:
+                            console.print(f"[{CLI_CONFIG['theme']['info']}]Available teams: {', '.join(app.teams.keys())}[/{CLI_CONFIG['theme']['info']}]")
+                            console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /team [team_name][/{CLI_CONFIG['theme']['warning']}]")
+                        else:
+                            console.print(f"[{CLI_CONFIG['theme']['warning']}]No teams available in this application.[/{CLI_CONFIG['theme']['warning']}]")
                     continue
                 
                 elif command == "model":
-                    # Switch to a specific model
+                    # Switch to a specific model with better search logic
                     if len(args) > 0:
                         model_name = args[0]
-                        # Check if model exists in any team
+                        # More efficient model lookup
                         model_found = False
+                        model_team = None
+                        
+                        # First try exact match
                         for team_name, team in app.teams.items():
                             if hasattr(team, "lead") and team.lead and team.lead.name == model_name:
                                 model_found = True
+                                model_team = team_name
                                 break
                             if hasattr(team, "members"):
                                 for member in team.members:
                                     if member.name == model_name:
                                         model_found = True
+                                        model_team = team_name
+                                        break
+                                if model_found:
+                                    break
+                                    
+                        # If not found, try case-insensitive match
+                        if not model_found:
+                            model_name_lower = model_name.lower()
+                            for team_name, team in app.teams.items():
+                                if hasattr(team, "lead") and team.lead and team.lead.name.lower() == model_name_lower:
+                                    model_name = team.lead.name  # Use correct case
+                                    model_found = True
+                                    model_team = team_name
+                                    break
+                                if hasattr(team, "members"):
+                                    for member in team.members:
+                                        if member.name.lower() == model_name_lower:
+                                            model_name = member.name  # Use correct case
+                                            model_found = True
+                                            model_team = team_name
+                                            break
+                                    if model_found:
                                         break
                         
                         if model_found:
@@ -906,10 +1079,32 @@ async def run_interactive_session(app: GlueApp) -> None:
                                 model_name, CLI_CONFIG["theme"]["model"]["default"]
                             )
                             console.print(f"[{CLI_CONFIG['theme']['success']}]Switched to model: [{model_style}]{model_name}[/{model_style}][/{CLI_CONFIG['theme']['success']}]")
+                            console.print(f"[{CLI_CONFIG['theme']['info']}]Part of team: [team]{model_team}[/team][/{CLI_CONFIG['theme']['info']}]")
                         else:
+                            # Show models when not found
                             console.print(f"[{CLI_CONFIG['theme']['error']}]Model not found: {model_name}[/{CLI_CONFIG['theme']['error']}]")
+                            # List available models
+                            models = []
+                            for team_name, team in app.teams.items():
+                                if hasattr(team, "lead") and team.lead:
+                                    models.append(team.lead.name)
+                                if hasattr(team, "members"):
+                                    models.extend([m.name for m in team.members])
+                            if models:
+                                console.print(f"[{CLI_CONFIG['theme']['info']}]Available models: {', '.join(models)}[/{CLI_CONFIG['theme']['info']}]")
                     else:
-                        console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /model [model_name][/{CLI_CONFIG['theme']['warning']}]")
+                        # List available models if no argument provided
+                        models = []
+                        for team_name, team in app.teams.items():
+                            if hasattr(team, "lead") and team.lead:
+                                models.append(team.lead.name)
+                            if hasattr(team, "members"):
+                                models.extend([m.name for m in team.members])
+                        if models:
+                            console.print(f"[{CLI_CONFIG['theme']['info']}]Available models: {', '.join(models)}[/{CLI_CONFIG['theme']['info']}]")
+                            console.print(f"[{CLI_CONFIG['theme']['warning']}]Usage: /model [model_name][/{CLI_CONFIG['theme']['warning']}]")
+                        else:
+                            console.print(f"[{CLI_CONFIG['theme']['warning']}]No models available in this application.[/{CLI_CONFIG['theme']['warning']}]")
                     continue
                     
                 elif command == "thinking":
@@ -921,147 +1116,193 @@ async def run_interactive_session(app: GlueApp) -> None:
                     continue
                 
                 elif command == "refresh":
-                    # Refresh the display
+                    # Enhanced refresh display with more info
                     console.print(f"[{CLI_CONFIG['theme']['info']}]Refreshing display...[/{CLI_CONFIG['theme']['info']}]")
-                    # Show application structure
+                    # Show application structure with improved layout
                     columns = Columns([
                         create_status_panel(app, state),
                         create_model_tree(app.teams)
                     ], equal=True, expand=True)
                     console.print(columns)
+                    
+                    # Show conversation stats
+                    if state["history"]:
+                        user_messages = sum(1 for msg in state["history"] if msg.get("role") == "user")
+                        ai_messages = sum(1 for msg in state["history"] if msg.get("role") != "user")
+                        console.print(f"[{CLI_CONFIG['theme']['info']}]Conversation: {user_messages} user message(s), {ai_messages} AI response(s)[/{CLI_CONFIG['theme']['info']}]")
+                    continue
+                
+                elif command == "auto-refresh":
+                    # Toggle auto-refresh setting
+                    if len(args) > 0 and args[0].lower() in ["on", "off", "true", "false", "1", "0"]:
+                        state["auto_refresh"] = args[0].lower() in ["on", "true", "1"]
+                    else:
+                        state["auto_refresh"] = not state["auto_refresh"]
+                    
+                    mode = "enabled" if state["auto_refresh"] else "disabled"
+                    icon = "✅" if state["auto_refresh"] else "❌"
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Auto-refresh {icon} {mode}.[/{CLI_CONFIG['theme']['info']}]")
+                    continue
+                
+                elif command == "history":
+                    # Display conversation history
+                    if not state["history"]:
+                        console.print(f"[{CLI_CONFIG['theme']['info']}]No conversation history yet.[/{CLI_CONFIG['theme']['info']}]")
+                        continue
+                        
+                    # Parse optional limit argument
+                    limit = None
+                    if args and args[0].isdigit():
+                        limit = int(args[0])
+                    
+                    history_to_show = state["history"][-limit:] if limit else state["history"]
+                    
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Conversation history ({len(history_to_show)} of {len(state['history'])} messages):[/{CLI_CONFIG['theme']['info']}]")
+                    
+                    for i, msg in enumerate(history_to_show):
+                        role = msg.get("role", "unknown")
+                        content = msg.get("content", "")
+                        role_style = "green" if role == "user" else "blue"
+                        index = i + (len(state["history"]) - len(history_to_show))
+                        
+                        console.print(f"[{role_style}]{index+1}. {role.upper()}:[/{role_style}]")
+                        # Truncate very long messages
+                        if len(content) > 500:
+                            console.print(f"{content[:500]}... [dim](truncated, {len(content)} chars)[/dim]")
+                        else:
+                            console.print(content)
+                        console.print("")
                     continue
                 
                 else:
                     console.print(f"[{CLI_CONFIG['theme']['error']}]Unknown command: {command}[/{CLI_CONFIG['theme']['error']}]")
+                    console.print(f"[{CLI_CONFIG['theme']['info']}]Type /help to see available commands[/{CLI_CONFIG['theme']['info']}]")
                     continue
             
             # Process regular input (non-command)
             logger.info(f"User input: {user_input}")
             state["history"].append({"role": "user", "content": user_input})
             
-            # Get appropriate spinner based on verbosity
+            # Get appropriate spinner based on config
             spinner = CLI_CONFIG["layout"]["loading_animations"].get("dots", "dots")
             
-            # Run with or without status indicator based on verbosity level
-            if logger.level <= logging.INFO:
-                # In verbose mode, don't show spinner to avoid interfering with log output
-                logger.debug("Processing input without status indicator (verbose mode)")
-                if state["current_team"]:
-                    # Direct message to specific team
-                    response = await app.teams[state["current_team"]].process_message(user_input)
-                elif state["current_model"]:
-                    # Direct message to specific model
-                    model = None
-                    # Find model in teams
-                    for team_name, team in app.teams.items():
-                        if hasattr(team, "lead") and team.lead and team.lead.name == state["current_model"]:
-                            model = team.lead
-                            break
-                        if hasattr(team, "members"):
-                            for member in team.members:
-                                if member.name == state["current_model"]:
-                                    model = member
-                                    break
-                    
-                    if model:
-                        response = await model.generate_response(messages=[{"role": "user", "content": user_input}])
-                    else:
-                        console.print(f"[{CLI_CONFIG['theme']['error']}]Error: Model {state['current_model']} not found or not accessible.[/{CLI_CONFIG['theme']['error']}]")
-                        continue
+            # Improved response handling with better error detection
+            try:
+                # Run with or without status indicator based on verbosity level
+                if state["verbose_mode"] or logger.level <= logging.INFO:
+                    # In verbose mode, don't show spinner to avoid interfering with log output
+                    logger.debug("Processing input without status indicator (verbose mode)")
+                    response = await process_message(app, user_input, state)
                 else:
-                    # Default routing through app
-                    response = await app.run(user_input)
-            else:
-                # In normal mode, show spinner status indicator
-                with Status(f"[info]Processing...[/info]", spinner=spinner, console=console):
-                    if state["current_team"]:
-                        # Direct message to specific team
-                        response = await app.teams[state["current_team"]].process_message(user_input)
-                    elif state["current_model"]:
-                        # Direct message to specific model
-                        model = None
-                        # Find model in teams
-                        for team_name, team in app.teams.items():
-                            if hasattr(team, "lead") and team.lead and team.lead.name == state["current_model"]:
-                                model = team.lead
-                                break
-                            if hasattr(team, "members"):
-                                for member in team.members:
-                                    if member.name == state["current_model"]:
-                                        model = member
-                                        break
+                    # In normal mode, show spinner status indicator with improved messaging
+                    with Status(f"[info]Processing message...[/info]", spinner=spinner, console=console):
+                        response = await process_message(app, user_input, state)
+                
+                # Determine the source (current team, model or app name)
+                source = state.get("current_team") or state.get("current_model") or app.name
+                
+                # Enhanced warning detection and processing
+                if isinstance(response, str):
+                    # Enhanced warning patterns with better categorization
+                    warning_patterns = [
+                        ("does not support tool use", "Tool Error"),
+                        ("Warning:", "Warning"),
+                        ("Error:", "Error"),
+                        ("Retrying with", "Retry"),
+                        ("Exception:", "Exception"),
+                        ("Failed to", "Failure"),
+                    ]
+                    
+                    # Check if any pattern is in the response with improved detection
+                    warning_found = False
+                    for pattern, warning_type in warning_patterns:
+                        if pattern in response:
+                            warning_found = True
+                            break
+                    
+                    if warning_found:
+                        # Process multi-line response to extract warnings with better categorization
+                        lines = response.split('\n')
+                        warning_lines = []
+                        content_lines = []
                         
-                        if model:
-                            response = await model.generate_response(messages=[{"role": "user", "content": user_input}])
+                        for line in lines:
+                            line = line.strip()
+                            is_warning = False
+                            
+                            for pattern, warning_type in warning_patterns:
+                                if pattern in line:
+                                    # Clean up the warning line with better formatting
+                                    clean_line = line
+                                    prefix = pattern if pattern != "Warning:" and pattern != "Error:" else ""
+                                    if "Warning:" in line:
+                                        clean_line = line[line.find("Warning:") + 8:].strip()
+                                    elif "Error:" in line:
+                                        clean_line = line[line.find("Error:") + 6:].strip()
+                                        
+                                    warning_lines.append(f"{warning_type}: {prefix}{clean_line}")
+                                    is_warning = True
+                                    break
+                                    
+                            if not is_warning and line:  # Skip empty lines and warnings
+                                content_lines.append(line)
+                        
+                        # Display all warnings in a single panel with better styling
+                        if warning_lines:
+                            combined_warning = "\n".join(warning_lines)
+                            display_warning(console, combined_warning)
+                        
+                        # Update response to only include content
+                        if content_lines:
+                            response = "\n".join(content_lines)
                         else:
-                            console.print(f"[{CLI_CONFIG['theme']['error']}]Error: Model {state['current_model']} not found or not accessible.[/{CLI_CONFIG['theme']['error']}]")
-                            continue
-                    else:
-                        # Default routing through app
-                        response = await app.run(user_input)
-            
-            # Determine the source (current team, model or app name)
-            source = state.get("current_team") or state.get("current_model") or app.name
-            
-            # Check for warnings in the response if it's a string
-            if isinstance(response, str):
-                # Look for different warning patterns
-                warning_patterns = [
-                    "does not support tool use", 
-                    "Warning:", 
-                    "Error:",
-                    "Retrying with"
-                ]
+                            response = "I'll try to process your request differently."
                 
-                # Check if any pattern is in the response
-                has_warning = any(pattern in response for pattern in warning_patterns)
+                # Format and display the response with enhanced styling
+                display_response(console, response, source, state)
                 
-                if has_warning:
-                    # Process multi-line response to extract warnings
-                    lines = response.split('\n')
-                    warning_lines = []
-                    content_lines = []
-                    
-                    for line in lines:
-                        line = line.strip()
-                        if any(pattern in line for pattern in warning_patterns):
-                            # Clean up the warning line
-                            clean_line = line
-                            if "Warning:" in line:
-                                clean_line = line[line.find("Warning:") + 8:].strip()
-                            warning_lines.append(clean_line)
-                        elif line:  # Skip empty lines
-                            content_lines.append(line)
-                    
-                    # Display all warnings in a single panel
-                    if warning_lines:
-                        combined_warning = "\n".join(warning_lines)
-                        display_warning(console, combined_warning)
-                    
-                    # Update response to only include content
-                    if content_lines:
-                        response = "\n".join(content_lines)
-                    else:
-                        response = "I'll try to process your request."
-            
-            # Format and display the response
-            display_response(console, response, source, state)
-            
-            # In step mode, wait for user to continue
-            if state["step_mode"]:
-                state["awaiting_next_step"] = True
-                next_step_panel = Panel(
-                    "Type [command]/next[/command] to continue or enter a new input to proceed",
-                    title="Step Completed",
-                    border_style="info",
-                    box=CLI_CONFIG["display"]["panel_box"]
-                )
-                console.print(next_step_panel)
+                # Add response to history
+                state["history"].append({"role": "assistant", "content": response})
+                
+                # In step mode, wait for user to continue with better UI
+                if state["step_mode"]:
+                    state["awaiting_next_step"] = True
+                    next_step_panel = Panel(
+                        Group(
+                            Text("Type [green]/next[/green] to continue"),
+                            Text("Or enter a new input to proceed")
+                        ),
+                        title="Step Completed",
+                        title_align="center",
+                        border_style="info",
+                        box=CLI_CONFIG["display"]["panel_box"],
+                        padding=(1, 2)
+                    )
+                    console.print(next_step_panel)
+                
+                # Auto-refresh display if enabled
+                if state["auto_refresh"] and not state["step_mode"]:
+                    # Update status silently
+                    status_panel = create_status_panel(app, state)
+                    console.print("")
+                
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+                console.print(f"[{CLI_CONFIG['theme']['error']}]Error processing message: {str(e)}[/{CLI_CONFIG['theme']['error']}]")
                 
         except KeyboardInterrupt:
-            console.print(f"\n[{CLI_CONFIG['theme']['warning']}]Interrupted. Exiting session.[/{CLI_CONFIG['theme']['warning']}]")
-            break
+            console.print(f"\n[{CLI_CONFIG['theme']['warning']}]Interrupted. Press Ctrl+C again to exit or Enter to continue.[/{CLI_CONFIG['theme']['warning']}]")
+            try:
+                # Give user a chance to cancel the exit
+                if await asyncio.to_thread(lambda: input()) == "":
+                    continue
+                else:
+                    break
+            except KeyboardInterrupt:
+                # Double interrupt = definite exit
+                break
         except Exception as e:
+            # Improved error handling with more context
             logger.error(f"Error during interactive session: {e}", exc_info=True)
             if CLI_CONFIG["display"]["verbose_errors"]:
                 console.print_exception()
@@ -1069,13 +1310,74 @@ async def run_interactive_session(app: GlueApp) -> None:
                 error_panel = Panel(
                     str(e),
                     title="Error Occurred",
+                    title_align="center",
                     border_style="error",
-                    box=CLI_CONFIG["display"]["panel_box"]
+                    box=CLI_CONFIG["display"]["panel_box"],
+                    padding=(1, 2)
                 )
                 console.print(error_panel)
+                
+            # Offer recovery options
+            console.print(f"[{CLI_CONFIG['theme']['info']}]Type /refresh to refresh the display or /help for commands.[/{CLI_CONFIG['theme']['info']}]")
 
+    # Graceful shutdown
     logger.debug("Interactive session ended.")
     console.print(f"[{CLI_CONFIG['theme']['success']}]Interactive session ended. Thank you for using GLUE![/{CLI_CONFIG['theme']['success']}]")
+
+
+# Helper function for processing messages with better error handling
+async def process_message(app: GlueApp, user_input: str, state: dict) -> str:
+    """Process a user message and route it to the appropriate handler.
+    
+    Args:
+        app: The GLUE application
+        user_input: The user's input text
+        state: Current session state
+        
+    Returns:
+        The response from the model or team
+    """
+    if state["current_team"]:
+        # Direct message to specific team
+        return await app.teams[state["current_team"]].process_message(user_input)
+    elif state["current_model"]:
+        # Direct message to specific model
+        model = find_model_in_teams(app, state["current_model"])
+        
+        if model:
+            return await model.generate_response(messages=[{"role": "user", "content": user_input}])
+        else:
+            return f"Error: Model {state['current_model']} not found or not accessible."
+    else:
+        # Default routing through app
+        return await app.run(user_input)
+
+
+# Helper function to find model in teams with improved search
+def find_model_in_teams(app: GlueApp, model_name: str):
+    """Find a model by name across all teams.
+    
+    Args:
+        app: The GLUE application
+        model_name: Name of the model to find
+        
+    Returns:
+        The model object or None if not found
+    """
+    # Check team leads first (more efficient)
+    for team_name, team in app.teams.items():
+        if hasattr(team, "lead") and team.lead and team.lead.name == model_name:
+            return team.lead
+    
+    # Then check team members
+    for team_name, team in app.teams.items():
+        if hasattr(team, "members"):
+            for member in team.members:
+                if member.name == model_name:
+                    return member
+    
+    # Not found
+    return None
 
 def display_response(console: Console, response: Any, source: str, state: Dict[str, Any]) -> None:
     """Display a response from the application with enhanced visuals.
@@ -1349,7 +1651,6 @@ def create_new_project(project_name: Optional[str] = None,
         force: Whether to overwrite an existing project
     """
     from rich.panel import Panel
-    from rich.prompt import Prompt
     
     console = get_console()
     
@@ -1372,7 +1673,12 @@ def create_new_project(project_name: Optional[str] = None,
     
     # If no project name provided, prompt for one
     if not project_name:
-        project_name = Prompt.ask("[bold]Enter project name[/bold]", default="my_glue_app")
+        project_name = prompt_with_help(
+            "Enter project name",
+            default="my_glue_app",
+            icon="📁",
+            console=console
+        )
         
         # Sanitize project name
         project_name = re.sub(r'[^a-zA-Z0-9_-]', '_', project_name)
@@ -1999,7 +2305,12 @@ def run_forge_command():
                 model_name = config.get("model_name")
                 
             print(f"\nFound existing configuration: Using {api_source} API key")
-            use_existing = input("Would you like to use this configuration? (Y/n): ").strip().lower()
+            use_existing = prompt_with_help(
+                "Would you like to use this configuration?",
+                default="Y",
+                choices=["Y", "n"],
+                icon="🔑",
+            ).strip().lower()
             
             if use_existing != "n":
                 print(f"Using existing {api_source} API key")
@@ -2022,7 +2333,11 @@ def run_forge_command():
         
         choice = None
         while choice not in ["1", "2"]:
-            choice = input("\nEnter your choice (1 or 2): ").strip()
+            choice = prompt_with_help(
+                "Enter your choice",
+                choices=["1", "2"],
+                icon="🔑",
+            ).strip()
         
         if choice == "1":
             api_source = "Google AI Studio"
@@ -2066,11 +2381,21 @@ def run_forge_command():
     
     forge_choice = None
     while forge_choice not in ["1", "2", "3"]:
-        forge_choice = input("\nEnter your choice (1, 2, or 3): ").strip()
+        forge_choice = prompt_with_help(
+            "Enter your choice",
+            choices=["1", "2", "3"],
+            icon="🔨",
+        ).strip()
     
     if forge_choice == "1":
-        name = input("\nEnter a name for your tool (letters, numbers, underscores only): ").strip()
-        description = input("Enter a brief description of what your tool does: ").strip()
+        name = prompt_with_help(
+            "Enter a name for your tool (letters, numbers, underscores only)",
+            icon="🔧",
+        ).strip()
+        description = prompt_with_help(
+            "Enter a brief description of what your tool does",
+            icon="📝",
+        ).strip()
         
         print("\nChoose a template:")
         print("1. Basic Tool (simple function)")
@@ -2079,7 +2404,11 @@ def run_forge_command():
         
         template_choice = None
         while template_choice not in ["1", "2", "3"]:
-            template_choice = input("\nEnter your choice (1, 2, or 3): ").strip()
+            template_choice = prompt_with_help(
+                "Enter your choice",
+                choices=["1", "2", "3"],
+                icon="📁",
+            ).strip()
         
         template = "basic" if template_choice == "1" else "api" if template_choice == "2" else "data"
         
@@ -2087,15 +2416,27 @@ def run_forge_command():
         forge_tool(name, description, template)
         
     elif forge_choice == "2":
-        name = input("\nEnter a name for your MCP integration (letters, numbers, underscores only): ").strip()
-        description = input("Enter a brief description of what your MCP integration does: ").strip()
+        name = prompt_with_help(
+            "Enter a name for your MCP integration (letters, numbers, underscores only)",
+            icon="🔌",
+        ).strip()
+        description = prompt_with_help(
+            "Enter a brief description of what your MCP integration does",
+            icon="📝",
+        ).strip()
         
         print(f"\nCreating MCP integration: {name}")
         forge_mcp(name, description)
         
     elif forge_choice == "3":
-        name = input("\nEnter a name for your API integration (letters, numbers, underscores only): ").strip()
-        description = input("Enter a brief description of what your API integration does: ").strip()
+        name = prompt_with_help(
+            "Enter a name for your API integration (letters, numbers, underscores only)",
+            icon="🔗",
+        ).strip()
+        description = prompt_with_help(
+            "Enter a brief description of what your API integration does",
+            icon="📝",
+        ).strip()
         
         print(f"\nCreating API integration: {name}")
         forge_api(name, description)
@@ -2936,9 +3277,12 @@ def get_template_content(template: str, project_name: str) -> str:
     
     # Application name and description
     app_name = project_name
-    description = Prompt.ask(
-        "[bold cyan]Description[/bold cyan]", 
-        default=f"A multi-agent GLUE application for {project_name}"
+    description = prompt_with_help(
+        "Description",
+        default=f"A multi-agent GLUE application for {project_name}",
+        help_text="Describe what your GLUE application does. This will appear in documentation and the app header.",
+        icon="📝",
+        console=console
     )
     wizard_data["description"] = description
     
@@ -2998,16 +3342,24 @@ def get_template_content(template: str, project_name: str) -> str:
             subsection_header(f"Model #{len(models) + 1}")
         
         # 2.1 Model name and provider
-        model_name = Prompt.ask(
-            "[bold cyan]Model name[/bold cyan]", 
-            default=f"model_{len(models) + 1}"
+        model_name = prompt_with_help(
+            "Model name",
+            default=f"model_{len(models) + 1}",
+            help_text="You can only use letters, numbers, or the _ (underscore) symbol. No spaces or special characters.",
+            icon="🤖",
+            console=console
         )
         
         # Ensure unique model names
         while model_name in model_names:
             console.print(f"[bold red]Model name '{model_name}' already exists. Please choose another name.[/bold red]")
-            model_name = Prompt.ask("[bold cyan]Model name[/bold cyan]", default=f"model_{len(models) + 1}")
-        
+            model_name = prompt_with_help(
+                "Model name",
+                default=f"model_{len(models) + 1}",
+                help_text="Name must be unique and use only letters, numbers, and underscores.",
+                icon="🤖",
+                console=console
+            )
         model_names.append(model_name)
         
         # 2.2 Provider selection
@@ -3020,9 +3372,14 @@ def get_template_content(template: str, project_name: str) -> str:
             "Hugging Face models (Open source)",
             "Custom provider integration"
         ]
-        show_options(providers, default=3, descriptions=provider_descriptions)  # OpenRouter as default
-        
-        provider_idx = Prompt.ask("[bold cyan]Provider[/bold cyan]", default="3")
+        show_options(providers, default=3, descriptions=provider_descriptions)
+        provider_idx = prompt_with_help(
+            "Provider",
+            default="3",
+            help_text="Choose the provider for this model. Providers are companies or platforms that host AI models.",
+            icon="🧠",
+            console=console
+        )
         try:
             provider_idx = int(provider_idx) - 1
             if 0 <= provider_idx < len(providers):
@@ -3033,9 +3390,12 @@ def get_template_content(template: str, project_name: str) -> str:
             provider = "openrouter"
         
         # 2.3 Role description
-        role = Prompt.ask(
-            "[bold cyan]Role description[/bold cyan]", 
-            default=f"An AI assistant specialized in {model_name.replace('_', ' ')}"
+        role = prompt_with_help(
+            "Role description",
+            default=f"An AI assistant specialized in {model_name.replace('_', ' ')}",
+            help_text="Describe the model's role or specialty (e.g., 'Research assistant', 'Code generator').",
+            icon="📝",
+            console=console
         )
         
         # 2.4 Model config
@@ -3052,8 +3412,14 @@ def get_template_content(template: str, project_name: str) -> str:
                 "Faster, more economical model"
             ]
             show_options(openai_models, descriptions=openai_descriptions)
-            model_choice = Prompt.ask("[bold cyan]Choose model[/bold cyan]", default="1")
-            
+            model_choice = prompt_with_help(
+                "Choose model",
+                default="1",
+                help_text="Select which OpenAI model to use.",
+                icon="🤖",
+                console=console,
+                choices=[f"{i+1}. {m}" for i, m in enumerate(openai_models)]
+            )
             try:
                 model_idx = int(model_choice) - 1
                 if 0 <= model_idx < len(openai_models):
@@ -3069,7 +3435,13 @@ def get_template_content(template: str, project_name: str) -> str:
             console.print("[dim]Higher values (0.7-1.0): More creative, varied responses[/dim]")
             console.print(f"[bright_blue]{'◆' * 7}[/bright_blue][dim]{'◇' * 3}[/dim] [bright_white]0.7 (Default)[/bright_white]")
             
-            temp_input = Prompt.ask("[bold cyan]Temperature (0.0-1.0)[/bold cyan]", default="0.7")
+            temp_input = prompt_with_help(
+                "Temperature (0.0-1.0)",
+                default="0.7",
+                help_text="Controls randomness/creativity. Lower = more focused, higher = more creative.",
+                icon="🌡️",
+                console=console
+            )
             try:
                 temp_value = float(temp_input)
                 if 0.0 <= temp_value <= 1.0:
@@ -3089,8 +3461,14 @@ def get_template_content(template: str, project_name: str) -> str:
                 "Previous generation model"
             ]
             show_options(anthropic_models, descriptions=anthropic_descriptions, default=2)
-            model_choice = Prompt.ask("[bold cyan]Choose model[/bold cyan]", default="2")
-            
+            model_choice = prompt_with_help(
+                "Choose model",
+                default="2",
+                help_text="Select which Anthropic model to use.",
+                icon="🤖",
+                console=console,
+                choices=[f"{i+1}. {m}" for i, m in enumerate(anthropic_models)]
+            )
             try:
                 model_idx = int(model_choice) - 1
                 if 0 <= model_idx < len(anthropic_models):
@@ -3106,7 +3484,13 @@ def get_template_content(template: str, project_name: str) -> str:
             console.print("[dim]Higher values (0.7-1.0): More creative, varied responses[/dim]")
             console.print(f"[bright_blue]{'◆' * 7}[/bright_blue][dim]{'◇' * 3}[/dim] [bright_white]0.7 (Default)[/bright_white]")
             
-            temp_input = Prompt.ask("[bold cyan]Temperature (0.0-1.0)[/bold cyan]", default="0.7")
+            temp_input = prompt_with_help(
+                "Temperature (0.0-1.0)",
+                default="0.7",
+                help_text="Controls randomness/creativity. Lower = more focused, higher = more creative.",
+                icon="🌡️",
+                console=console
+            )
             try:
                 temp_value = float(temp_input)
                 if 0.0 <= temp_value <= 1.0:
@@ -3169,7 +3553,13 @@ def get_template_content(template: str, project_name: str) -> str:
         
         tool_name = "web_search"
         provider = "serp"
-        max_results = Prompt.ask("[bold]Maximum search results[/bold]", default="5")
+        max_results = prompt_with_help(
+            "Maximum search results",
+            default="5",
+            help_text="How many results should the web search tool return?",
+            icon="🔍",
+            console=console
+        )
         try:
             max_results = int(max_results)
         except ValueError:
@@ -3195,7 +3585,13 @@ def get_template_content(template: str, project_name: str) -> str:
         
         tool_name = "file_handler"
         description = "Read and write files"
-        base_path = Prompt.ask("[bold]Base path for file operations[/bold]", default="./workspace")
+        base_path = prompt_with_help(
+            "Base path for file operations",
+            default="./workspace",
+            help_text="Directory where file operations will be allowed.",
+            icon="📁",
+            console=console
+        )
         
         tools.append({
             "name": tool_name,
@@ -3251,8 +3647,18 @@ def get_template_content(template: str, project_name: str) -> str:
     while add_custom:
         subsection_header("Custom Tool")
         
-        custom_tool_name = Prompt.ask("[bold]Tool name[/bold]")
-        custom_tool_description = Prompt.ask("[bold]Tool description[/bold]")
+        custom_tool_name = prompt_with_help(
+            "Tool name",
+            help_text="Give your tool a unique name (letters, numbers, underscores only).",
+            icon="🔧",
+            console=console
+        )
+        custom_tool_description = prompt_with_help(
+            "Tool description",
+            help_text="Describe what your custom tool does.",
+            icon="📝",
+            console=console
+        )
         
         tools.append({
             "name": custom_tool_name,
@@ -3295,16 +3701,24 @@ def get_template_content(template: str, project_name: str) -> str:
             subsection_header(f"Team #{len(teams) + 1}")
         
         # 4.1 Team name
-        team_name = Prompt.ask(
-            "[bold cyan]Team name[/bold cyan]", 
-            default=f"team_{len(teams) + 1}"
+        team_name = prompt_with_help(
+            "Team name",
+            default=f"team_{len(teams) + 1}",
+            help_text="Name your team (letters, numbers, underscores only).",
+            icon="👥",
+            console=console
         )
         
         # Ensure unique team names
         while team_name in team_names:
             console.print(f"[bold red]Team name '{team_name}' already exists. Please choose another name.[/bold red]")
-            team_name = Prompt.ask("[bold cyan]Team name[/bold cyan]", default=f"team_{len(teams) + 1}")
-        
+            team_name = prompt_with_help(
+                "Team name",
+                default=f"team_{len(teams) + 1}",
+                help_text="Name your team (letters, numbers, underscores only).",
+                icon="👥",
+                console=console
+            )
         team_names.append(team_name)
         current_team["name"] = team_name
         
@@ -3312,7 +3726,13 @@ def get_template_content(template: str, project_name: str) -> str:
         console.print("\n[bold cyan]Select lead model for this team:[/bold cyan]")
         show_options(available_models)
         
-        lead_idx = Prompt.ask("[bold cyan]Lead model (enter number)[/bold cyan]", default="1")
+        lead_idx = prompt_with_help(
+            "Lead model",
+            default="1",
+            help_text="Select the lead model for this team. This model will be the entry point for the team.",
+            icon="🤖",
+            console=console,
+        )
         try:
             lead_idx = int(lead_idx) - 1
             if 0 <= lead_idx < len(available_models):
@@ -3426,7 +3846,13 @@ def get_template_content(template: str, project_name: str) -> str:
                 console.print("[dim]3. Push-based (source pushes to target)[/dim]")
                 console.print("[dim]4. No flow[/dim]")
                 
-                flow_type = Prompt.ask("[bold]Flow type[/bold]", default="1")
+                flow_type = prompt_with_help(
+                    "Flow type",
+                    default="1",
+                    choices=["1", "2", "3", "4"],
+                    icon="🔀",
+                    console=console
+                )
                 
                 flow_description = ""
                 if flow_type == "1":

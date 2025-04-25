@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Set, Any
 
 from glue.tools.tool_base import Tool, ToolPermission
 from glue.tools.web_search_tool import WebSearchTool
+from glue.tools.delegate_task_tool import DelegateTaskTool
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class FileHandlerTool(Tool):
 # Register additional tools
 register_tool_class("code_interpreter", CodeInterpreterTool)
 register_tool_class("file_handler", FileHandlerTool)
+register_tool_class("delegate_task", DelegateTaskTool)
 
 def get_tool_class(name: str) -> Any:
     """

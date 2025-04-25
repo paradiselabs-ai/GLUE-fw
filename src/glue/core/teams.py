@@ -357,26 +357,17 @@ class Team:
                 # Not a valid tool call format, treat as regular response
                 return response_content
 
-            # --- TEMPORARILY COMMENTED OUT TO BYPASS VALIDATION ERROR ---
-            # # Store the parsed tool call in history
-            # # Ensure this matches the ToolCall schema in schemas.py
-            # tool_call_object = ToolCall(
-            #     id=tool_call_id,  # Use 'id'
-            #     function={       # Nest under 'function'
-            #         "name": tool_name, 
-            #         "arguments": json.dumps(arguments)
-            #     }
-            # )
-            # self.conversation_history.append(Message(
-            #     role="assistant",
-            #     content=None, # Content is None when tool_calls are present
-            #     tool_calls=[tool_call_object] # Pass the created object
-            # ))
-            # --- END TEMPORARY COMMENT OUT ---
-
+            # Fallback: if the model hasn't had this tool added, wrap the team-level tool
+            if tool_name not in source.tools and tool_name in self._tools:
+                try:
+                    source.add_tool_sync(tool_name, self._tools[tool_name])
+                    logger.debug(f"Added fallback wrapper for '{tool_name}' to model {source.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to add fallback wrapper for '{tool_name}' to model {source.name}: {e}")
+            
             # Check if the tool exists in the source model's context
             tool_instance = source.tools.get(tool_name)
-            if tool_instance and hasattr(tool_instance, "execute"): # Ensure tool is executable
+            if tool_instance and (hasattr(tool_instance, "execute") or callable(tool_instance)): # Ensure tool is executable or callable
                 try:
                     # Parameter normalization
                     # This section normalizes parameter names by mapping common alternative names
@@ -401,8 +392,24 @@ class Team:
                     arguments_with_context['calling_model'] = source.name
                     arguments_with_context['calling_team'] = self.name
                     
-                    # Execute the tool using dictionary unpacking for arguments with context
-                    tool_result_content = await tool_instance.execute(**arguments_with_context)
+                    # Determine how to call the tool: wrapper function or .execute method
+                    if callable(tool_instance) and not hasattr(tool_instance, "execute"):
+                        tool_callable = tool_instance
+                    else:
+                        tool_callable = tool_instance.execute
+                    tool_result_content = await tool_callable(**arguments_with_context)
+                    # If the tool returned an error payload, abort and return the error message
+                    if isinstance(tool_result_content, dict) and tool_result_content.get("success") is False:
+                        error_msg = tool_result_content.get("error", "Unknown tool error.")
+                        logger.error(f"Tool '{tool_name}' reported error: {error_msg}")
+                        # Log error in history
+                        self.conversation_history.append(Message(
+                            role="tool",
+                            tool_call_id=tool_call_id,
+                            name=tool_name,
+                            content=error_msg
+                        ))
+                        return error_msg
                     tool_executed = True
                     logger.info(f"Executed tool '{tool_name}' successfully.")
 
@@ -928,8 +935,10 @@ class Team:
                         logger.info(f"Internal team message detected. Broadcasting to all members of team {self.name}.")
                         recipients = list(self.models.values())
                     elif target_model_name and target_model_name in self.models:
-                        # Message targeted at a specific model (internal or external)
+                        # Message targeted at a specific model
                         logger.debug(f"Message targeted at specific model: {target_model_name}")
+                        # Route only to the specified model
+                        recipients = [self.models[target_model_name]]
                     elif self.config.lead and self.config.lead in self.models:
                         # Default: External message or internal without specific target -> Route to lead
                         logger.debug(f"Routing message from {sender_name} to lead model: {self.config.lead}")

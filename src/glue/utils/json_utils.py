@@ -26,7 +26,7 @@ PARTIAL_FENCED_JSON_REGEX = re.compile(
 UNWANTED_PREFIXES = [r"<\|\w+\|>"]
 
 # Valid tool names in GLUE framework
-VALID_TOOL_NAMES = {"web_search", "file_handler", "code_interpreter", "communicate", "search_web"}
+VALID_TOOL_NAMES = {"web_search", "file_handler", "code_interpreter", "communicate", "search_web", "delegate_task"}
 
 def strip_unwanted_prefixes(text: str) -> str:
     """

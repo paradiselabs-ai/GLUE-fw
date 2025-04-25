@@ -20,6 +20,7 @@ from ..magnetic.field import MagneticField
 from glue.tools.web_search_tool import WebSearchTool
 from glue.tools.file_handler_tool import FileHandlerTool
 from glue.tools.code_interpreter_tool import CodeInterpreterTool
+from glue.tools.delegate_task_tool import DelegateTaskTool
 
 
 # Set up logging
@@ -228,6 +229,12 @@ class GlueApp:
                         self.tools[tool_name] = tool_instance
                     except Exception:
                         self.tools[tool_name] = WebSearchTool()
+                elif tool_name == "delegate_task":
+                    try:
+                        tool_instance = DelegateTaskTool(app=self)
+                        self.tools[tool_name] = tool_instance
+                    except Exception:
+                        self.tools[tool_name] = DelegateTaskTool(app=self)
                 elif tool_name == "file_handler":
                     try:
                         tool_instance = FileHandlerTool(**tool_config) if isinstance(tool_config, dict) else FileHandlerTool()
@@ -297,6 +304,15 @@ class GlueApp:
                     logger.debug(f"Storing config for unknown/custom tool: {tool_name}")
                     self.tools[tool_name] = tool_config
         
+        # Ensure delegate_task is registered even if not in config
+        if "delegate_task" not in self.tools:
+            try:
+                delegate_tool = DelegateTaskTool(app=self)
+                self.tools["delegate_task"] = delegate_tool
+                logger.info("Registered delegate_task tool globally")
+            except Exception as e:
+                logger.warning(f"Failed to register delegate_task tool globally: {e}")
+        
         # Set up teams
         magnetize_dict = config.get("magnetize", {})
         if isinstance(magnetize_dict, dict):
@@ -331,6 +347,9 @@ class GlueApp:
                     
                     # Add tools to the team
                     tools_list = team_config.get("tools", [])
+                    # Automatically include delegate_task for all team leads
+                    if team_config.get("lead"):
+                        tools_list = list(set(tools_list + ["delegate_task"]))
                     for tool_name in tools_list:
                         if tool_name in self.tools:
                             # Add the tool to the team
@@ -352,16 +371,17 @@ class GlueApp:
                                 except Exception as e:
                                     logger.warning(f"Failed to add tool {tool_name} to model {lead_model_name}: {e}")
                             
-                            # Add the tool to all member models
-                            for member_name in member_names:
-                                member_model = self.models.get(member_name)
-                                if member_model and hasattr(member_model, 'add_tool_sync'):
-                                    # Check if tool is already in model's tools to avoid duplicate logging
-                                    tool_already_added = hasattr(member_model, 'tools') and tool_name in member_model.tools
-                                    if not tool_already_added:
-                                        member_model.add_tool_sync(tool_name, self.tools[tool_name])
-                                    else:
-                                        member_model.add_tool_sync(tool_name, self.tools[tool_name])  # Will be skipped internally
+                            # Add the tool to all member models (but delegate_task only for leads)
+                            if tool_name != "delegate_task":
+                                for member_name in member_names:
+                                    member_model = self.models.get(member_name)
+                                    if member_model and hasattr(member_model, 'add_tool_sync'):
+                                        # Check if tool is already in model's tools to avoid duplicate logging
+                                        already = hasattr(member_model, 'tools') and tool_name in member_model.tools
+                                        if not already:
+                                            member_model.add_tool_sync(tool_name, self.tools[tool_name])
+                                        else:
+                                            member_model.add_tool_sync(tool_name, self.tools[tool_name])  # Will be skipped internally
                             if tool_name != "communicate":
                                 logger.info(f"Added tool {tool_name} to team {team_name}")
                     
