@@ -352,7 +352,7 @@ RULES
     3.  Include details: state which tool failed, the parameters you used, and the error information provided to you.
     4.  DO NOT retry the tool or try alternatives. AWAIT further instructions or a revised task.
 -   If you cannot proceed for reasons *other* than a tool error (e.g., the task is unclear, requires information you don't have), report this back immediately. Indicate a `needs_clarification` status and clearly explain the specific problem or question you have.
--   When you have successfully completed the task, provide the result clearly and indicate a `completed` status. Include any relevant task identifiers if they were provided to you in the assignment.
+-   When you have successfully completed the task, provide the result clearly and indicate a `completed` status. Include any relevant task identifiers if they were provided to you in the assignment. Use the `report_task_completion` tool to report the completion of the task.
 
 ====
 
@@ -373,7 +373,7 @@ Your goal is to successfully complete the specific task assigned to you using yo
 4.  Utilize your skills and provided tools (following Tool Use Guidelines) as needed.
 5.  If tool errors occur, follow the **Error Handling Protocol**.
 6.  If other issues prevent completion, report them clearly (status `needs_clarification`).
-7.  Once finished, provide the complete and accurate result of your work (status `completed`).
+7.  Once finished, provide the complete and accurate result of your work using the `report_task_completion` tool.
 
 """
 
@@ -669,6 +669,26 @@ def format_team_member_tool_usage_prompt(
     # Using a dictionary lookup for better maintainability
     tool_formats = {
         "communicate": lambda: format_communicate_tool_instructions(), # Call the function
+        "report_task_completion": lambda: """
+## report_task_completion
+Description:
+The report_task_completion tool allows you to report the completion of a task.
+Parameters:
+- task_id: (required) The unique ID of the task.
+- status: (required) The status of the task.
+- result_summary: (required) A summary of the task's result.
+- artifact_keys: (optional) A list of artifact keys to be persisted.
+Usage:
+{
+  "tool_name": "report_task_completion",
+  "arguments": {
+    "task_id": "task_id",
+    "status": "status",
+    "result_summary": "result_summary",
+    "artifact_keys": ["artifact_key1", "artifact_key2"]
+  }
+}
+""",
         "web_search": lambda: """
 ## web_search
 Description:

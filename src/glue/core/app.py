@@ -21,6 +21,7 @@ from glue.tools.web_search_tool import WebSearchTool
 from glue.tools.file_handler_tool import FileHandlerTool
 from glue.tools.code_interpreter_tool import CodeInterpreterTool
 from glue.tools.delegate_task_tool import DelegateTaskTool
+from glue.tools.report_task_completion_tool import ReportTaskCompletionTool
 
 
 # Set up logging
@@ -313,6 +314,15 @@ class GlueApp:
             except Exception as e:
                 logger.warning(f"Failed to register delegate_task tool globally: {e}")
         
+        # Ensure report_task_completion is registered even if not in config
+        if "report_task_completion" not in self.tools:
+            try:
+                report_tool = ReportTaskCompletionTool(app=self)
+                self.tools["report_task_completion"] = report_tool
+                logger.info("Registered report_task_completion tool globally")
+            except Exception as e:
+                logger.warning(f"Failed to register report_task_completion tool globally: {e}")
+        
         # Set up teams
         magnetize_dict = config.get("magnetize", {})
         if isinstance(magnetize_dict, dict):
@@ -347,6 +357,8 @@ class GlueApp:
                     
                     # Add tools to the team
                     tools_list = team_config.get("tools", [])
+                    # Automatically include report_task_completion for all members
+                    tools_list = list(set(tools_list + ["report_task_completion"]))
                     # Automatically include delegate_task for all team leads
                     if team_config.get("lead"):
                         tools_list = list(set(tools_list + ["delegate_task"]))
