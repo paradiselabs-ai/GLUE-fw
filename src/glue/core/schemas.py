@@ -128,6 +128,88 @@ class Message(BaseModel):
         return v
 
 
+# ==================== Agent Output Models ====================
+class ParseAnalyzeOutput(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "thought_process": "Parsed objectives and constraints from task description.",
+                "analysis": {"objectives": ["obj1", "obj2"], "constraints": ["constraint1"]}
+            }
+        }
+    )
+    thought_process: str = Field(..., description="The agent's reasoning about the task requirements.")
+    analysis: Dict[str, Any] = Field(..., description="Structured analysis of objectives, constraints, and key information.")
+
+class PlanPhaseOutput(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "substeps": ["Step 1", "Step 2", "Step 3"],
+                "tool_requirements": ["tool1", "tool2"],
+                "estimated_confidence": "high"
+            }
+        }
+    )
+    substeps: List[str] = Field(..., description="Sequential substeps to execute the task.")
+    tool_requirements: List[str] = Field(..., description="List of tools required for the substeps.")
+    estimated_confidence: str = Field(..., description="Estimated confidence level of the plan (high/medium/low).")
+
+class ToolSelectionOutput(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "selected_tool_name": "performTaskStub",
+                "tool_parameters": {"parameter": "value"}
+            }
+        }
+    )
+    selected_tool_name: str = Field(..., description="Name of the tool the agent decided to use.")
+    tool_parameters: Dict[str, Any] = Field(..., description="Parameters for invoking the selected tool.")
+
+class MemoryDecisionOutput(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "save_to_memory": True,
+                "analysis": "Identified key details to store."
+            }
+        }
+    )
+    save_to_memory: bool = Field(..., description="Whether to save the result into curated memory.")
+    analysis: Optional[str] = Field(None, description="Summary content to save to memory if save_to_memory is true.")
+
+class SelfEvalOutput(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "evaluation_summary": "Result aligns with constraints but misses edge case.",
+                "consistency_check": "Passed",
+                "alignment_check": "Partial Fail",
+                "confidence_level": "MediumConfidence",
+                "error_detected": False
+            }
+        }
+    )
+    evaluation_summary: str = Field(..., description="Summary of the self-evaluation.")
+    consistency_check: str = Field(..., description="Result of consistency check.")
+    alignment_check: str = Field(..., description="Result of alignment check.")
+    confidence_level: str = Field(..., description="Confidence level (HighConfidence/MediumConfidence/LowConfidence/CriticalError).")
+    error_detected: bool = Field(..., description="Whether an error was detected during evaluation.")
+
+class FormatResultOutput(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "final_answer": "Here is the final result with context.",
+                "supporting_context": ["Entry 1", "Entry 2"]
+            }
+        }
+    )
+    final_answer: Any = Field(..., description="The agent's final formatted answer.")
+    supporting_context: List[str] = Field(..., description="List of context entries used to produce the final answer.")
+
+
 # ==================== Configuration Models ====================
 class ModelConfig(BaseModel):
     """Configuration for an LLM model"""

@@ -7,22 +7,13 @@ import logging
 from pydantic import BaseModel
 import uuid
 import json
-import copy
-from enum import Enum
 
 from .types import AdhesiveType, TeamConfig, ToolResult, FlowType
-from .schemas import Message, ToolCall
+from .schemas import Message
 from ..utils.json_utils import extract_json
-from ..prompts import format_team_communication_prompt
-
-# Import Flow class conditionally to avoid circular imports
-try:
-    from .flow import Flow
-except ImportError:
-    Flow = Any  # Type hint for Flow
 
 from .model import Model
-from .agent_loop import AgentLoop, TeamLoopCoordinator, AgentState
+from .agent_loop import TeamMemberAgentLoop, TeamLeadAgentLoop
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
@@ -39,15 +30,6 @@ TOOL_PARAM_MAPPINGS = {
         "query_text": "query",    # Maps 'query_text' parameter to 'query'
         "search_query": "query"   # Maps 'search_query' parameter to 'query'
     },
-    "communicate": {
-        "recipient_type": "target_type",     # Maps 'recipient_type' parameter to 'target_type'
-        "recipient": "target_name",          # Maps 'recipient' parameter to 'target_name'
-        "content": "message",                # Maps 'content' parameter to 'message'
-        "text": "message",                   # Maps 'text' parameter to 'message'
-        "recipient_name": "target_name",     # Maps 'recipient_name' parameter to 'target_name'
-        "target": "target_name",             # Maps 'target' parameter to 'target_name'
-        "type": "target_type"                # Maps 'type' parameter to 'target_type'
-    }
     # Add mappings for other tools as needed
 }
 
@@ -88,9 +70,8 @@ class Team:
         self.pending_broadcasts: Dict[str, asyncio.Future] = {} # For tracking broadcast responses
         self.response_handlers = {}
 
-        # Agent loop management
-        self.agent_loops: Dict[str, AgentLoop] = {}
-        self.loop_coordinator: Optional[TeamLoopCoordinator] = None
+        # Track active TeamMember and TeamLead loops
+        self.agent_loops: Dict[str, Any] = {}
         
         # Reference to parent app
         self.app = None
@@ -240,15 +221,12 @@ class Team:
         result: ToolResult,
         model_name: Optional[str] = None
     ) -> None:
-        """Share a tool result with the team
-        
-        Args:
-            tool_name: Name of the tool that generated the result
-            result: The tool result to share
-            model_name: Optional name of the model that used the tool
-        """
-        # If a specific model is provided, use its adhesives
-        if model_name and model_name in self.models:
+        """Share a tool result with the team"""
+        # For task completion reports, always use GLUE adhesive
+        if tool_name == "report_task_completion":
+            result.adhesive = AdhesiveType.GLUE
+        # If a specific model is provided, use its adhesives for other tools
+        elif model_name and model_name in self.models:
             model = self.models[model_name]
             if hasattr(model, 'adhesives') and model.adhesives:
                 # Use the first adhesive defined in the model
@@ -492,51 +470,130 @@ class Team:
         # Find source and target models
         source = self.models.get(from_model)
         target = self.models.get(to_model)
-        
         if not source or not target:
             raise ValueError("Source or target model not found in team")
-            
+        # For non-lead recipients: record the notification, then invoke their generate() to initialize them and get a response
+        lead_name = getattr(self.config, 'lead', None)
+        if lead_name and to_model != lead_name:
+            # Prepare the content string
+            content_str = message if isinstance(message, str) else json.dumps(message)
+            # Record the incoming assignment or notification
+            self.conversation_history.append(Message(
+                role="assistant",
+                name=from_model,
+                content=content_str
+            ))
+            # Let the member generate a response (this triggers model initialization)
+            raw_response = await target.generate(content_str)
+            # Record the member's response
+            self.conversation_history.append(Message(
+                role="assistant",
+                name=to_model,
+                content=raw_response
+            ))
+            logger.info(f"Direct communication response from {to_model}: {raw_response[:100]}...")
+            return raw_response
+        
+        # For lead recipients, record the dict message and let the lead generate an acknowledgement
+        if isinstance(message, dict):
+            content_str = json.dumps(message)
+            # Record incoming notification from member
+            self.conversation_history.append(Message(
+                role="assistant",
+                name=from_model,
+                content=content_str
+            ))
+            # Let the lead generate an acknowledgement or process
+            raw_response = await target.generate(content_str)
+            # Record lead's response
+            self.conversation_history.append(Message(
+                role="assistant",
+                name=to_model,
+                content=raw_response
+            ))
+            logger.info(f"Direct communication response from {to_model}: {raw_response[:100]}...")
+            return raw_response
         logger.info(f"Direct communication initiated: {from_model} -> {to_model}")
         
         # Prepare the message content
         message_content = message if isinstance(message, str) else json.dumps(message)
         
-        # --- Update history for the target model --- 
-        # The target model receives the message as if from the source model (assistant role?)
-        # Let's treat it as a specific instruction or input from the teammate.
-        # Using 'user' role might be confusing. Let's stick to 'assistant' with name.
+        # --- Update history for the target model ---
         history_for_target = self.conversation_history.copy()
+        # Treat incoming internal message as user input for the lead model
         history_for_target.append(Message(
-            role="assistant", # Message from another assistant
-            name=from_model,  # Attribute to the source model
+            role="user",
+            name=from_model,
             content=message_content
         ))
         
-        # --- Target model generates a response --- 
-        target_response_content = await target.generate(
-            prompt=None, # Use history
-            history=history_for_target
-        )
+        # --- Target model generates a response, including tool calls ---
+        # Use generate_response to enable tool call handling
+        # 1. Model generates an initial response, which may include a tool call
+        raw_response = await target.generate_response(history_for_target)
 
-        # --- Log the exchange in the main team history --- 
-        # 1. Log the message sent from source model (as part of the communicate tool call)
-        #    This is typically handled when the communicate tool call is logged.
-        
-        # 2. Log the response received from the target model 
-        #    Log it as an 'assistant' message attributed to the target model
+        # 2. Check for an embedded tool call in the response
+        tool_call_data = None
+        if isinstance(raw_response, str):
+            tool_call_data = extract_json(raw_response)
+
+        if tool_call_data and isinstance(tool_call_data, dict):
+            # Parse tool name and arguments
+            if "tool_name" in tool_call_data and "arguments" in tool_call_data:
+                tool_name = tool_call_data["tool_name"]
+                arguments = tool_call_data["arguments"]
+            elif len(tool_call_data) == 1:
+                tool_name, arguments = next(iter(tool_call_data.items()))
+            else:
+                tool_name = None
+                arguments = {}
+
+            if tool_name:
+                # Ensure the tool is registered on the model
+                if tool_name not in target.tools and tool_name in self._tools:
+                    try:
+                        target.add_tool_sync(tool_name, self._tools[tool_name])
+                    except Exception:
+                        pass
+                # Look up the tool callable
+                tool_inst = target.tools.get(tool_name)
+                # Prepare arguments with calling context
+                args_ctx = dict(arguments)
+                args_ctx.update({"calling_model": to_model, "calling_team": self.name})
+                # Choose how to call it
+                if callable(tool_inst) and not hasattr(tool_inst, "execute"):
+                    tool_func = tool_inst
+                else:
+                    tool_func = tool_inst.execute
+                # Invoke the tool
+                tool_result = await tool_func(**args_ctx)
+                # Record the tool invocation in history
+                self.conversation_history.append(Message(
+                    role="tool",
+                    name=tool_name,
+                    content=str(tool_result)
+                ))
+                # Share the result with the team
+                tr = ToolResult(tool_name=tool_name, result=tool_result)
+                await self.share_result(tool_name, tr, model_name=to_model)
+                # Let the model process the tool result to produce a final answer
+                final_response = await target.process_tool_result(tr)
+                self.conversation_history.append(Message(
+                    role="assistant",
+                    name=to_model,
+                    content=final_response
+                ))
+                logger.info(f"Direct communication tool-handled response from {to_model}: {final_response[:100]}...")
+                return final_response
+
+        # No tool call detected, log the raw assistant response
         self.conversation_history.append(Message(
             role="assistant",
-            name=to_model, # Attributed to the target model
-            content=target_response_content
+            name=to_model,
+            content=raw_response
         ))
-        
-        # --- Potentially handle tool calls within the target's response --- 
-        # For now, we assume the target's response is final text. 
-        # If the target model *also* needs to call tools, this logic would need extension.
-        # Let's keep it simple: the direct_communication response is the text generated.
-
-        logger.info(f"Direct communication response from {to_model}: {target_response_content[:100]}...")
-        return target_response_content
+        logger.info(f"Direct communication response from {to_model}: {raw_response[:100]}...")
+        return raw_response
 
     def add_member_sync(
         self,
@@ -583,42 +640,42 @@ class Team:
         self.updated_at = datetime.now()
         logger.info(f"Added model {model.name} to team {self.name} with role {role}")
 
-    async def create_agent_loops(self) -> None:
-        """Create agent loops for all team members and set up the coordinator"""
-        if not self.loop_coordinator:
-            self.loop_coordinator = TeamLoopCoordinator(self.name)
-            
-        # Create agent loops for each model
-        for agent_id, model in self.models.items():
-            # Skip if agent loop already exists
-            if agent_id in self.agent_loops:
-                continue
-                
-            # Create new agent loop
-            agent_loop = AgentLoop(agent_id, self.name, model)
-            
-            # Register tools
-            for tool_name, tool_func in self._tools.items():
-                agent_loop.register_tool(tool_name, tool_func)
-                
-            # Add to our tracking and the coordinator
-            self.agent_loops[agent_id] = agent_loop
-            self.loop_coordinator.add_agent(agent_loop)
-            
-            logger.info(f"Created agent loop for {agent_id} in team {self.name}")
-            
     async def start_agent_loops(self, initial_input: Optional[str] = None) -> None:
-        """Start all agent loops in the team"""
-        # Ensure agent loops are created
-        await self.create_agent_loops()
-        
-        # Start the coordinator
-        if self.loop_coordinator:
-            await self.loop_coordinator.start()
-            logger.info(f"Started agent loops for team {self.name}")
-        else:
-            logger.error(f"Cannot start agent loops: coordinator not initialized for team {self.name}")
-            
+        """Start core agent loops using simplified stubs for Team Lead and Team Member agents."""
+        logger.info(f"Starting core agent loops for team {self.name}")
+        # Start Team Lead loop if a goal is provided
+        if self.config.lead and initial_input:
+            # Pass the execute coroutine of the delegate_task tool to the TeamLeadAgentLoop
+            delegate_tool_exec = self._tools.get("delegate_task")
+            if hasattr(delegate_tool_exec, "execute"):
+                delegate_tool_exec = delegate_tool_exec.execute
+            lead_loop = TeamLeadAgentLoop(
+                self.config.lead,
+                self.name,
+                delegate_tool_exec,
+                self.config.members
+            )
+            # Track and start TeamLead loop
+            self.agent_loops[self.config.lead] = lead_loop
+            asyncio.create_task(lead_loop.start(parent_task_id=self.name, goal_description=initial_input))
+            logger.info(f"Started Team Lead loop for {self.config.lead}")
+        # Start Team Member loops
+        for member_id in self.config.members:
+            member_loop = TeamMemberAgentLoop(
+                member_id,
+                self.name,
+                self._tools.get("report_task_completion").execute,
+                agent_llm=self.models.get(member_id)
+            )
+            # Register all available tools in the member loop
+            for tool_name, tool in self._tools.items():
+                tool_callable = getattr(tool, 'execute', tool)
+                member_loop.register_tool(tool_name, tool_callable)
+            # Track and start TeamMember loop
+            self.agent_loops[member_id] = member_loop
+            asyncio.create_task(member_loop.start(self.fetch_task_for_member))
+            logger.info(f"Started Team Member loop for {member_id}")
+
     def get_agent_status(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
         """Get the status of agent loops
         
@@ -626,20 +683,17 @@ class Team:
             agent_id: Optional specific agent ID to get status for
             
         Returns:
-            Status information
+            Status information 
         """
         if agent_id:
             if agent_id in self.agent_loops:
-                return self.agent_loops[agent_id].get_status()
-            else:
-                return {"error": f"Agent {agent_id} not found"}
-        else:
-            # Get status of all agents
-            return {
-                "team": self.name,
-                "agents": {agent_id: loop.get_status() for agent_id, loop in self.agent_loops.items()},
-                "coordinator": self.loop_coordinator.get_status() if self.loop_coordinator else None
-            }
+                return self.agent_loops[agent_id].state
+            return {"error": f"Agent {agent_id} not found"}
+        # Get status of all agents
+        return {
+            "team": self.name,
+            "agents": {aid: loop.state for aid, loop in self.agent_loops.items()}
+        }
             
     async def terminate_agent_loops(self, reason: str = "requested") -> None:
         """Terminate all agent loops in the team
@@ -647,13 +701,15 @@ class Team:
         Args:
             reason: Reason for termination
         """
-        if self.loop_coordinator:
-            self.loop_coordinator.terminate(reason)
-            logger.info(f"Terminated agent loops for team {self.name}: {reason}")
-        
-        # Reset agent loops
+        # Terminate all tracked loops
+        for loop in self.agent_loops.values():
+            try:
+                loop.terminate(reason)
+            except Exception:
+                pass
+        logger.info(f"Terminated agent loops for team {self.name}: {reason}")
+        # Reset tracking
         self.agent_loops = {}
-        self.loop_coordinator = None
 
     # ==================== Magnetic Field Methods ====================
     def set_relationship(self, team_name: str, relationship: str) -> None:
@@ -909,6 +965,25 @@ class Team:
             try:
                 # Get message from queue
                 message, sender = await self.message_queue.get()
+                # Route internal messages through direct_communication if they target a model
+                metadata = message.get("metadata", {}) if isinstance(message, dict) else {}
+                internal = metadata.get("internal", False)
+                target_model_name = metadata.get("target_model")
+                source_model_name = metadata.get("source_model")
+                if internal and target_model_name:
+                    # Extract raw payload (could be nested dict)
+                    payload = message.get("content") if isinstance(message, dict) else message
+                    try:
+                        await self.direct_communication(
+                            source_model_name or metadata.get("source_model"),
+                            target_model_name,
+                            payload
+                        )
+                    except Exception as e:
+                        logger.error(f"Error in direct_communication for internal message: {e}")
+                    self.message_queue.task_done()
+                    continue
+                
                 sender_name = sender.name if sender else "internal"
                 
                 try:
@@ -951,6 +1026,16 @@ class Team:
                     broadcast_responses = [] # List to store responses for this broadcast
                     for recipient_model in recipients:
                         try:
+                            # Bypass LLM for internal dict notifications (e.g. task_assigned/task_completed)
+                            if metadata.get("internal") and isinstance(message.get("content"), dict):
+                                # Record the original notification
+                                self.conversation_history.append(Message(
+                                    role="system",
+                                    content=json.dumps(message.get("content"))
+                                ))
+                                logger.debug(f"Skipped LLM generation for internal dict message to {recipient_model.name}")
+                                continue
+                         
                             # Create a formatted message for the recipient model
                             model_message_content = f"Message from {source_model_name or sender_name}: {content}"
                             model_message = Message(
@@ -959,9 +1044,10 @@ class Team:
                             )
                             
                             logger.debug(f"Generating response from recipient model {recipient_model.name}")
-                            # Generate response (fire and forget for broadcasts, or handle response later)
-                            # For simplicity now, we just let the model process it. Response handling might need refinement.
-                            response = await recipient_model.generate_response([model_message]) 
+                            # Generate the model's response
+                            raw_response = await recipient_model.generate_response([model_message])
+                            # Invoke any JSON-encoded tool calls and refine the response via helper
+                            response = await self._invoke_tool_and_refine_response(recipient_model, raw_response)
                             
                             # Store interaction in conversation history (adjust roles as needed)
                             if is_internal_broadcast:
@@ -1250,69 +1336,60 @@ class Team:
         self.updated_at = datetime.now()
         logger.info(f"Set {relationship} relationship with team {team_name}")
         
-    async def initiate_communication(self, target_team: str, content: str, source_model: Optional[str] = None) -> bool:
-        """Initiate communication with another team.
-        
-        This method allows a model to proactively communicate with another team.
-        
-        Args:
-            target_team: Name of the target team
-            content: Content to send
-            source_model: Optional name of the source model
-            
-        Returns:
-            True if communication was initiated successfully, False otherwise
+
+    async def _invoke_tool_and_refine_response(self, model: Any, raw_response: str) -> str:
         """
-        # Use lead model if no source model specified
-        if not source_model:
-            source_model = self.config.lead
-            
-        if not source_model or source_model not in self.models:
-            logger.warning(f"No valid source model for communication in team {self.name}")
-            return False
-        
-        # Get context for communication
-        communication_context = f"From Team: {self.name}\nSource Model: {source_model}"
-        
-        # Get previous communication if any
-        previous_communication = ""
-        if hasattr(self, "communication_history") and target_team in self.communication_history:
-            # Get last 3 messages from history
-            last_messages = self.communication_history[target_team][-3:]
-            if last_messages:
-                previous_communication = "\n".join([
-                    f"{msg.get('metadata', {}).get('source_team', 'Unknown')}: {msg.get('content', '')}"
-                    for msg in last_messages
-                ])
-        
-        # Format the communication using our prompt template
-        formatted_content = format_team_communication_prompt(
-            target_team=target_team,
-            communication_context=communication_context,
-            previous_communication=previous_communication
-        )
-        
-        # Add the actual message content
-        formatted_content += f"\n{content}"
-            
-        # Create message
-        message = {
-            "content": formatted_content,
-            "metadata": {
-                "source_team": self.name,
-                "target_team": target_team,
-                "source_model": source_model,
-                "timestamp": datetime.now().isoformat(),
-                "initiated": True
-            }
-        }
-        
-        # Store in communication history
-        if not hasattr(self, "communication_history"):
-            self.communication_history = {}
-        if target_team not in self.communication_history:
-            self.communication_history[target_team] = []
-        self.communication_history[target_team].append(message)
-        
-        # Send information to target team
-        return await self.send_information(target_team, message)
+        Check a model's raw_response for JSON tool calls, execute if found,
+        share result, and let the model process the tool result to produce final response.
+        Otherwise return raw_response.
+        """
+        from ..utils.json_utils import extract_json
+        # Only parse string responses
+        if not isinstance(raw_response, str):
+            return raw_response
+        tool_call_data = extract_json(raw_response)
+        if isinstance(tool_call_data, dict):
+            # Parse tool name and arguments
+            if "tool_name" in tool_call_data and "arguments" in tool_call_data:
+                tool_name = tool_call_data["tool_name"]
+                arguments = tool_call_data["arguments"]
+            elif len(tool_call_data) == 1:
+                tool_name, arguments = next(iter(tool_call_data.items()))
+            else:
+                return raw_response
+            # Ensure tool on model
+            if tool_name not in model.tools and tool_name in self._tools:
+                try:
+                    model.add_tool_sync(tool_name, self._tools[tool_name])
+                except Exception:
+                    pass
+            tool_inst = model.tools.get(tool_name)
+            # Prepare context for call
+            ctx = dict(arguments)
+            ctx.update({"calling_model": model.name, "calling_team": self.name})
+            # Select callable
+            if callable(tool_inst) and not hasattr(tool_inst, 'execute'):
+                tool_func = tool_inst
+            else:
+                tool_func = tool_inst.execute
+            # Execute tool
+            tool_result = await tool_func(**ctx)
+            # Log and share result
+            self.conversation_history.append(Message(role="tool", name=tool_name, content=str(tool_result)))
+            tr = ToolResult(tool_name=tool_name, result=tool_result)
+            await self.share_result(tool_name, tr, model_name=model.name)
+            # Let model process tool result
+            final = await model.process_tool_result(tr)
+            self.conversation_history.append(Message(role="assistant", name=model.name, content=final))
+            logger.info(f"Tool {tool_name} applied for {model.name}, refined response generated.")
+            return final
+        return raw_response
+
+    async def fetch_task_for_member(self, agent_id: str) -> dict:
+        """Fetch next uncompleted task for the given team member."""
+        while True:
+            # Look for tasks assigned to this member without completion
+            for task in list(self.shared_results.values()):
+                if isinstance(task, dict) and task.get('assigned_to') == agent_id and not task.get('completion'):
+                    return task
+            await asyncio.sleep(0.5)

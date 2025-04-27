@@ -248,58 +248,6 @@ class GlueApp:
                         self.tools[tool_name] = tool_instance
                     except Exception:
                         self.tools[tool_name] = CodeInterpreterTool()
-                elif tool_name == "communicate":
-                    # Explicitly instantiate CommunicateTool
-                    try:
-                        # Try different import paths to handle various project structures
-                        communicate_tool = None
-                        
-                        # First try direct import
-                        try:
-                            from glue.tools.communicate import CommunicateTool
-                            communicate_tool = CommunicateTool(app=self)
-                        except ImportError:
-                            logger.debug("Failed to import CommunicateTool from glue.tools.communicate, trying relative import...")
-                        
-                        # Try relative import if direct import fails
-                        if communicate_tool is None:
-                            try:
-                                from ..tools.communicate import CommunicateTool
-                                communicate_tool = CommunicateTool(app=self)
-                            except ImportError:
-                                logger.debug("Failed to import CommunicateTool from ..tools.communicate, trying src path...")
-                                
-                        # Try src path as last resort
-                        if communicate_tool is None:
-                            try:
-                                from src.glue.tools.communicate import CommunicateTool
-                                communicate_tool = CommunicateTool(app=self)
-                            except ImportError:
-                                logger.error("All import attempts for CommunicateTool failed.")
-                                raise ImportError("Could not import CommunicateTool from any known location.")
-                        
-                        # Only proceed if we successfully created a tool instance
-                        if communicate_tool is not None:
-                            # Add to tools dictionary
-                            self.tools["communicate"] = communicate_tool
-                            
-                            # Add to all teams - but check if the team has models first
-                            for team in self.teams.values():
-                                if team.models:  # Only add if the team has models
-                                    team._tools["communicate"] = communicate_tool
-                                    # Add to each model in the team without redundant logging
-                                    for model_name, model in team.models.items():
-                                        if hasattr(model, 'add_tool_sync') and callable(model.add_tool_sync):
-                                            model.add_tool_sync("communicate", communicate_tool)
-                                            logger.debug(f"Added tool communicate to model {model_name} in team {team.name}")
-                        
-                            logger.info("Registered communication with all teams")
-                        else:
-                            logger.warning("Failed to create CommunicateTool instance.")
-                    except ImportError as ie:
-                        logger.warning(f"Communication tool not available: {ie}, skipping registration")
-                    except Exception as e:
-                        logger.warning(f"Error registering communication tool: {e}, skipping registration")
                 else:
                     # For other custom or unknown tools, store the config
                     logger.debug(f"Storing config for unknown/custom tool: {tool_name}")
@@ -364,38 +312,45 @@ class GlueApp:
                         tools_list = list(set(tools_list + ["delegate_task"]))
                     for tool_name in tools_list:
                         if tool_name in self.tools:
-                            # Add the tool to the team
-                            team._tools[tool_name] = self.tools[tool_name]
+                            tool_instance = self.tools[tool_name]
                             
-                            # Also add the tool to the lead model
-                            if lead_model and hasattr(lead_model, 'add_tool_sync'):
-                                lead_model.add_tool_sync(tool_name, self.tools[tool_name])
-                            elif lead_model and hasattr(lead_model, 'add_tool'):
-                                # Note: This is an async method being called in a sync context
-                                # This is not ideal, but it's necessary for backward compatibility
-                                import asyncio
-                                try:
-                                    # Try to run the async method in a new event loop
-                                    loop = asyncio.new_event_loop()
-                                    asyncio.set_event_loop(loop)
-                                    loop.run_until_complete(lead_model.add_tool(tool_name, self.tools[tool_name]))
-                                    loop.close()
-                                except Exception as e:
-                                    logger.warning(f"Failed to add tool {tool_name} to model {lead_model_name}: {e}")
+                            # Add the tool to the team's tool list
+                            team._tools[tool_name] = tool_instance
+
+                            # Special handling for delegate_task and report_task_completion
+                            if tool_name == "delegate_task":
+                                # Add delegate_task only to the lead
+                                if lead_model:
+                                    if hasattr(lead_model, 'add_tool_sync'):
+                                        lead_model.add_tool_sync(tool_name, tool_instance)
+                                    elif hasattr(lead_model, 'add_tool'):
+                                        import asyncio
+                                        try:
+                                            loop = asyncio.new_event_loop()
+                                            asyncio.set_event_loop(loop)
+                                            loop.run_until_complete(lead_model.add_tool(tool_name, tool_instance))
+                                            loop.close()
+                                        except Exception as e:
+                                            logger.warning(f"Failed to add tool {tool_name} to lead model {lead_model_name}: {e}")
                             
-                            # Add the tool to all member models (but delegate_task only for leads)
-                            if tool_name != "delegate_task":
+                            elif tool_name == "report_task_completion":
+                                # Add report_task_completion only to the members (not to the lead)
                                 for member_name in member_names:
                                     member_model = self.models.get(member_name)
-                                    if member_model and hasattr(member_model, 'add_tool_sync'):
-                                        # Check if tool is already in model's tools to avoid duplicate logging
-                                        already = hasattr(member_model, 'tools') and tool_name in member_model.tools
-                                        if not already:
-                                            member_model.add_tool_sync(tool_name, self.tools[tool_name])
-                                        else:
-                                            member_model.add_tool_sync(tool_name, self.tools[tool_name])  # Will be skipped internally
-                            if tool_name != "communicate":
-                                logger.info(f"Added tool {tool_name} to team {team_name}")
+                                    if member_model:
+                                        if hasattr(member_model, 'add_tool_sync'):
+                                            member_model.add_tool_sync(tool_name, tool_instance)
+
+                            else:
+                                # If it's any other tool, you can apply it both to lead and members if needed
+                                if lead_model:
+                                    if hasattr(lead_model, 'add_tool_sync'):
+                                        lead_model.add_tool_sync(tool_name, tool_instance)
+                                for member_name in member_names:
+                                    member_model = self.models.get(member_name)
+                                    if member_model:
+                                        if hasattr(member_model, 'add_tool_sync'):
+                                            member_model.add_tool_sync(tool_name, tool_instance)
                     
                     self.teams[team_name] = team
                     logger.info(f"Finished setting up team {team_name}")
@@ -706,22 +661,25 @@ class GlueApp:
                     if 'app' not in arguments_with_context:
                         arguments_with_context['app'] = self
                         
-                    # If this is the communicate tool, ensure it has necessary context
-                    if tool_name == "communicate":
-                        # Try to deduce calling context if not provided
-                        if 'calling_team' not in arguments_with_context:
-                            # Default to the first team if not specified
-                            if self.teams:
-                                arguments_with_context['calling_team'] = next(iter(self.teams.keys()))
-                                logger.debug(f"Added default calling_team: {arguments_with_context['calling_team']}")
-                        
+                        # Default calling_model to team lead if not provided
                         if 'calling_model' not in arguments_with_context:
-                            # If we have a calling team, use its lead model
-                            if 'calling_team' in arguments_with_context and arguments_with_context['calling_team'] in self.teams:
-                                team = self.teams[arguments_with_context['calling_team']]
-                                if team.config.lead:
+                            for team_name, team in self.teams.items():
+                                if hasattr(team, 'config') and getattr(team.config, 'lead', None):
                                     arguments_with_context['calling_model'] = team.config.lead
-                                    logger.debug(f"Added default calling_model: {arguments_with_context['calling_model']}")
+                                    logger.debug(f"Defaulted calling_model to {arguments_with_context['calling_model']} for CLI context")
+                                    break
+                    
+                    # Auto-populate calling_agent_id and calling_team if missing
+                    if 'calling_agent_id' not in arguments_with_context:
+                        if 'calling_model' in arguments_with_context:
+                            arguments_with_context['calling_agent_id'] = arguments_with_context['calling_model']
+                    if 'calling_team' not in arguments_with_context and 'calling_agent_id' in arguments_with_context:
+                        caller = arguments_with_context['calling_agent_id']
+                        # find the team that contains this agent
+                        for team_name, team in self.teams.items():
+                            if caller in getattr(team, 'models', {}):
+                                arguments_with_context['calling_team'] = team_name
+                                break
                     
                     # Execute with enhanced context
                     result = await tool.execute(**arguments_with_context)

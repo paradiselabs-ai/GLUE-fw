@@ -19,29 +19,20 @@ When interactive mode is enabled:
 
 
 You need to redifine tools and their arguments to be used in the tool. Also add more tools as needed. Keep the prompts concise and to the point. 
-delegate_task, persist_knowledge, web_search, request_clarification, flag_task_issue, broadcast_query_to_leads.
+persist_knowledge, request_clarification, flag_task_issue, broadcast_query_to_leads.
 
-## delegate_task
-Description: Core function for delegating a sub-task to a specific agent within a team in the GLUE framework.
-
+## request_clarification
+Description: Requests clarification from the user for a specific task.
 Parameters:
-- target_agent_id: (required) The unique ID of the agent to whom the sub-task is assigned.
-- parent_task_id: (required) The unique ID ({team_name_slug}-task-XXXX) of the parent task.
-- task_description: (required) A detailed description of the sub-task to be performed.
-- context_keys: (optional) A list of context keys providing background information or data needed for the sub-task. Defaults to an empty list.
-- required_artifacts: (optional) A list of artifacts required to complete the sub-task. Defaults to an empty list.
-
+- query: (required) The specific question or clarification needed.
 Usage:
 {
-  "tool_name": "delegate_task",
+  "tool_name": "request_clarification",
   "arguments": {
-    "target_agent_id": "team_member_name",
-    "parent_task_id": "{team_name_slug}-task-0001",
-    "task_description": "Analyze competitor landscape for Product X, focusing on market share and pricing.",
-    "context_keys": ["product_x_specs", "market_data"],
-    "required_artifacts": ["competitor_report.pdf"]
+    "query": "Please clarify the scope of the task."
   }
 }
+
 
 ## persist_knowledge
 Description: Adds verified, high-confidence information to the team's persistent knowledge base. Only use this after rigorous validation, typically associated with 'Glue' adhesive outputs.
@@ -74,8 +65,6 @@ Usage:
     "source_task_id": "market-analysis-team-task-0007"
     }
 }
-
-Simplify the communicate tool for the team members. Simplify the tool to only include the target_name, and message. Same goes with the team leads. Can only be used to communicate with models in the same team, with target_name as the name of the model in the team.
 """
 
 import logging
@@ -176,7 +165,6 @@ Adhere strictly to the following protocol for managing **EVERY** incoming task a
 -   **Rigorous Output Validation**: Critically evaluate ALL agent outputs against instructions, required adhesive standards, and overall task goals, using CoT for complex assessments and consistency checks.
 -   **Knowledge Curation**: Manage the team's knowledge base by ensuring ONLY 'Glue'-validated, high-quality information is persisted using the correct tools.
 -   **Tool Verification**: Apply CoT reasoning BEFORE and AFTER every tool use to ensure appropriateness, correct parameterization, and logical validity of results.
--   **Proactive Cross-Team Communication**: Interface effectively with other Team Leads or external interfaces using designated tools (like `communicate` or `broadcast_query_to_leads`) when necessary for task completion, dependency resolution, or clarification.
 {adaptive_user_interaction}
 
 ====
@@ -377,26 +365,6 @@ Your goal is to successfully complete the specific task assigned to you using yo
 
 """
 
-# Communicate Tool Special Instructions (static template with placeholders)
-COMMUNICATE_TOOL_INSTRUCTIONS = """
-## communicate
-Description:
-The `communicate` tool allows you to send messages to other models or teams. You can use it to collaborate with other models in your team or in other teams. (Specific information about available models or teams might be included here if provided).
-Parameters:
-- target_type: (required) The type of entity to communicate with (e.g., 'model', 'team').
-- target_name: (required) The specific name of the target model or team.
-- message: (required) The content of the message to send.
-Usage:
-{{
-  "tool_name": "communicate",
-  "arguments": {{
-    "target_type": "model",
-    "target_name": "model_name",
-    "message": "Hello, what's the task about?"
-  }}
-}}
-"""
-
 #################################################################
 # DYNAMIC PROMPTS - Combined with runtime content
 #################################################################
@@ -466,15 +434,15 @@ Parameters:
 # Parameter Format Description - Used to format each parameter
 PARAMETER_FORMAT_DESCRIPTION = """  - {param_name} ({param_type}, {required}): {param_desc}"""
 
-# Models in Team Format - Used in communicate tool instructions
-MODELS_IN_TEAM_FORMAT = """
-Models in your team:
+# Team Members Format
+MEMBERS_IN_LEAD_TEAM_FORMAT = """
+Team members in your team you're in charge of:
 {models_list}
 """
 
-# Teams You Can Communicate With Format - Used in communicate tool instructions
-TEAMS_TO_COMMUNICATE_FORMAT = """
-Teams you can communicate with:
+# Teams Available to Lead Format
+TEAMS_AVAILABLE_TO_LEAD_FORMAT = """
+Teams visible to you:
 {teams_list}
 """
 
@@ -574,26 +542,25 @@ def format_team_lead_tool_usage_prompt(
     """Format a tool usage prompt for team leads."""
      # Using a dictionary lookup for better maintainability
     tool_formats = {
-        "communicate": lambda: format_communicate_tool_instructions(), # Call the function
         "delegate_task": lambda: """
 ## delegate_task
 Description:
-The delegate_task tool allows you to delegate a sub-task to a specific agent within a team.
+The delegate_task tool allows you to assign a sub-task to a specific agent within your team.
 Parameters:
-- target_agent_id: (required) The unique ID of the agent to whom the sub-task is assigned.
-- parent_task_id: (required) The unique ID ({team_name_slug}-task-XXXX) of the parent task.
-- task_description: (required) A detailed description of the sub-task to be performed.
-- context_keys: (optional) A list of context keys providing background information or data needed for the sub-task. Defaults to an empty list.
-- required_artifacts: (optional) A list of artifacts required to complete the sub-task. Defaults to an empty list.
+- target_agent_id: (required) ID of the agent to delegate the task to
+- task_description: (required) Detailed description of the task
+- parent_task_id: (required) ID of the parent task
+- context_keys: (optional) List of context keys for additional background
+- required_artifacts: (optional) List of artifacts required
 Usage:
 {
   "tool_name": "delegate_task",
   "arguments": {
-    "target_agent_id": "agent_name",
-    "parent_task_id": "{team_name_slug}-task-0001",
-    "task_description": "Analyze competitor landscape for Product X, focusing on market share and pricing.",
-    "context_keys": ["product_x_specs", "market_data"],
-    "required_artifacts": ["competitor_report.md"]
+    "target_agent_id": "agent_id",
+    "parent_task_id": "parent_id",
+    "task_description": "Describe the sub-task...",
+    "context_keys": [],
+    "required_artifacts": []
   }
 }
 """,
@@ -668,24 +635,23 @@ def format_team_member_tool_usage_prompt(
     """Format a tool usage prompt for team members."""
     # Using a dictionary lookup for better maintainability
     tool_formats = {
-        "communicate": lambda: format_communicate_tool_instructions(), # Call the function
         "report_task_completion": lambda: """
 ## report_task_completion
 Description:
-The report_task_completion tool allows you to report the completion of a task.
+The report_task_completion tool signals that a task is complete and returns results to the lead.
 Parameters:
-- task_id: (required) The unique ID of the task.
-- status: (required) The status of the task.
-- result_summary: (required) A summary of the task's result.
-- artifact_keys: (optional) A list of artifact keys to be persisted.
+- task_id: (required) ID of the completed task.
+- status: (required) Completion status (e.g., 'success', 'failure')
+- detailed_answer: (required) Detailed answer of the task results
+- artifact_keys: (optional) List of artifact keys produced
 Usage:
 {
   "tool_name": "report_task_completion",
   "arguments": {
     "task_id": "task_id",
-    "status": "status",
-    "result_summary": "result_summary",
-    "artifact_keys": ["artifact_key1", "artifact_key2"]
+    "status": "success",
+    "detailed_answer": "Detailed answer of the task results...",
+    "artifact_keys": []
   }
 }
 """,
@@ -755,17 +721,6 @@ Usage:
         return "" # Return empty string for unknown tools
 
 # Dynamic prompt formatters
-def format_team_communication_prompt(
-    target_team: str,
-    communication_context: str,
-    previous_communication: str = ""
-) -> str:
-    """Format a communication prompt (dynamic)."""
-    return TEAM_COMMUNICATION_PROMPT.format(
-        target_team=target_team,
-        communication_context=communication_context,
-        previous_communication=previous_communication
-    )
 
 def format_reasoning_prompt(
     observations: str,
@@ -794,30 +749,29 @@ def format_planning_prompt(
     )
 
 
-def format_communicate_tool_instructions(
+def format_team_structure(
     models_list: str = "",
     teams_list: str = ""
 ) -> str:
-    """Format instructions for the communicate tool component.
+    """Format instructions for the team structure component.
     
     Args:
         models_list: String containing formatted list of models (empty string if none)
         teams_list: String containing formatted list of teams (empty string if none)
         
     Returns:
-        Formatted communicate tool instructions
+        Formatted team structure
     """
-    # Get the base communicate tool instructions (already has escaped braces)
-    instructions = COMMUNICATE_TOOL_INSTRUCTIONS
-    
-    # Add models and teams information if available
+    # Initialize instructions to avoid UnboundLocalError
+    instructions = ""
+    # Add models and teams information
     additional_info = ""
     
     if models_list:
-        additional_info += MODELS_IN_TEAM_FORMAT.format(models_list=models_list)
+        additional_info += MEMBERS_IN_LEAD_TEAM_FORMAT.format(models_list=models_list)
     
     if teams_list:
-        additional_info += TEAMS_TO_COMMUNICATE_FORMAT.format(teams_list=teams_list)
+        additional_info += TEAMS_AVAILABLE_TO_LEAD_FORMAT.format(teams_list=teams_list)
     
     # If we have additional info, escape it and append to the instructions
     if additional_info:

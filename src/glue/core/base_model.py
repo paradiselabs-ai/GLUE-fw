@@ -19,7 +19,7 @@ from ..prompts import (
     format_team_member_prompt,
     format_team_lead_tool_usage_prompt,
     format_team_member_tool_usage_prompt,
-    format_communicate_tool_instructions
+    format_team_structure
 )
 
 # Set up logging
@@ -233,11 +233,18 @@ class BaseModel:
                 formatted = self._format_tool_for_provider(tool_name, tool)
                 provider_tools.append(formatted)
         
+        # Determine if this model is the team lead; only leads should send tool schemas to provider
+        is_team_lead = False
+        if hasattr(self, 'team') and self.team and hasattr(self.team, 'lead') and self.team.lead and self.team.lead.name == self.name:
+            is_team_lead = True
+
         # Tool call + execution loop
         max_loops = 3  # prevent infinite loops
         for _ in range(max_loops):
             try:
-                response = await self.generate_response(messages, tools=provider_tools)
+                # Only include tools schemas when model is team lead
+                tools_arg = provider_tools if is_team_lead else []
+                response = await self.generate_response(messages, tools=tools_arg)
             except Exception as e:
                 logger.error(f"Error generating response: {e}")
                 return "I'm sorry, I encountered an error while generating a response."
@@ -523,34 +530,33 @@ class BaseModel:
             # Get formatted tool descriptions
             tools_description = self._prepare_tools_description(tools_list)
             
-            # Check for communicate tool
-            if 'communicate' in self.tools:
+                
+            # Add information about available models and teams
+            if hasattr(self, 'team') and self.team:
+                # Initialize model and team lists to avoid unbound variables
                 models_list = ""
                 teams_list = ""
+                # List models in the same team
+                models_in_team = []
+                for model_name in self.team.models.keys():
+                    if model_name != self.name:  # Don't include self
+                        models_in_team.append(f"- {model_name}")
+                if models_in_team:
+                    models_list = "\n".join(models_in_team)
                 
-                # Add information about available models and teams
-                if hasattr(self, 'team') and self.team:
-                    # List models in the same team
-                    models_in_team = []
-                    for model_name in self.team.models.keys():
-                        if model_name != self.name:  # Don't include self
-                            models_in_team.append(f"- {model_name}")
-                    if models_in_team:
-                        models_list = "\n".join(models_in_team)
-                    
-                    # List other teams if there are outgoing flows
-                    if hasattr(self.team, 'outgoing_flows') and self.team.outgoing_flows:
-                        teams_to_communicate = []
-                        for flow in self.team.outgoing_flows:
-                            teams_to_communicate.append(f"- {flow.target.name}")
-                        if teams_to_communicate:
-                            teams_list = "\n".join(teams_to_communicate)
-                
-                # Add communicate tool instructions
-                tools_description += "\n\n" + format_communicate_tool_instructions(
-                    models_list=models_list,
-                    teams_list=teams_list
-                )
+                # List other teams if there are outgoing flows
+                if hasattr(self.team, 'outgoing_flows') and self.team.outgoing_flows:
+                    teams_to_communicate = []
+                    for flow in self.team.outgoing_flows:
+                        teams_to_communicate.append(f"- {flow.target.name}")
+                    if teams_to_communicate:
+                        teams_list = "\n".join(teams_to_communicate)
+            
+            # Add team structure instructions
+            tools_description += "\n\n" + format_team_structure(
+                models_list=models_list,
+                teams_list=teams_list
+            )
         
         # Add team context if available
         if hasattr(self, 'team') and self.team:
@@ -623,10 +629,7 @@ class BaseModel:
                 # Get the description for the *current* tool using the selected formatter
                 description = formatter(tool_name)
                 if description: # Only add if formatter returned something
-                    if tool_name == "communicate":
-                        continue
-                    else:
-                        all_descriptions.append(description.strip()) # Add the formatted description
+                    all_descriptions.append(description.strip()) # Add the formatted description
             else:
                 logging.warning(f"Skipping tool with no name: {tool}")
 
@@ -651,7 +654,7 @@ class BaseModel:
         # because they are now included directly in the system prompt
         # through _generate_system_prompt
         
-        logger.debug(f"Formatted prompt engineering messages: {formatted_messages}")
+        #logger.debug(f"Formatted prompt engineering messages: {formatted_messages}")
         return formatted_messages
     
     def _format_tool_for_provider(self, name: str, tool: Any) -> Dict[str, Any]:
@@ -767,8 +770,12 @@ class BaseModel:
                 if hasattr(self.provider, 'generate_response') and callable(self.provider.generate_response):
                     logger.debug("Calling provider's generate_response method")
                     logger.debug(f"Passing {len(provider_tools) if provider_tools else 0} tools to provider")
-                    response = await self.provider.generate_response(provider_messages, provider_tools)
-                    logger.debug(f"Provider response: {response}")
+                    try:
+                        response = await self.provider.generate_response(provider_messages, provider_tools)
+                    except TypeError as e:
+                        logger.error(f"Provider returned invalid response (NoneType or malformed): {e}. Falling back to empty response.")
+                        return ""
+                    logger.debug(f"Provider {self.provider.__class__.__name__} response: {response}")
                     return response
                 else:
                     logger.warning(f"Provider {self.provider.__class__.__name__} does not have a generate_response method")

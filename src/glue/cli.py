@@ -434,6 +434,13 @@ async def run_app(config_file: str, interactive: bool = False, input_text: str =
         await app.setup()
         logger.debug("Application setup complete")
         
+        # Automatically start agent loops for all teams so members process tasks as soon as they're assigned
+        import asyncio
+        for team in app.teams.values():
+            # Pass initial input_text so leads can start delegation and members can fetch tasks
+            asyncio.create_task(team.start_agent_loops(initial_input=input_text))
+            logger.info(f"Auto-started agent loops for team {team.name}")
+        
         # Display available tools if in interactive mode
         if interactive:
             logger.info("Starting interactive session")
@@ -763,7 +770,7 @@ async def run_interactive_session(app: GlueApp) -> None:
     """Run an enhanced interactive session with the GLUE application.
     
     This function provides a command-line interface for interacting with GLUE applications,
-    allowing users to communicate with AI teams and models, execute commands, and manage
+    allowing users to interact with AI teams and models, execute commands, and manage
     the conversation flow.
     
     Args:
@@ -785,6 +792,24 @@ async def run_interactive_session(app: GlueApp) -> None:
         "last_command": None,                    # Track last command for repeats
         "auto_refresh": True                     # Auto-refresh display after operations
     }
+    
+    # Track conversation history indices per team to print new messages in background
+    state["history_indices"] = {team_name: 0 for team_name in app.teams}
+    async def background_printer():
+        import asyncio
+        from rich.panel import Panel
+        while True:
+            for team_name, team in app.teams.items():
+                hist = team.conversation_history
+                last_idx = state["history_indices"].get(team_name, 0)
+                for msg in hist[last_idx:]:
+                    title = f"{team_name} | {getattr(msg, 'name', msg.role)}"
+                    console.print(Panel(msg.content, title=title, border_style="magenta"))
+                state["history_indices"][team_name] = len(hist)
+            await asyncio.sleep(0.5)
+    # Launch the background printer task
+    import asyncio
+    bg_task = asyncio.create_task(background_printer())
     
     # Display welcome banner with improved styling
     display_logo(console)
@@ -841,7 +866,7 @@ async def run_interactive_session(app: GlueApp) -> None:
         display_section_header(console, "Available Tools", emoji=emoji)
         # Filter out internal communication tools for cleaner display
         filtered_tools = {name: tool for name, tool in app.tools.items() 
-                        if name not in ["communicate", "_internal"]}
+                        if name not in [ "_internal"]}
         console.print(create_tool_table(filtered_tools))
     
     # Enhanced initial instructions
@@ -877,6 +902,8 @@ async def run_interactive_session(app: GlueApp) -> None:
             # More robust exit command handling
             if user_input.lower() in ["quit", "exit", "/exit", "/quit", "q", ":q"]:
                 console.print(f"[{CLI_CONFIG['theme']['success']}]Exiting interactive session.[/{CLI_CONFIG['theme']['success']}]")
+                # Cancel background printer on exit
+                bg_task.cancel()
                 break
                 
             # Skip empty input but handle special case for repeating last command
@@ -921,7 +948,7 @@ async def run_interactive_session(app: GlueApp) -> None:
                     emoji = "tool" if emoji_enabled else None
                     display_section_header(console, "Available Tools", emoji=emoji)
                     filtered_tools = {name: tool for name, tool in app.tools.items() 
-                                    if name not in ["communicate", "_internal"]}
+                                    if name not in ["_internal"]}
                     console.print(create_tool_table(filtered_tools))
                     continue
                     
@@ -3624,25 +3651,7 @@ def get_template_content(template: str, project_name: str) -> str:
             padding=(1, 1)
         ))
     
-    # 3.4 Communicate Tool (if more than one model)
-    if len(models) > 1:
-        subsection_header("Communication Tool")
-        
-        # Automatically add communicate tool without asking
-        tools.append({
-            "name": "communicate",
-            "description": "Communicate with other models and teams"
-        })
-        tool_names.append("communicate")
-        
-        console.print(Panel(
-            "[green]✓[/green] Communication tool added automatically (required for multi-model projects)",
-            border_style="green",
-            box=box.ROUNDED,
-            padding=(1, 1)
-        ))
-    
-    # 3.5 Custom Tools
+    # 3.4 Custom Tools
     add_custom = Confirm.ask("[bold cyan]Add a custom tool?[/bold cyan]", default=False)
     while add_custom:
         subsection_header("Custom Tool")

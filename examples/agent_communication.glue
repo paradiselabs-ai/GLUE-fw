@@ -1,5 +1,5 @@
 glue app {
-    name = "Agent Communication Example"
+    name = "Glue workflow Example"
     description = "Demonstrates agent-to-agent communication in GLUE"
     version = "0.1.0"
     config {
@@ -10,7 +10,7 @@ glue app {
 // Define models
 model researcher {
     provider = openrouter
-    role = "Researcher who finds information and communicates with other models"
+    role = "Researcher who finds information with other models"
     adhesives = [glue, velcro]
     config {
         model = "meta-llama/llama-4-maverick:free"
@@ -19,35 +19,19 @@ model researcher {
 
 model assistant {
     provider = openrouter
-    role = "Assistant who helps organize information and communicates with other models"
+    role = "Assistant who helps organize information and execute tasks"
     adhesives = [glue, velcro]
     config {
         model = "meta-llama/llama-3.3-70b-instruct:free"
     }
 }
 
-// Define tools
-tool web_search {
-    provider = serp
-    config {
-        max_results = 5
-    }
-}
-
-tool code_interpreter {
-    description = "Execute Python code"
-}
-
-tool communicate {
-    description = "Communicate with other models and teams"
-}
 
 // Define teams and flows
 magnetize {
     research {
         lead = researcher
         members = [assistant]
-        tools = [web_search, code_interpreter, communicate]
     }
 }
 
