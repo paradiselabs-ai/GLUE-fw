@@ -118,6 +118,8 @@ class TeamMemberAgentLoop:
         while not self.terminated:
             # Fetch next task
             task = await fetch_task_func(self.agent_id)
+            # Debug log the full task received to inspect context_keys and prior data
+            logger.debug(f"TeamMemberAgentLoop({self.agent_id}): received task dict: {task}")
             task_id = task.get('task_id')
             logger.debug(f"TeamMemberAgentLoop({self.agent_id}): fetched task {task_id}")
             logger.info(f"TeamMemberAgentLoop({self.agent_id}): begin processing task {task_id}")
@@ -239,6 +241,12 @@ class TeamMemberAgentLoop:
 
     def gather_context(self, task: Dict[str, Any]):
         """Collect initial context from the task description."""
+        # Log context_keys and required_artifacts to verify context passing
+        logger.debug(
+            f"TeamMemberAgentLoop({self.agent_id}): gather_context for task {task.get('task_id')}, "
+            f"description={task.get('description')}, context_keys={task.get('context_keys')}, required_artifacts={task.get('required_artifacts')}"
+        )
+        # Add the description to working memory
         self.working_memory.add_entry(self.turn_counter, task['description'], 'TaskReceived')
 
     async def parse_and_analyze(self, description: str) -> ParseAnalyzeOutput:
@@ -252,15 +260,36 @@ class TeamMemberAgentLoop:
                 thought_process="Fallback stub analysis",
                 analysis={"keywords": keywords}
             )
-        # Construct prompt requesting structured JSON output per schema
+        # Construct prompt requesting detailed structured JSON output per schema with examples
         prompt = (
-            "Provide ONLY a fenced JSON response matching the ParseAnalyzeOutput schema,\n"
-            "with fields:\n"
-            "- thought_process (string)\n"
-            "- analysis (object)\n"
-            "Example:\n```json\n"
-            "{\"thought_process\":\"parsed reasoning\",\"analysis\":{\"key\":\"value\"}}\n"
-            "```\n"
+            "Phase: Parse and Analyze Task\n"
+            "You are a reasoning agent tasked with deeply analyzing the following task description. "
+            "Produce a detailed, step-by-step `thought_process` explaining how you interpreted and decomposed the task, and a structured `analysis` object capturing core requirements, subcomponents, and any constraints. "
+            "Return ONLY a fenced JSON object matching the ParseAnalyzeOutput schema with fields:\n"
+            "- thought_process (string): detailed reasoning steps\n"
+            "- analysis (object): key-value mapping for identified elements or requirements\n"
+            "\n"
+            "Few-shot examples:\n"
+            "Input: \"Filter a list to only include even numbers and then sort it.\"\n"
+            "Output:\n```json\n"
+            "{\n"
+            "  \"thought_process\": \"First identify the actions (filter then sort), determine filter criterion (even numbers), apply filter, then apply sort.\",\n"
+            "  \"analysis\": {\n"
+            "    \"steps\": [\"filter even numbers\", \"sort list\"],\n"
+            "    \"filter_criterion\": \"even numbers\",\n"
+            "    \"operation_order\": [\"filter\", \"sort\"]\n"
+            "  }\n"
+            "}\n```\n"
+            "Input: \"Compute the intersection subset of two user ID sets.\"\n"
+            "Output:\n```json\n"
+            "{\n"
+            "  \"thought_process\": \"Recognize the need for a set intersection, identify both input sets, and compute their common elements. The term 'subset' indicates selecting elements shared by both.\",\n"
+            "  \"analysis\": {\n"
+            "    \"operation\": \"intersection\",\n"
+            "    \"inputs\": [\"set A\", \"set B\"],\n"
+            "    \"subset_criteria\": \"common elements\"\n"
+            "  }\n"
+            "}\n```\n"
             "Now analyze the following task description:\n"
             f"{description}\n"
         )
@@ -299,17 +328,26 @@ class TeamMemberAgentLoop:
                 tool_requirements=[],
                 estimated_confidence="high"
             )
-        # Prompt LLM for structured JSON output per schema
+        # Construct an enriched planning prompt guiding the LLM to produce clear substeps, tool requirements, and confidence
         prompt = (
-            "Provide ONLY a fenced JSON response matching the PlanPhaseOutput schema,\n"
-            "with fields:\n"
-            "- substeps (array of strings)\n"
-            "- tool_requirements (array of strings)\n"
-            "- estimated_confidence (string)\n"
-            "Example:\n```json\n"
-            "{\"substeps\":[\"Step 1\",\"Step 2\"],\"tool_requirements\":[\"tool1\"],\"estimated_confidence\":\"high\"}\n"
+            "Phase: Plan Task Execution\n"
+            "You are a planning agent. Given the following memory entries, break down the upcoming task into an ordered list of actionable substeps. "
+            "Specify any required tools for each step and provide an overall confidence rating (low, medium, high). "
+            "Return ONLY a fenced JSON object matching the PlanPhaseOutput schema with keys:\n"
+            "- substeps: array of step descriptions\n"
+            "- tool_requirements: array of tool names needed\n"
+            "- estimated_confidence: confidence level as 'low', 'medium', or 'high'\n"
+            "\n"
+            "Few-shot examples:\n"
+            "Input memory entries: [\"Convert text to lowercase and count word frequency.\"]\n"
+            "Output:\n```json\n"
+            "{\"substeps\":[\"lowercase text\",\"count word frequencies\"],\"tool_requirements\":[\"textProcessor\"],\"estimated_confidence\":\"high\"}\n"
             "```\n"
-            "Plan execution for the following memory entries:\n"
+            "Input memory entries: [\"Fetch user data from API, filter active users, then export as CSV.\"]\n"
+            "Output:\n```json\n"
+            "{\"substeps\":[\"fetch user data via API\",\"filter active users\",\"export data to CSV\"],\"tool_requirements\":[\"apiClient\",\"csvExporter\"],\"estimated_confidence\":\"medium\"}\n"
+            "```\n"
+            "Now plan execution for the following memory entries:\n"
             f"{json.dumps(memory)}\n"
         )
         # Debug log the constructed prompt
@@ -350,16 +388,28 @@ class TeamMemberAgentLoop:
             self.last_tool_params = {'task_description': task_description}
             result = await self.performTaskStub(task_description)
             return 'performTaskStub', result
-        # Prompt LLM for tool selection JSON, including memory context if available
+        # Construct enriched tool selection prompt with few-shot examples and schema guidance
         prompt = (
-            "Provide ONLY a fenced JSON response matching the ToolSelectionOutput schema,\n"
-            "with fields:\n"
-            "- selected_tool_name (string)\n"
-            "- tool_parameters (object)\n"
-            "Example:\n```json\n"
-            "{\"selected_tool_name\":\"performTask\",\"tool_parameters\":{\"param\":\"value\"}}\n"
+            "Phase: Select and Invoke Tool\n"
+            "You are an intelligent agent responsible for selecting the correct tool for the following substep. "
+            "Refer to the available tools and their expected parameter schemas. "
+            "Return ONLY a JSON object matching the ToolSelectionOutput schema with keys:\n"
+            "- selected_tool_name (string): the tool name to invoke\n"
+            "- tool_parameters (object): key-value mapping of parameters for the selected tool\n"
+            "\n"
+            "Few-shot examples:\n"
+            "Example 1:\n"
+            "Substep: \"Parse and analyze description\"\n"
+            "Context: {\"description\": \"...\"}\n"
+            "Output:\n```json\n"
+            "{\"selected_tool_name\":\"parse_and_analyze\",\"tool_parameters\":{\"description\":\"...\"}}\n"
             "```\n"
-            "Choose the next tool for the following substep and context.\n"
+            "Example 2:\n"
+            "Substep: \"Report task completion\"\n"
+            "Context: {\"status\":\"success\",\"detailed_answer\":\"...\"}\n"
+            "Output:\n```json\n"
+            "{\"selected_tool_name\":\"report_task_completion\",\"tool_parameters\":{\"status\":\"success\",\"detailed_answer\":\"...\"}}\n"
+            "```\n"
             f"Substep: {task_description}\n"
         )
         if context_info is not None:
@@ -522,45 +572,15 @@ class TeamMemberAgentLoop:
         return new_result
 
     async def format_result(self, result: Any) -> str:
-        """Use LLM to format the final result as JSON matching the FormatResultOutput schema."""
+        """Format the final result using the internal summary stub and working memory context."""
+        # Gather all memory entries
         entries = self.working_memory.get_entries()
-        # If no LLM available, return fallback JSON immediately
-        if not self.agent_llm:
-            fmt = FormatResultOutput(
-                final_answer=str(result),
-                supporting_context=[str(e) for e in entries]
-            )
-            return fmt.json()
-        # Simplified prompt for reliable JSON output
-        prompt = (
-            "Return a JSON object with exactly two keys: \"final_answer\" (string) and \"supporting_context\" (array of strings).\n"
-            f"Result: {result}\n"
-            f"Context entries: {json.dumps(entries)}"
-        )
-        last_response = None
-        last_error = None
-        # Retry loop for LLM formatting
-        for attempt in range(self.FORMAT_RESULT_MAX_RETRIES + 1):
-            response = await self.agent_llm.generate(prompt)
-            last_response = response
-            logger.debug(f"format_result attempt {attempt} raw response: {response}")
-            parsed = extract_json(response)
-            if isinstance(parsed, dict):
-                try:
-                    fmt_out = FormatResultOutput.parse_obj(parsed)
-                    return fmt_out.json()
-                except Exception as e:
-                    last_error = e
-                    logger.debug(f"format_result parse error: {e}")
-                    continue
-            last_error = Exception("Failed to extract JSON from response")
-        # Fallback after retries: include error details in supporting_context
-        error_desc = str(last_error) if last_error else "Unknown error"
-        fallback_context = [str(e) for e in entries] + [f"format_result_error: {error_desc}", f"last_response: {last_response}"]
-        fmt = FormatResultOutput(
-            final_answer=str(result),
-            supporting_context=fallback_context
-        )
+        # Use internal summary stub for final answer
+        summary = self.generateSummaryStub(result)
+        # Build supporting context from entries
+        context = [str(e) for e in entries]
+        # Create output object
+        fmt = FormatResultOutput(final_answer=summary, supporting_context=context)
         return fmt.json()
 
     def register_tool(self, name: str, func: Callable):
@@ -595,18 +615,24 @@ class TeamLeadAgentLoop:
         self.task_id_map: Dict[str, str] = {}
         self.completed_subtasks: Set[str] = set()
         self.planned: bool = False
+        # Track which agent each subtask is delegated to
+        self.subtask_agent_map: Dict[str, str] = {}
 
     async def _decompose_goal(self, parent_task_id: str, goal_description: str) -> List[Subtask]:
         """Use LLM to decompose goal into subtasks and log the JSON to working_memory."""
         if not self.agent_llm:
             raise RuntimeError("TeamLeadAgentLoop: Missing LLM for decomposition")
+        members_list = ", ".join(self.team.config.members)
         prompt = (
             "Phase: Decompose Goal\n"
             "You are the Team Lead orchestrator. Given a high-level goal, break it into an ordered list of subtasks. "
+            f"The available agents are: {members_list}. "
+            "You may optionally specify an `assigned_agent_id` for each subtask from this list. "
             "Output ONLY a JSON array of objects, each with fields:\n"
             "- id (string): unique subtask identifier\n"
             "- description (string): subtask description\n"
             "- dependencies (array of strings): list of prerequisite subtask IDs (empty list if none)\n"
+            "- assigned_agent_id (string, optional): specific agent ID to assign this subtask to (must be one of the available agents)\n"
             "Return the array fenced in ```json ... ```.\n"
             f"High-level goal: {goal_description}\n"
         )
@@ -637,8 +663,47 @@ class TeamLeadAgentLoop:
             self.terminated = True
             return
         for sub_id, info in list(self.task_states.items()):
-            if info.get('state') in (TaskStatus.PENDING, TaskStatus.PENDING_RETRY):
-                target = members[0]
+            # Treat PENDING_RETRY same as PENDING for re-delegation
+            if info.get('state') in (TaskStatus.PENDING.value, TaskStatus.PENDING_RETRY.value):
+                # Strict assignment logic: explicit vs. default for pending tasks
+                subtask = self.subtasks.get(sub_id)
+                assigned_id = subtask.assigned_agent_id if subtask else None
+                if assigned_id:
+                    if assigned_id in members:
+                        target = assigned_id
+                    else:
+                        logger.error(f"Invalid assigned_agent_id {assigned_id!r} for subtask {sub_id}")
+                        info['state'] = TaskStatus.FAILED.value
+                        continue
+                else:
+                    # Choose agent for initial or retried tasks
+                    if info.get('state') == TaskStatus.PENDING_RETRY.value:
+                        # Exclude previous agent if possible
+                        prev = self.subtask_agent_map.get(sub_id)
+                        logger.info(f"Retrying subtask {sub_id} attempt {info['retries']}/{self.max_retries}, previous agent={prev}")
+                        candidates = [m for m in members if m != prev]
+                        if candidates:
+                            # count active assignments among candidates
+                            counts = {m: 0 for m in candidates}
+                            for s, agent in self.subtask_agent_map.items():
+                                rec = self.task_states.get(s)
+                                if rec and rec.state == TaskStatus.ASSIGNED.value and agent in counts:
+                                    counts[agent] += 1
+                            min_count = min(counts.values())
+                            for m in candidates:
+                                if counts[m] == min_count:
+                                    target = m
+                                    break
+                        else:
+                            target = prev
+                    else:
+                        # initial delegation: pick least busy
+                        target = self._select_least_busy_agent()
+                    if not target:
+                        # No agents available; will retry later
+                        continue
+                # Record delegation agent
+                self.subtask_agent_map[sub_id] = target
                 delegate_json = {
                     'tool_name': 'delegate_task',
                     'arguments': {
@@ -659,7 +724,7 @@ class TeamLeadAgentLoop:
                 )
                 info['task_id'] = result.get('task', {}).get('task_id')
                 self.task_id_map[sub_id] = info['task_id']
-                info['state'] = TaskStatus.ASSIGNED
+                info['state'] = TaskStatus.ASSIGNED.value
                 info['timestamp'] = datetime.utcnow()
 
     async def _delegate_ready_subtasks(self) -> None:
@@ -670,10 +735,50 @@ class TeamLeadAgentLoop:
             return
         for sub_id, subtask in self.subtasks.items():
             state_info = self.task_states.get(sub_id)
-            if state_info and state_info.state == TaskStatus.PENDING.value and all(
+            # Treat PENDING_RETRY same as PENDING for re-delegation
+            if state_info and state_info.state in (TaskStatus.PENDING.value, TaskStatus.PENDING_RETRY.value) and all(
                 dep in self.completed_subtasks for dep in state_info.dependencies
             ):
-                target = members[0]
+                # Strict assignment logic: explicit vs. default
+                assigned_id = subtask.assigned_agent_id
+                if assigned_id:
+                    # Validate specified agent
+                    if assigned_id in members:
+                        target = assigned_id
+                    else:
+                        logger.error(f"Invalid assigned_agent_id {assigned_id!r} for subtask {sub_id}")
+                        state_info.state = TaskStatus.FAILED.value
+                        continue
+                else:
+                    # Choose agent for unassigned or retried subtasks
+                    if state_info.state == TaskStatus.PENDING_RETRY.value:
+                        # On retry, exclude previous agent if possible
+                        prev = self.subtask_agent_map.get(sub_id)
+                        candidates = [m for m in members if m != prev]
+                        logger.info(f"Retrying subtask {sub_id} attempt {state_info.retries}/{self.max_retries}, previous agent={prev}")
+                        if candidates:
+                            # count current assignments among candidates
+                            counts = {m: 0 for m in candidates}
+                            for s, agent in self.subtask_agent_map.items():
+                                rec = self.task_states.get(s)
+                                if rec and rec.state == TaskStatus.ASSIGNED.value and agent in counts:
+                                    counts[agent] += 1
+                            min_count = min(counts.values())
+                            # pick least busy among candidates
+                            for m in candidates:
+                                if counts[m] == min_count:
+                                    target = m
+                                    break
+                        else:
+                            target = prev
+                    else:
+                        # initial delegation: choose least-busy agent
+                        target = self._select_least_busy_agent()
+                    if not target:
+                        # No available agents to assign now; retry later
+                        continue
+                # Record which agent will handle this subtask
+                self.subtask_agent_map[sub_id] = target
                 delegate_json = {
                     'tool_name': 'delegate_task',
                     'arguments': {
@@ -903,3 +1008,21 @@ class TeamLeadAgentLoop:
     def terminate(self, reason: Optional[str] = None):
         self.terminated = True
         self.termination_reason = reason
+
+    def _select_least_busy_agent(self) -> Optional[str]:
+        """Select the available agent with the fewest currently assigned tasks."""
+        members = self.team.config.members
+        if not members:
+            return None
+        # Count active assignments per agent
+        counts = {m: 0 for m in members}
+        for sub_id, agent in self.subtask_agent_map.items():
+            record = self.task_states.get(sub_id)
+            if record and record.state == TaskStatus.ASSIGNED.value:
+                counts[agent] = counts.get(agent, 0) + 1
+        # Find agent(s) with minimum count
+        min_count = min(counts.values())
+        for m in members:
+            if counts.get(m, 0) == min_count:
+                return m
+        return None

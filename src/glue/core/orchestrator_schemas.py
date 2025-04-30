@@ -5,6 +5,7 @@ class Subtask(BaseModel):
     id: str = Field(..., description="Subtask identifier")
     description: str = Field(..., description="Subtask description")
     dependencies: List[str] = Field(default_factory=list, description="Prerequisite subtask IDs")
+    assigned_agent_id: Optional[str] = Field(None, description="Specific agent ID this subtask should ideally be assigned to, if specified.")
 
 class TaskRecord(BaseModel):
     """Structured record for tracking subtask state."""
