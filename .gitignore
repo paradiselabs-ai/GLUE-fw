@@ -45,7 +45,6 @@ venv.bak/
 .coverage
 htmlcov/
 .pytest_cache/
-tests/
 
 # Project specific
 setup.py
