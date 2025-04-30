@@ -4,7 +4,6 @@ Test script to verify the GLUE package can be installed and imported correctly.
 Run this after building the package to ensure everything is working.
 """
 
-import os
 import subprocess
 import sys
 import tempfile

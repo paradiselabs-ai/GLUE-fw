@@ -18,7 +18,7 @@ When interactive mode is enabled:
 2. The "Interaction Protocols" section is included in the prompt
 
 
-You need to redifine tools and their arguments to be used in the tool. Also add more tools as needed. Keep the prompts concise and to the point. 
+You need to redifine tools and their arguments to be used in the tool. Also add more tools as needed. Keep the prompts concise and to the point.
 persist_knowledge, request_clarification, flag_task_issue, broadcast_query_to_leads.
 
 ## request_clarification
@@ -434,7 +434,9 @@ Parameters:
 """
 
 # Parameter Format Description - Used to format each parameter
-PARAMETER_FORMAT_DESCRIPTION = """  - {param_name} ({param_type}, {required}): {param_desc}"""
+PARAMETER_FORMAT_DESCRIPTION = (
+    """  - {param_name} ({param_type}, {required}): {param_desc}"""
+)
 
 # Team Members Format
 MEMBERS_IN_LEAD_TEAM_FORMAT = """
@@ -470,35 +472,38 @@ RESULTS:
 # FORMATTING FUNCTIONS
 #################################################################
 
+
 # Static prompt formatters
 def format_team_lead_prompt(
     team_name: str,
     role_description: str,
     additional_context: str = "",
     interactive_mode: bool = False,
-    tools_given_prompts_for_this_lead: str = ""
+    tools_given_prompts_for_this_lead: str = "",
 ) -> str:
     """Format the system prompt for a team lead.
-    
+
     Args:
         team_name: Name of the team
         role_description: Description of the team lead's role
         additional_context: Any additional context to include
         interactive_mode: Whether to include interactive mode protocols
         tools_given_prompts_for_this_lead: Tool descriptions formatted for this lead
-        
+
     Returns:
         Formatted team lead system prompt
     """
     # Include interactive protocols section only if in interactive mode
     interactive_protocols = INTERACTIVE_PROTOCOLS if interactive_mode else ""
-    
+
     # Include adaptive user interaction responsibility only if in interactive mode
     adaptive_user_interaction = ADAPTIVE_USER_INTERACTION if interactive_mode else ""
-    
+
     # Create a slug version of the team name (lowercase with underscores)
-    team_name_slug = team_name.lower().replace(' ', '_') if team_name else "unknown_team"
-    
+    team_name_slug = (
+        team_name.lower().replace(" ", "_") if team_name else "unknown_team"
+    )
+
     return TEAM_LEAD_SYSTEM_PROMPT.format(
         team_name=team_name,
         team_name_slug=team_name_slug,
@@ -506,43 +511,46 @@ def format_team_lead_prompt(
         additional_context=additional_context,
         interactive_protocols=interactive_protocols,
         adaptive_user_interaction=adaptive_user_interaction,
-        tools_given_prompts_for_this_lead=tools_given_prompts_for_this_lead
+        tools_given_prompts_for_this_lead=tools_given_prompts_for_this_lead,
     )
+
 
 def format_team_member_prompt(
     team_name: str,
     role_description: str,
     additional_context: str = "",
-    tools_given_prompts_for_this_agent: str = ""
+    tools_given_prompts_for_this_agent: str = "",
 ) -> str:
     """Format the system prompt for a team member.
-    
+
     Args:
         team_name: Name of the team
         role_description: Description of the team member's role (user_given_role)
         additional_context: Any additional context to include
         tools_given_prompts_for_this_agent: Tool descriptions formatted for this agent
-        
+
     Returns:
         Formatted team member system prompt
     """
     # Create a slug version of the role description (lowercase with underscores)
-    agent_role_slug = role_description.lower().replace(' ', '_') if role_description else "team_member"
-    
+    agent_role_slug = (
+        role_description.lower().replace(" ", "_")
+        if role_description
+        else "team_member"
+    )
+
     return TEAM_MEMBER_SYSTEM_PROMPT.format(
         team_name=team_name,
         user_given_role=role_description,
         agent_role_slug=agent_role_slug,
         additional_context=additional_context,
-        tools_given_prompts_for_this_agent=tools_given_prompts_for_this_agent
+        tools_given_prompts_for_this_agent=tools_given_prompts_for_this_agent,
     )
 
 
-def format_team_lead_tool_usage_prompt(
-    tool_name: str
-) -> str:
+def format_team_lead_tool_usage_prompt(tool_name: str) -> str:
     """Format a tool usage prompt for team leads."""
-     # Using a dictionary lookup for better maintainability
+    # Using a dictionary lookup for better maintainability
     tool_formats = {
         "delegate_task": lambda: """
 ## delegate_task
@@ -620,7 +628,7 @@ Usage:
     "code": "import math\\nradius = 5\\narea = math.pi * radius**2\\nprint(f'The area is: {area}')"
   }
 }
-"""
+""",
     }
 
     formatter_func = tool_formats.get(tool_name)
@@ -629,11 +637,10 @@ Usage:
         return _escape_curly_braces(formatter_func())
     else:
         logging.warning(f"No formatter found for tool: {tool_name}")
-        return "" # Return empty string for unknown tools
+        return ""  # Return empty string for unknown tools
 
-def format_team_member_tool_usage_prompt(
-    tool_name: str
-) -> str:
+
+def format_team_member_tool_usage_prompt(tool_name: str) -> str:
     """Format a tool usage prompt for team members."""
     # Using a dictionary lookup for better maintainability
     tool_formats = {
@@ -711,7 +718,7 @@ Usage:
     "code": "import math\\nradius = 5\\narea = math.pi * radius**2\\nprint(f'The area is: {area}')"
   }
 }
-"""
+""",
     }
 
     formatter_func = tool_formats.get(tool_name)
@@ -720,19 +727,17 @@ Usage:
         return _escape_curly_braces(formatter_func())
     else:
         logging.warning(f"No formatter found for tool: {tool_name}")
-        return "" # Return empty string for unknown tools
+        return ""  # Return empty string for unknown tools
+
 
 # Dynamic prompt formatters
-def format_team_structure(
-    models_list: str = "",
-    teams_list: str = ""
-) -> str:
+def format_team_structure(models_list: str = "", teams_list: str = "") -> str:
     """Format instructions for the team structure component.
-    
+
     Args:
         models_list: String containing formatted list of models (empty string if none)
         teams_list: String containing formatted list of teams (empty string if none)
-        
+
     Returns:
         Formatted team structure
     """
@@ -740,39 +745,45 @@ def format_team_structure(
     instructions = ""
     # Add models and teams information
     additional_info = ""
-    
+
     if models_list:
         additional_info += MEMBERS_IN_LEAD_TEAM_FORMAT.format(models_list=models_list)
-    
+
     if teams_list:
         additional_info += TEAMS_AVAILABLE_TO_LEAD_FORMAT.format(teams_list=teams_list)
-    
+
     # If we have additional info, escape it and append to the instructions
     if additional_info:
         instructions += "\n" + _escape_curly_braces(additional_info)
-    
+
     return instructions
+
 
 def _escape_curly_braces(text: str, preserve_placeholders: list = None) -> str:
     """Escape curly braces in a string for safe use with str.format().
-    
+
     Args:
         text: Text that may contain curly braces
         preserve_placeholders: Optional list of placeholder names to preserve
-        
+
     Returns:
         Text with curly braces escaped (doubled), preserving specified placeholders
     """
     if preserve_placeholders is None:
         # Default placeholders to preserve
         preserve_placeholders = [
-            "team_name", "team_name_slug", "role_description", 
-            "additional_context", "interactive_protocols", 
-            "adaptive_user_interaction", "user_given_role",
-            "agent_role_slug", "tools_given_prompts_for_this_lead",
-            "tools_given_prompts_for_this_agent"
+            "team_name",
+            "team_name_slug",
+            "role_description",
+            "additional_context",
+            "interactive_protocols",
+            "adaptive_user_interaction",
+            "user_given_role",
+            "agent_role_slug",
+            "tools_given_prompts_for_this_lead",
+            "tools_given_prompts_for_this_agent",
         ]
-    
+
     # Temporarily replace placeholders we want to preserve
     placeholder_map = {}
     for ph in preserve_placeholders:
@@ -780,12 +791,12 @@ def _escape_curly_braces(text: str, preserve_placeholders: list = None) -> str:
         placeholder_token = f"__PRESERVE_PLACEHOLDER_{ph}__"
         placeholder_map[placeholder] = placeholder_token
         text = text.replace(placeholder, placeholder_token)
-    
+
     # Escape all remaining curly braces
-    text = text.replace('{', '{{').replace('}', '}}')
-    
+    text = text.replace("{", "{{").replace("}", "}}")
+
     # Restore preserved placeholders
     for placeholder, token in placeholder_map.items():
         text = text.replace(token, placeholder)
-    
+
     return text

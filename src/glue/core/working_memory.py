@@ -2,8 +2,10 @@ import os
 import json
 from typing import Optional, List
 
+
 class WorkingMemory:
     """In-memory working memory for agent loops."""
+
     def __init__(self):
         # Internal list to store memory entries
         self._entries = []
@@ -21,8 +23,10 @@ class WorkingMemory:
         """Clear all stored memory entries."""
         self._entries.clear()
 
+
 class PersistentMemory:
     """File-based persistent memory for team leads."""
+
     def __init__(self, team_id: str, memory_dir: Optional[str] = None):
         self.team_id = team_id
         # Default directory to store persistent memory files
@@ -56,4 +60,4 @@ class PersistentMemory:
             with open(self.file_path, "w") as f:
                 json.dump(self._entries, f, indent=2)
         except IOError:
-            pass 
+            pass
