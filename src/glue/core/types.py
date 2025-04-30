@@ -23,6 +23,18 @@ class FlowType(str, Enum):
     PULL = "<-"          # Target pulls from source
     REPEL = "<>"         # No interaction allowed
 
+# Add TaskStatus enum for orchestrator subtask states
+class TaskStatus(str, Enum):
+    """States of a subtask in the orchestrator lifecycle."""
+    PENDING = "pending"
+    ASSIGNED = "assigned"
+    REPORTED = "reported"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    PENDING_RETRY = "pending_retry"
+    NO_MEMBER = "no_member"
+    ESCALATED = "escalated"
+
 # ==================== Class Definitions ====================
 @dataclass
 class ToolResult:

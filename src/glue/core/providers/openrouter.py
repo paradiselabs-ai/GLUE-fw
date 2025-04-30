@@ -285,11 +285,13 @@ class OpenrouterProvider:
             response = await self.client.chat.completions.create(**api_params)
             
             # Process the response
-            if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
-                # Process tool calls
+            choice = None
+            if response and getattr(response, 'choices', None):
+                choice = response.choices[0]
+            msg = getattr(choice, 'message', None)
+            if msg and getattr(msg, 'tool_calls', None):
                 tool_calls = []
-                for tool_call in response.choices[0].message.tool_calls:
-                    # Parse the arguments from JSON string to dict
+                for tool_call in msg.tool_calls:
                     arguments = json.loads(tool_call.function.arguments)
                     tool_calls.append({
                         "id": tool_call.id,
@@ -297,9 +299,10 @@ class OpenrouterProvider:
                         "arguments": arguments
                     })
                 return {"tool_calls": tool_calls}
-            else:
-                # Return the text response
-                return response.choices[0].message.content
+            if msg and hasattr(msg, 'content'):
+                return msg.content
+            logger.error("OpenRouter response has no message content; returning empty string")
+            return ""
         except openai.NotFoundError as e:
             # Check the specific error, if tools were originally present, AND if instructions haven't been added yet
             if tools_originally_present and "No endpoints found that support tool use" in str(e) and not self._simulated_instructions_added_this_request:
@@ -339,11 +342,13 @@ class OpenrouterProvider:
             raise
         
         # Process the response (from original call or retry)
-        if hasattr(response.choices[0].message, 'tool_calls') and response.choices[0].message.tool_calls:
-            # Process tool calls
+        choice = None
+        if response and getattr(response, 'choices', None):
+            choice = response.choices[0]
+        msg = getattr(choice, 'message', None)
+        if msg and getattr(msg, 'tool_calls', None):
             tool_calls = []
-            for tool_call in response.choices[0].message.tool_calls:
-                # Parse the arguments from JSON string to dict
+            for tool_call in msg.tool_calls:
                 arguments = json.loads(tool_call.function.arguments)
                 tool_calls.append({
                     "id": tool_call.id,
@@ -351,9 +356,10 @@ class OpenrouterProvider:
                     "arguments": arguments
                 })
             return {"tool_calls": tool_calls}
-        else:
-            # Return the text response
-            return response.choices[0].message.content
+        if msg and hasattr(msg, 'content'):
+            return msg.content
+        logger.error("OpenRouter retry response has no message content; returning empty string")
+        return ""
     
     async def process_tool_calls(
         self, 

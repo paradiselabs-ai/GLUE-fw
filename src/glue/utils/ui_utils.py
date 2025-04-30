@@ -62,6 +62,12 @@ def display_warning(console: Console, message: str, config: dict = None) -> None
         )
     
     # Add some spacing and center the panel
-    console.print()  # Empty line before
-    console.print(Align.center(warning_panel))
-    console.print()  # Empty line after
+    try:
+        console.print()  # Empty line before
+        console.print(Align.center(warning_panel))
+        console.print()  # Empty line after
+    except UnicodeEncodeError:
+        # Fallback to plain text warning on encoding errors
+        plain_msg = f"WARNING: {message}"
+        # Directly print to stdout to avoid rich console encoding
+        print(plain_msg)

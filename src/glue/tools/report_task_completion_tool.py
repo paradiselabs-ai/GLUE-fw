@@ -8,16 +8,17 @@ from typing import List, Optional, Dict, Any, Literal
 
 from .tool_base import Tool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType, ToolResult
-from pydantic import BaseModel, Field, ValidationError, model_validator, ConfigDict
+from pydantic import BaseModel, Field, ValidationError, model_validator, ConfigDict, validate_arguments
 
 logger = logging.getLogger("glue.tools.report_task_completion")
 
 # PydanticAI schema for report_task_completion arguments
 class ReportTaskCompletionArgs(BaseModel):
     task_id: str = Field(..., alias="task_id", min_length=1, description="ID of the completed task")
-    status: Literal["success", "failure"] = Field(..., description="Completion status (e.g., 'success' or 'failure')")
+    status: Literal["success", "failure", "escalation"] = Field(..., description="Completion status (e.g., 'success', 'failure', or 'escalation')")
     detailed_answer: str = Field(..., min_length=1, description="Detailed answer of task results")
     artifact_keys: List[str] = Field(default_factory=list, description="Optional keys to artifacts produced")
+    failure_reason: Optional[str] = Field(None, description="Concise explanation for why the task failed, if applicable")
 
     @model_validator(mode="before")
     def normalize_status_and_alias(cls, data):
@@ -53,16 +54,24 @@ class ReportTaskCompletionTool(Tool):
             "status": {"type": str, "description": "Completion status (e.g., 'success' or 'failure')", "required": True},
             "detailed_answer": {"type": str, "description": "Detailed answer of task results", "required": True},
             "artifact_keys": {"type": list, "description": "Optional keys to artifacts produced", "required": False, "default": []},
+            "failure_reason": {"type": str, "description": "Concise explanation for why the task failed, if applicable", "required": False, "default": None},
         }
 
     async def _execute(
         self,
-        task_id: str,
-        status: str,
-        detailed_answer: str,
-        artifact_keys: Optional[List[str]] = None,
+        *args,
         **kwargs
     ) -> Dict[str, Any]:
+        """
+        Execute the report_task_completion tool to signal task completion.
+
+        Args:
+            *args: Positional arguments (task_id, status, detailed_answer, artifact_keys, failure_reason).
+            **kwargs: Additional context keys like calling_agent_id and calling_team.
+
+        Returns:
+            Dict[str, Any]: A dict with 'success' boolean and completion record or error.
+        """
         """
         Report task completion, notify the lead, and terminate the agent's loop.
         """
@@ -71,24 +80,19 @@ class ReportTaskCompletionTool(Tool):
             logger.error("ReportTaskCompletionTool: Application context is missing.")
             return {"success": False, "error": "Application context is missing."}
 
-        # PydanticAI validate incoming parameters
+        # Validate incoming parameters using ReportTaskCompletionArgs model
         try:
-            # Use Pydantic alias and normalization
-            args = ReportTaskCompletionArgs(
-                task_id=task_id,
-                status=status,
-                detailed_answer=detailed_answer,
-                artifact_keys=artifact_keys or []
-            )
+            args_model = ReportTaskCompletionArgs(**kwargs)
         except ValidationError as e:
             logger.error(f"ReportTaskCompletionTool: argument validation error: {e}")
             return {"success": False, "error": str(e)}
 
         # Map validated fields back
-        task_id = args.task_id
-        status = args.status
-        detailed_answer = args.detailed_answer
-        artifact_keys = args.artifact_keys
+        task_id = args_model.task_id
+        status = args_model.status
+        detailed_answer = args_model.detailed_answer
+        artifact_keys = args_model.artifact_keys
+        failure_reason = args_model.failure_reason
 
         # Infer calling_agent and calling_team if missing
         calling_agent = kwargs.get("calling_agent_id") or kwargs.get("calling_model")
@@ -126,6 +130,7 @@ class ReportTaskCompletionTool(Tool):
             "status": status,
             "detailed_answer": detailed_answer,
             "artifact_keys": artifact_keys or [],
+            "failure_reason": failure_reason,
             "reported_by": calling_agent,
             "reported_at": datetime.utcnow().isoformat()
         }
@@ -151,11 +156,6 @@ class ReportTaskCompletionTool(Tool):
             }
             # enqueue for team history
             await team.message_queue.put((internal_msg, None))
-            # direct notify lead model
-            try:
-                await team.direct_communication(calling_agent, lead_id, record)
-            except Exception as e:
-                logger.warning(f"ReportTaskCompletionTool: direct_communication error: {e}")
         else:
             logger.warning("ReportTaskCompletionTool: No lead to notify.")
 

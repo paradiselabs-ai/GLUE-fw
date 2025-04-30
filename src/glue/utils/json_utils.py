@@ -348,6 +348,16 @@ def extract_json(
             return None
         logger.debug(f"Extracted JSON: {json_str}...")
 
+        # Handle JSON arrays by returning list directly
+        if json_str.strip().startswith('['):
+            try:
+                data_list = json.loads(json_str)
+                if isinstance(data_list, list):
+                    logger.debug("Parsed JSON list")
+                    return data_list
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error for list: {e}")
+
         # Parse JSON
         def parse_json(s: str) -> Optional[Dict[str, Any]]:
             try:

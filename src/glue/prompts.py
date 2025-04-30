@@ -181,6 +181,7 @@ Adhere strictly to the following protocol for managing **EVERY** incoming task a
 -   MUST Strictly follow the defined JSON format for ALL tool use.
 -   MUST Execute only ONE tool per message turn.
 -   MUST Await and critically evaluate tool results BEFORE proceeding.
+-   DO NOT SIMULATE or assume any tool outputs. Only proceed to the next step when you have received the actual tool result from the system input. If no result is provided, do not advance the plan or call new tools.
 -   Handle inter-team communication professionally, clearly, and using the appropriate tools.
 {adaptive_user_interaction}
 -   MUST use the `delegate_task` tool to assign sub-tasks to agents.
@@ -334,6 +335,7 @@ RULES
 -   Use tools only as needed and follow the specified JSON format precisely.
 -   Execute only one tool per message turn.
 -   Await and consider tool results before proceeding.
+-   DO NOT SIMULATE or assume any tool outputs.
 -   **Error Handling Protocol**: If a tool fails (you will be informed in the response):
     1.  STOP your current step that relied on the failed tool.
     2.  Report the issue back immediately. Your response should indicate an `error` status.
@@ -638,20 +640,20 @@ def format_team_member_tool_usage_prompt(
         "report_task_completion": lambda: """
 ## report_task_completion
 Description:
-The report_task_completion tool signals that a task is complete and returns results to the lead.
+The report_task_completion tool signals that a task is complete and returns results to the lead. The system auto-injects the task_id, calling_agent_id, and calling_team, so you must NOT include them in your JSON arguments.
 Parameters:
-- task_id: (required) ID of the completed task.
-- status: (required) Completion status (e.g., 'success', 'failure')
-- detailed_answer: (required) Detailed answer of the task results
-- artifact_keys: (optional) List of artifact keys produced
-Usage:
+- status: (required) Completion status, one of 'success', 'failure', or 'escalation'.
+- detailed_answer: (required) Detailed answer of the task results.
+- artifact_keys: (optional) List of artifact keys produced during the task.
+- failure_reason: (optional) Concise explanation for why the task failed or needs escalation (only include if status is 'failure' or 'escalation').
+Usage (include only these arguments, in 'arguments'):
 {
   "tool_name": "report_task_completion",
   "arguments": {
-    "task_id": "task_id",
     "status": "success",
     "detailed_answer": "Detailed answer of the task results...",
-    "artifact_keys": []
+    "artifact_keys": [],
+    "failure_reason": null
   }
 }
 """,
@@ -721,34 +723,6 @@ Usage:
         return "" # Return empty string for unknown tools
 
 # Dynamic prompt formatters
-
-def format_reasoning_prompt(
-    observations: str,
-    thoughts: str,
-    goal: str
-) -> str:
-    """Format a reasoning prompt (dynamic)."""
-    return REASONING_PROMPT.format(
-        observations=observations,
-        thoughts=thoughts,
-        goal=goal
-    )
-
-def format_planning_prompt(
-    goal: str,
-    context: str,
-    formatted_thoughts: str,
-    available_tools: str
-) -> str:
-    """Format a planning prompt (dynamic)."""
-    return PLANNING_PROMPT.format(
-        goal=goal,
-        context=context,
-        formatted_thoughts=formatted_thoughts,
-        available_tools=available_tools
-    )
-
-
 def format_team_structure(
     models_list: str = "",
     teams_list: str = ""
@@ -778,30 +752,6 @@ def format_team_structure(
         instructions += "\n" + _escape_curly_braces(additional_info)
     
     return instructions
-
-def format_observations(
-    formatted_observations: str
-) -> str:
-    """Format observations component for display in prompts."""
-    return OBSERVATIONS_FORMAT.format(
-        formatted_observations=formatted_observations
-    )
-
-def format_thoughts(
-    formatted_thoughts: str
-) -> str:
-    """Format thoughts component for display in prompts."""
-    return THOUGHTS_FORMAT.format(
-        formatted_thoughts=formatted_thoughts
-    )
-
-def format_results(
-    formatted_results: str
-) -> str:
-    """Format results component for display in prompts."""
-    return RESULTS_FORMAT.format(
-        formatted_results=formatted_results
-    )
 
 def _escape_curly_braces(text: str, preserve_placeholders: list = None) -> str:
     """Escape curly braces in a string for safe use with str.format().

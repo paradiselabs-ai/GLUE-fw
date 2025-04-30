@@ -772,9 +772,20 @@ class BaseModel:
                     logger.debug(f"Passing {len(provider_tools) if provider_tools else 0} tools to provider")
                     try:
                         response = await self.provider.generate_response(provider_messages, provider_tools)
-                    except TypeError as e:
-                        logger.error(f"Provider returned invalid response (NoneType or malformed): {e}. Falling back to empty response.")
-                        return ""
+                    except Exception as e:
+                        err_msg = str(e).lower()
+                        # Detect unsupported tool-use errors and retry without tools
+                        if 'no endpoints found that support tool use' in err_msg or 'not support tool use' in err_msg:
+                            logger.warning("Provider does not support tool use; retrying without tools")
+                            try:
+                                response = await self.provider.generate_response(provider_messages, None)
+                            except Exception as retry_e:
+                                logger.error(f"Error retrying provider without tools: {retry_e}")
+                                raise
+                        else:
+                            logger.error(f"Error generating response with provider: {e}")
+                            logger.exception("Exception details:")
+                            raise
                     logger.debug(f"Provider {self.provider.__class__.__name__} response: {response}")
                     return response
                 else:

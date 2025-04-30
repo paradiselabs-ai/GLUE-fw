@@ -5,12 +5,11 @@ Delegate task tool for GLUE framework.
 import logging
 import uuid
 from datetime import datetime
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Dict, Any
 
 from .tool_base import Tool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
-from ..core.agent_loop import TeamMemberAgentLoop
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, validate_arguments
 
 logger = logging.getLogger("glue.tools.delegate_task")
 
@@ -74,6 +73,7 @@ class DelegateTaskTool(Tool):
             }
         }
 
+    @validate_arguments
     async def _execute(
         self,
         target_agent_id: str,
@@ -85,6 +85,17 @@ class DelegateTaskTool(Tool):
     ) -> Dict[str, Any]:
         """
         Delegate a task to a team member and persist it in the team's shared_results.
+
+        Args:
+            target_agent_id (str): ID of the agent to delegate the task to.
+            task_description (str): Detailed description of the task.
+            parent_task_id (str): ID of the parent task.
+            context_keys (Optional[List[str]]): Optional list of context keys.
+            required_artifacts (Optional[List[str]]): Optional list of required artifact keys.
+            **kwargs: Additional context like 'calling_agent_id' and 'calling_team'.
+
+        Returns:
+            Dict[str, Any]: A dict with 'success' boolean and either the created 'task' or an 'error' message.
         """
         if not self.app:
             logger.error("DelegateTaskTool: Application context is missing.")
@@ -168,12 +179,7 @@ class DelegateTaskTool(Tool):
             }
         }
         await self.app.teams[calling_team].message_queue.put((internal_message, None))
-        # Also directly notify the agent so they immediately process the assignment
-        try:
-            await self.app.teams[calling_team].direct_communication(calling_agent_id, target_agent_id, task)
-            logger.debug(f"DelegateTaskTool: Notified agent '{target_agent_id}' directly of the assignment.")
-        except Exception as e:
-            logger.warning(f"DelegateTaskTool: direct_communication error: {e}")
+        # Removed synchronous direct communication to enforce asynchronous delegation model
 
         logger.info(f"Delegated task {task_id} to agent {target_agent_id} in team {calling_team}")
         return {"success": True, "task": task}

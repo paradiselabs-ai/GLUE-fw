@@ -13,7 +13,6 @@ from .schemas import Message
 from ..utils.json_utils import extract_json
 
 from .model import Model
-from .agent_loop import TeamMemberAgentLoop, TeamLeadAgentLoop
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
@@ -222,6 +221,10 @@ class Team:
         model_name: Optional[str] = None
     ) -> None:
         """Share a tool result with the team"""
+        # For task completion, the record is already embedded in shared_results; skip adding ToolResult
+        if tool_name == "report_task_completion":
+            result.adhesive = AdhesiveType.GLUE
+            return
         # For task completion reports, always use GLUE adhesive
         if tool_name == "report_task_completion":
             result.adhesive = AdhesiveType.GLUE
@@ -467,6 +470,13 @@ class Team:
         """ Handle direct communication between two models within the team
             Ensures the message history reflects the direct exchange. """
         
+        # Skip internal subtask assignment/completion messages to the lead to prevent unintended planning triggers
+        if isinstance(message, dict) and ('task_assigned' in message or 'task_completed' in message):
+            lead_name = getattr(self.config, 'lead', None)
+            if lead_name and to_model == lead_name:
+                logger.debug(f"direct_communication: suppressed subtask message to lead {to_model}: {message}")
+                return ''
+        
         # Find source and target models
         source = self.models.get(from_model)
         target = self.models.get(to_model)
@@ -642,6 +652,7 @@ class Team:
 
     async def start_agent_loops(self, initial_input: Optional[str] = None) -> None:
         """Start core agent loops using simplified stubs for Team Lead and Team Member agents."""
+        from .agent_loop import TeamMemberAgentLoop, TeamLeadAgentLoop
         logger.info(f"Starting core agent loops for team {self.name}")
         # Start Team Lead loop if a goal is provided
         if self.config.lead and initial_input:
@@ -649,11 +660,12 @@ class Team:
             delegate_tool_exec = self._tools.get("delegate_task")
             if hasattr(delegate_tool_exec, "execute"):
                 delegate_tool_exec = delegate_tool_exec.execute
+            # Instantiate TeamLeadAgentLoop with team object and LLM
+            agent_llm = self.models.get(self.config.lead)
             lead_loop = TeamLeadAgentLoop(
-                self.config.lead,
-                self.name,
-                delegate_tool_exec,
-                self.config.members
+                team=self,
+                delegate_tool=delegate_tool_exec,
+                agent_llm=agent_llm
             )
             # Track and start TeamLead loop
             self.agent_loops[self.config.lead] = lead_loop
@@ -971,16 +983,8 @@ class Team:
                 target_model_name = metadata.get("target_model")
                 source_model_name = metadata.get("source_model")
                 if internal and target_model_name:
-                    # Extract raw payload (could be nested dict)
-                    payload = message.get("content") if isinstance(message, dict) else message
-                    try:
-                        await self.direct_communication(
-                            source_model_name or metadata.get("source_model"),
-                            target_model_name,
-                            payload
-                        )
-                    except Exception as e:
-                        logger.error(f"Error in direct_communication for internal message: {e}")
+                    # Skip all internal messages targeted at models to prevent unintended LLM invocations
+                    logger.debug(f"_process_messages: suppressed internal message for model {target_model_name}: {message}")
                     self.message_queue.task_done()
                     continue
                 
