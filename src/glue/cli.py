@@ -43,7 +43,8 @@ from rich.status import Status
 # Import framework modules
 # Use direct imports to avoid circular imports
 from glue.core import GlueApp
-from glue.dsl import GlueDSLParser, GlueLexer
+from glue.dsl.parser import GlueDSLParser
+from glue.dsl.lexer import GlueLexer
 
 # Import new utilities
 from .utils.json_utils import extract_json
