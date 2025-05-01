@@ -10,7 +10,7 @@ from typing import Dict, Any
 import inspect
 
 from .base_model import BaseModel
-from .types import AdhesiveType
+from .schemas import AdhesiveType
 
 # Set up logging
 logger = logging.getLogger("glue.model")

@@ -14,7 +14,7 @@ import asyncio
 from ..core.app import GlueApp, AppConfig
 from ..core.model import Model
 from ..core.teams import Team
-from ..core.types import AdhesiveType, FlowType
+from ..core.schemas import AdhesiveType, FlowType
 from ..tools.tool_registry import get_tool_class
 from ..tools.tool_base import Tool
 from ..core.flow import Flow

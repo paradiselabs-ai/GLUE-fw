@@ -1,6 +1,7 @@
 import os
 import json
 from typing import Optional, List
+from .schemas import MemoryEntry
 
 
 class WorkingMemory:
@@ -8,15 +9,15 @@ class WorkingMemory:
 
     def __init__(self):
         # Internal list to store memory entries
-        self._entries = []
+        self._entries: List[MemoryEntry] = []
 
     def add_entry(self, turn: int, content: str, source_tool: str):
         """Add a new entry with turn number, content, and source tool."""
-        entry = {"turn": turn, "content": content, "source_tool": source_tool}
+        entry = MemoryEntry(turn=turn, content=content, source_tool=source_tool)
         self._entries.append(entry)
 
-    def get_entries(self) -> list:
-        """Retrieve a copy of all stored entries."""
+    def get_entries(self) -> List[MemoryEntry]:
+        """Retrieve a copy of all stored entries as MemoryEntry objects."""
         return list(self._entries)
 
     def clear(self):
@@ -37,27 +38,34 @@ class PersistentMemory:
         if os.path.exists(self.file_path):
             try:
                 with open(self.file_path, "r") as f:
-                    self._entries = json.load(f)
-            except (json.JSONDecodeError, IOError):
+                    raw_entries = json.load(f)
+                    self._entries = [MemoryEntry(**e) for e in raw_entries]
+            except (json.JSONDecodeError, IOError, TypeError, ValueError):
                 self._entries = []
         else:
             self._entries = []
             with open(self.file_path, "w") as f:
-                json.dump(self._entries, f, indent=2)
+                json.dump([], f, indent=2)
 
-    def add_entry(self, entry: dict):
+    def add_entry(self, entry: MemoryEntry):
         """Add a new entry and persist to file."""
+        if not isinstance(entry, MemoryEntry):
+            entry = MemoryEntry(**entry)
         self._entries.append(entry)
         self._save()
 
-    def get_entries(self) -> List[dict]:
-        """Retrieve all persistent entries."""
+    def get_entries(self) -> List[MemoryEntry]:
+        """Retrieve all persistent entries as MemoryEntry objects."""
         return list(self._entries)
 
     def _save(self):
         """Write all entries back to the JSON file."""
         try:
             with open(self.file_path, "w") as f:
-                json.dump(self._entries, f, indent=2)
+                f.write(
+                    "[\n"
+                    + ",\n".join(e.model_dump_json(indent=2) for e in self._entries)
+                    + "\n]"
+                )
         except IOError:
             pass

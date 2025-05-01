@@ -7,7 +7,7 @@ import logging
 import uuid
 import json
 
-from .types import AdhesiveType, TeamConfig, ToolResult, FlowType
+from .schemas import AdhesiveType, TeamConfig, ToolResult, FlowType
 from .schemas import Message
 from ..utils.json_utils import extract_json
 

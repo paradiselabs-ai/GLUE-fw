@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 from .tool_base import Tool, ToolConfig, ToolPermission
-from ..core.types import AdhesiveType
+from ..core.schemas import AdhesiveType
 from pydantic import BaseModel, Field, ValidationError, validate_call
 
 logger = logging.getLogger("glue.tools.delegate_task")

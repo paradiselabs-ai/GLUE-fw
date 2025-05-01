@@ -13,7 +13,7 @@ from typing import Dict, List, Any, Optional, Union, Callable
 import asyncio
 from enum import Enum
 
-from .types import Message, ToolResult
+from .schemas import Message, ToolResult
 from ..prompts import (
     format_team_lead_prompt,
     format_team_member_prompt,

@@ -477,3 +477,78 @@ class AppConfig(BaseModel):
             if magnet.target not in team_names:
                 raise ValueError(f"Magnet target team '{magnet.target}' does not exist")
         return v
+
+
+# ==================== Additional Enums and Models from types.py ====================
+
+
+class TaskStatus(str, Enum):
+    """States of a subtask in the orchestrator lifecycle."""
+
+    PENDING = "pending"
+    ASSIGNED = "assigned"
+    REPORTED = "reported"
+    COMPLETE = "complete"
+    FAILED = "failed"
+    PENDING_RETRY = "pending_retry"
+    NO_MEMBER = "no_member"
+    ESCALATED = "escalated"
+
+
+# Only add if not already present:
+if not hasattr(globals(), "ToolResult"):
+
+    class ToolResult(BaseModel):
+        tool_name: str
+        result: Any
+        adhesive: AdhesiveType = AdhesiveType.TAPE
+        timestamp: datetime = Field(default_factory=datetime.now)
+        metadata: Dict[str, Any] = Field(default_factory=dict)
+        is_error: bool = False
+
+
+if not hasattr(globals(), "Message"):
+
+    class Message(BaseModel):
+        role: str
+        content: str
+        name: Optional[str] = None
+        tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
+        metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+if not hasattr(globals(), "ModelConfig"):
+
+    class ModelConfig(BaseModel):
+        provider: str
+        model_id: str
+        temperature: float = 0.7
+        max_tokens: int = 2048
+        api_key: Optional[str] = None
+        api_params: Dict[str, Any] = Field(default_factory=dict)
+        supported_adhesives: List[str] = Field(default_factory=list)
+
+
+if not hasattr(globals(), "ToolConfig"):
+
+    class ToolConfig(BaseModel):
+        name: str
+        description: str
+        provider: Optional[str] = None
+        config: Dict[str, Any] = Field(default_factory=dict)
+
+
+if not hasattr(globals(), "TeamConfig"):
+
+    class TeamConfig(BaseModel):
+        name: str
+        lead: str
+        members: List[str] = Field(default_factory=list)
+        tools: List[str] = Field(default_factory=list)
+
+
+class MemoryEntry(BaseModel):
+    turn: int
+    content: str
+    source_tool: str
+    timestamp: datetime = Field(default_factory=datetime.now)

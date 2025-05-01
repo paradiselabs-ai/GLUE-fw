@@ -8,7 +8,7 @@ import asyncio
 import logging
 from pydantic import BaseModel, Field, ConfigDict
 
-from ..core.types import AdhesiveType
+from ..core.schemas import AdhesiveType
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.tools")

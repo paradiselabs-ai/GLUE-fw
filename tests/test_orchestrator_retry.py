@@ -3,7 +3,7 @@ import asyncio
 from types import SimpleNamespace
 from glue.core.agent_loop import TeamLeadAgentLoop
 from glue.core.orchestrator_schemas import ReportRecord, TaskRecord
-from glue.core.types import TaskStatus
+from glue.core.schemas import TaskStatus
 
 
 class DummyDelegateTool:

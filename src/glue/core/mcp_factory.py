@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from .mcp import MCPServer, MCPTool
 from ..tools.tool_base import Tool, ToolConfig, ToolPermission
-from ..core.types import AdhesiveType
+from ..core.schemas import AdhesiveType
 from .sandbox import CodeSandbox, SandboxConfig
 
 # ==================== Constants ====================

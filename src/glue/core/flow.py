@@ -10,7 +10,7 @@ import logging
 from typing import Any, Dict
 
 from .teams import Team
-from .types import FlowType
+from .schemas import FlowType
 from .schemas import Message
 
 

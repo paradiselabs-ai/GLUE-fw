@@ -14,6 +14,7 @@ from .tool_base import Tool, ToolConfig, ToolPermission
 from .providers.search_base import SearchProvider
 from .providers.serp_provider import SerpApiProvider
 from .providers.tavily_provider import TavilyProvider
+from ..core.schemas import AdhesiveType
 
 logger = logging.getLogger(__name__)
 

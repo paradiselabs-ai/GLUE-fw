@@ -24,7 +24,10 @@ from .orchestrator_schemas import (
 from .teams import Team
 from ..utils.json_utils import extract_json
 import asyncio
-from .types import TaskStatus, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT
+from .schemas import TaskStatus
+
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_TIMEOUT = 30.0
 import logging
 from datetime import datetime
 import re
@@ -214,9 +217,7 @@ class TeamMemberAgentLoop:
             while not self.terminated:
                 self.turn_counter += 1
                 entries = self.working_memory.get_entries()
-                recent = [e for e in entries if e.get("source_tool") != "Curated"][
-                    -self.max_attempts :
-                ]
+                recent = [e for e in entries if e.source_tool != "Curated"]
                 context_info = {
                     "turn": self.turn_counter,
                     "memory_entries": entries,
@@ -454,7 +455,7 @@ class TeamMemberAgentLoop:
             '{"substeps":["fetch user data via API","filter active users","export data to CSV"],"tool_requirements":["apiClient","csvExporter"],"estimated_confidence":"medium"}\n'
             "```\n"
             "Now plan execution for the following memory entries:\n"
-            f"{json.dumps(memory)}\n"
+            f"[{', '.join(e.model_dump_json() for e in self.working_memory.get_entries())}]"
         )
         # Debug log the constructed prompt
         logger.debug(f"plan_phase prompt:\n{prompt}")
@@ -523,7 +524,22 @@ class TeamMemberAgentLoop:
             f"Substep: {task_description}\n"
         )
         if context_info is not None:
-            prompt += f"Context: {json.dumps(context_info)}"
+            # Convert MemoryEntry objects to dicts for JSON serialization
+            def entry_to_dict(e):
+                return e.model_dump(mode="json") if hasattr(e, "model_dump") else e
+
+            context_info_serializable = dict(context_info)
+            if "memory_entries" in context_info_serializable:
+                context_info_serializable["memory_entries"] = [
+                    entry_to_dict(e)
+                    for e in context_info_serializable["memory_entries"]
+                ]
+            if "recent_raw_outputs" in context_info_serializable:
+                context_info_serializable["recent_raw_outputs"] = [
+                    entry_to_dict(e)
+                    for e in context_info_serializable["recent_raw_outputs"]
+                ]
+            prompt += f"Context: {json.dumps(context_info_serializable)}"
         # Debug log the constructed prompt
         logger.debug(f"select_and_invoke_tool prompt:\n{prompt}")
         # Invoke LLM generation
@@ -633,7 +649,7 @@ class TeamMemberAgentLoop:
             "(fields: evaluation_summary, consistency_check, alignment_check, confidence_level, error_detected) "
             "for the following result and context entries:\n"
             f"Result: {result}\n"
-            f"Context: {json.dumps(self.working_memory.get_entries())}"
+            f"Context: [{', '.join(e.model_dump_json() for e in self.working_memory.get_entries())}]"
         )
         # Debug log the constructed prompt
         logger.debug(f"evaluate_self prompt:\n{prompt}")
@@ -700,7 +716,7 @@ class TeamMemberAgentLoop:
         # Use internal summary stub for final answer
         summary = self.generateSummaryStub(result)
         # Build supporting context from entries
-        context = [str(e) for e in entries]
+        context = [e.content for e in entries]
         # Create output object
         fmt = FormatResultOutput(final_answer=summary, supporting_context=context)
         return fmt.model_dump_json()
@@ -1033,7 +1049,7 @@ class TeamLeadAgentLoop:
         # Update status
         self.state["status"] = "synthesizing"
         # Gather context contents
-        contexts = [e["content"] for e in self.working_memory.get_entries()]
+        contexts = [e.content for e in self.working_memory.get_entries()]
         # Pre-check: ensure at least one subtask completed successfully
         successful = [
             rec
@@ -1092,7 +1108,7 @@ class TeamLeadAgentLoop:
         self.state["status"] = "analyzing"
         self.working_memory.add_entry(0, goal_description, "InitialGoal")
         self.persistent_memory.add_entry(
-            {"turn": 0, "type": "goal", "content": goal_description}
+            {"turn": 0, "content": goal_description, "source_tool": "InitialGoal"}
         )
 
         # Phase: Decompose goal (only once)

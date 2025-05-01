@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any, Literal
 
 from .tool_base import Tool, ToolConfig, ToolPermission
-from ..core.types import AdhesiveType, ToolResult
+from ..core.schemas import AdhesiveType, ToolResult
 from pydantic import BaseModel, Field, ValidationError, model_validator, ConfigDict
 
 logger = logging.getLogger("glue.tools.report_task_completion")

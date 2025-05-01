@@ -7,7 +7,7 @@ import asyncio
 from pydantic import BaseModel, Field, ConfigDict
 
 from ..core.teams import Team
-from ..core.types import FlowType
+from ..core.schemas import FlowType
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.magnetic")

@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional, Union
 from .adhesive import AdhesiveSystem
 from .model import Model
 from .teams import Team
-from .types import FlowType, TeamConfig
+from .schemas import FlowType, TeamConfig, AppConfig
 from .flow import Flow
 from .schemas import MagnetConfig
 from ..magnetic.field import MagneticField
@@ -83,27 +83,6 @@ def create_tool(config: Dict[str, Any]) -> Any:
         logger.warning(f"Failed to create tool instance for {tool_name}: {e}")
         # For backward compatibility, return the config if we can't create a tool instance
         return config
-
-
-class AppConfig:
-    """Configuration for a GLUE application."""
-
-    def __init__(self, name: str = "Unnamed App", description: str = ""):
-        """Initialize application configuration.
-
-        Args:
-            name: Application name
-            description: Application description
-        """
-        self.name = name
-        self.description = description
-        self.models: Dict[str, Model] = {}
-        self.tools: Dict[str, Any] = {}
-        self.teams: Dict[str, Team] = {}
-        self.flows: List[Flow] = []
-        self.magnets: Dict[str, Dict[str, Any]] = {}
-        self.version: str = "0.1.0"
-        self.development: bool = True
 
 
 class GlueApp:

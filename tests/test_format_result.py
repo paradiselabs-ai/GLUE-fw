@@ -29,7 +29,7 @@ async def test_format_result_stub_summary_and_context_on_success():
     assert data["final_answer"] == "Task completed successfully with artifacts: []"
     # supporting_context should include the memory entry
     assert len(data["supporting_context"]) == 1
-    assert "entry1" in data["supporting_context"][0]
+    assert data["supporting_context"][0] == "entry1"
 
 
 @pytest.mark.asyncio
@@ -49,4 +49,4 @@ async def test_format_result_stub_summary_and_context_on_error():
     assert data["final_answer"] == "Task failed: fail"
     # supporting_context should include the memory entry
     assert len(data["supporting_context"]) == 1
-    assert "entryA" in data["supporting_context"][0]
+    assert data["supporting_context"][0] == "entryA"

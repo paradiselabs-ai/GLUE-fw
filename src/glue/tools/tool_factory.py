@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional, Type, Union, Callable, Set, ClassVar
 from pydantic import BaseModel, Field, ConfigDict
 
 from glue.tools.tool_base import Tool, ToolConfig, ToolPermission, DynamicTool
-from glue.core.types import AdhesiveType
+from glue.core.schemas import AdhesiveType
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.tools.factory")
