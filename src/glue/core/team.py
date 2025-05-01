@@ -8,4 +8,4 @@ the teams module to maintain backward compatibility with existing tests.
 from .teams import Team
 
 # Re-export Team class for backward compatibility
-__all__ = ['Team']
+__all__ = ["Team"]

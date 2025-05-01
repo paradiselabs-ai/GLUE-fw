@@ -29,8 +29,9 @@ jobs:
         pip install -e .
     - name: Test with pytest
       run: |
-        pytest --cov=src/glue tests/
+        pytest --cov=src/glue
     - name: Upload coverage report
       uses: codecov/codecov-action@v3
       with:
         fail_ci_if_error: true
+        token: ${{ secrets.CODECOV_TOKEN }}

@@ -1,7 +1,6 @@
 [run]
 source = src/glue
 omit = 
-    */tests/*
     */venv/*
     */examples/*
     */__pycache__/*

@@ -11,10 +11,4 @@ from .base_model import BaseModel, ModelProvider
 from .types import AdhesiveType
 
 # Export public API
-__all__ = [
-    "GlueApp",
-    "Model",
-    "BaseModel",
-    "ModelProvider",
-    "AdhesiveType"
-]
+__all__ = ["GlueApp", "Model", "BaseModel", "ModelProvider", "AdhesiveType"]
