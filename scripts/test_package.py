@@ -9,6 +9,8 @@ import sys
 import tempfile
 import venv
 from pathlib import Path
+from glue.core.schemas import Message, ModelConfig
+from glue.core.teams import Team
 
 
 def main():
@@ -65,7 +67,7 @@ def main():
 import glue
 from glue.core.app import GlueApp
 from glue.core.model import Model
-from glue.core.team import Team
+from glue.core.teams import Team
 
 print(f"Successfully imported GLUE version: {glue.__version__}")
 print("Core components available:")

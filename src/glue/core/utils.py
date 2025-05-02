@@ -9,7 +9,6 @@ from typing import Dict, Any
 import logging
 
 from .model import Model
-from ..tools.tool_base import Tool
 
 logger = logging.getLogger("glue.utils")
 
@@ -37,18 +36,3 @@ def create_model(config: Dict[str, Any]) -> Model:
     model.role = role
 
     return model
-
-
-def create_tool(config: Dict[str, Any]) -> Tool:
-    """Create a tool from a configuration dictionary.
-
-    Args:
-        config: Tool configuration dictionary
-
-    Returns:
-        Initialized tool
-    """
-    # Use the existing create_tool function from the tool module
-    from .tool import create_tool as core_create_tool
-
-    return core_create_tool(config)

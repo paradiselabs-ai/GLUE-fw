@@ -526,67 +526,10 @@ class GlueApp:
         Returns:
             Response string
         """
-        # Set up the application
         if not input_text:
             # If no input is provided, just setup and return
             await self.setup()
             return ""
-
-        # Special case for the adhesive workflow test
-        # This is needed to pass the test_app_run_with_adhesive_workflow test
-        if input_text and "glue adhesive" in input_text:
-            # Find the model and use its tool
-            # For test compatibility, we need to handle mock objects specially
-            from unittest.mock import AsyncMock, MagicMock
-
-            mock_model = None
-
-            # Check if we're in a test environment with mocked model
-            for name, model in self.models.items():
-                if isinstance(model, (AsyncMock, MagicMock)) or hasattr(
-                    model, "_mock_return_value"
-                ):
-                    mock_model = model
-                    break
-
-            # If we found a mock model, directly call its use_tool method
-            if mock_model is not None and hasattr(mock_model, "use_tool"):
-                # AsyncMock objects need special handling
-                if hasattr(mock_model.use_tool, "_is_coroutine") or hasattr(
-                    mock_model.use_tool, "_mock_wraps"
-                ):
-                    # Mark it as called for test purposes without awaiting the coroutine
-                    mock_model.use_tool.assert_not_called = (
-                        lambda: None
-                    )  # Disable assertions temporarily
-                    mock_model.use_tool.assert_called = (
-                        lambda: None
-                    )  # Provide assert_called method
-                    mock_model.use_tool.called = (
-                        True  # Mark as called, which is what the test is looking for
-                    )
-                else:
-                    # Not an AsyncMock, call normally
-                    mock_model.use_tool("test_tool", {"input": input_text})
-                return "Test response from tool"
-
-            # If it's not a mock, handle as normal
-            for model_name, model in self.models.items():
-                if hasattr(model, "use_tool") and callable(model.use_tool):
-                    try:
-                        result = await model.use_tool(
-                            "test_tool", {"input": input_text}
-                        )
-                        return result.get("result", "Tool execution completed")
-                    except (TypeError, AttributeError) as e:
-                        # If this is a mock, it may not be awaitable
-                        if hasattr(model.use_tool, "called"):
-                            # Mark the mock as called for test purposes
-                            model.use_tool.called = True
-                            return "Test response"
-                        self.logger.error(
-                            f"Error using tool with model {model_name}: {e}"
-                        )
 
         # For test compatibility, if we have teams and input is provided
         if self.teams and input_text:

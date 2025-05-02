@@ -35,20 +35,11 @@ model assistant_2 {
     }
 }
 
-model assistant_3 {
-    provider = openrouter
-    role = "Assistant who helps organize information and execute tasks"
-    adhesives = [glue, velcro]
-    config {
-        model = "meta-llama/llama-4-maverick:free"
-    }
-}
-
 // Define teams and flows
 magnetize {
     research {
         lead = researcher
-        members = [assistant_1, assistant_2, assistant_3]
+        members = [assistant_1, assistant_2]
     }
 }
 

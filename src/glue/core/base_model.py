@@ -228,16 +228,6 @@ class BaseModel:
             self.tools[name] = tool
             logger.warning(f"Added tool {name} without execute method")
 
-    async def add_tool(self, name: str, tool: Any):
-        """Add a tool to this model.
-
-        Args:
-            name: Tool name
-            tool: Tool instance
-        """
-        # Just call the sync version
-        self.add_tool_sync(name, tool)
-
     async def generate(self, content: str) -> str:
         """Generate a response from the model, with tool call detection and execution loop.
 
@@ -715,37 +705,6 @@ class BaseModel:
 
         # logger.debug(f"Formatted prompt engineering messages: {formatted_messages}")
         return formatted_messages
-
-    def _format_tool_for_provider(self, name: str, tool: Any) -> Dict[str, Any]:
-        """Format a tool for the provider.
-
-        Args:
-            name: Tool name
-            tool: Tool instance
-
-        Returns:
-            Formatted tool dictionary
-        """
-        # Get tool description
-        description = tool.description
-
-        # Get parameters info
-        parameters = tool.parameters
-        required_params = parameters.required
-        properties = parameters.get("properties", {})
-
-        # Format tool description
-        formatted_tool = {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",  # Required by Gemini API
-                "required": required_params,
-                "properties": properties,
-            },
-        }
-
-        return formatted_tool
 
     async def generate_response(
         self, messages: List[Message], tools: Optional[List[Dict[str, Any]]] = None

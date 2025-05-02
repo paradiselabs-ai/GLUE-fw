@@ -62,10 +62,10 @@ class PersistentMemory:
         """Write all entries back to the JSON file."""
         try:
             with open(self.file_path, "w") as f:
-                f.write(
-                    "[\n"
-                    + ",\n".join(e.model_dump_json(indent=2) for e in self._entries)
-                    + "\n]"
-                )
-        except IOError:
+                # Use json.dump for robust serialization
+                json.dump([entry.model_dump() for entry in self._entries], f, indent=2)
+        except (IOError, TypeError) as e:
+            # Log the error or handle it more specifically if needed
+            print(f"Error saving persistent memory to {self.file_path}: {e}")
+            # Consider whether to raise the error or handle differently
             pass

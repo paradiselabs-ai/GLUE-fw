@@ -455,27 +455,26 @@ class AppConfig(BaseModel):
         default_factory=list, description="Team configurations"
     )
     magnets: List[MagnetConfig] = Field(
-        default_factory=list, description="Magnetic connections"
+        default_factory=list, description="Magnetic connections between teams"
     )
 
     @field_validator("log_level")
     def validate_log_level(cls, v):
-        valid_levels = {"debug", "info", "warning", "error", "critical"}
-        if v.lower() not in valid_levels:
-            raise ValueError(f"Log level must be one of {valid_levels}")
-        return v.lower()
+        allowed_levels = {"debug", "info", "warning", "error", "critical"}
+        if v not in allowed_levels:
+            raise ValueError(f"Log level must be one of {allowed_levels}")
+        return v
 
     @field_validator("magnets")
     def validate_magnets(cls, v, values):
-        if "teams" not in values.data:
-            return v
-
-        team_names = {team.name for team in values.data["teams"]}
-        for magnet in v:
-            if magnet.source not in team_names:
-                raise ValueError(f"Magnet source team '{magnet.source}' does not exist")
-            if magnet.target not in team_names:
-                raise ValueError(f"Magnet target team '{magnet.target}' does not exist")
+        # Ensure team names exist if config is available
+        if "teams" in values:
+            team_names = {team.name for team in values["teams"]}
+            for magnet in v:
+                if magnet.source not in team_names:
+                    raise ValueError(f"Magnet source team '{magnet.source}' not found")
+                if magnet.target not in team_names:
+                    raise ValueError(f"Magnet target team '{magnet.target}' not found")
         return v
 
 
@@ -493,58 +492,6 @@ class TaskStatus(str, Enum):
     PENDING_RETRY = "pending_retry"
     NO_MEMBER = "no_member"
     ESCALATED = "escalated"
-
-
-# Only add if not already present:
-if not hasattr(globals(), "ToolResult"):
-
-    class ToolResult(BaseModel):
-        tool_name: str
-        result: Any
-        adhesive: AdhesiveType = AdhesiveType.TAPE
-        timestamp: datetime = Field(default_factory=datetime.now)
-        metadata: Dict[str, Any] = Field(default_factory=dict)
-        is_error: bool = False
-
-
-if not hasattr(globals(), "Message"):
-
-    class Message(BaseModel):
-        role: str
-        content: str
-        name: Optional[str] = None
-        tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
-        metadata: Dict[str, Any] = Field(default_factory=dict)
-
-
-if not hasattr(globals(), "ModelConfig"):
-
-    class ModelConfig(BaseModel):
-        provider: str
-        model_id: str
-        temperature: float = 0.7
-        max_tokens: int = 2048
-        api_key: Optional[str] = None
-        api_params: Dict[str, Any] = Field(default_factory=dict)
-        supported_adhesives: List[str] = Field(default_factory=list)
-
-
-if not hasattr(globals(), "ToolConfig"):
-
-    class ToolConfig(BaseModel):
-        name: str
-        description: str
-        provider: Optional[str] = None
-        config: Dict[str, Any] = Field(default_factory=dict)
-
-
-if not hasattr(globals(), "TeamConfig"):
-
-    class TeamConfig(BaseModel):
-        name: str
-        lead: str
-        members: List[str] = Field(default_factory=list)
-        tools: List[str] = Field(default_factory=list)
 
 
 class MemoryEntry(BaseModel):
