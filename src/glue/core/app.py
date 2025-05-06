@@ -218,13 +218,21 @@ class GlueApp:
                 if isinstance(model_config, dict) and "name" not in model_config:
                     model_config["name"] = model_name
 
-                # Create model with proper name parameter
+                # Instantiate the GLUE model
                 model = Model(config=model_config, name=model_name)
+                # Extract any Smolagents-specific config from nested 'config' block
+                smol_opts = {}
+                nested = model_config.get("config", {})
+                # Planning interval for extra planning
+                if isinstance(nested, dict) and "planning_interval" in nested:
+                    smol_opts["planning_interval"] = nested.get("planning_interval")
+                # Custom system prompt template
+                if isinstance(nested, dict) and "system_prompt" in nested:
+                    smol_opts["system_prompt"] = nested.get("system_prompt")
+                # Attach to model for later use in Smolagents integration
+                setattr(model, "smol_config", smol_opts)
 
-                # Set name attribute explicitly if it doesn't exist
-                if not hasattr(model, "name"):
-                    model.name = model_name
-
+                # Store the model
                 self.models[model.name] = model
 
         # Set up tools

@@ -160,7 +160,20 @@ class GlueAppBuilder:
         )
 
         self.logger.info(f"Creating model: {name}")
-        return Model(config=model_pydantic_config, adhesives=adhesives)
+        # Instantiate the GLUE model
+        model = Model(config=model_pydantic_config, adhesives=adhesives)
+        # Extract Smolagents-specific options from the nested 'config' block
+        smol_opts = {}
+        nested_cfg = config.get("config", {}) if isinstance(config, dict) else {}
+        if isinstance(nested_cfg, dict):
+            if "planning_interval" in nested_cfg:
+                smol_opts["planning_interval"] = nested_cfg["planning_interval"]
+            if "system_prompt" in nested_cfg:
+                smol_opts["system_prompt"] = nested_cfg["system_prompt"]
+        # Attach to the model for later use
+        setattr(model, "smol_config", smol_opts)
+        self._models[model.name] = model
+        return model
 
     def _create_tool(self, config: Dict[str, Any]) -> Tool:
         """Create a tool from configuration.

@@ -493,27 +493,18 @@ async def run_app(
 
         # Non-interactive mode
         elif input_text:
-            logger.info(
-                "Running non-interactive agentic workflow with programmatic orchestrator"
-            )
-            # Use the programmatic TeamLeadAgentLoop for proper asynchronous delegation
-            from glue.core.agent_loop import TeamLeadAgentLoop
+            logger.info("Running non-interactive agentic workflow with GlueSmolTeam orchestrator")
+            from glue.core.glue_smolteam import GlueSmolTeam
 
             first_team_name = next(iter(app.teams))
             team = app.teams[first_team_name]
-            # Prepare the delegate_task tool executable
-            delegate_tool_exec = team._tools.get("delegate_task")
-            if hasattr(delegate_tool_exec, "execute"):
-                delegate_tool_exec = delegate_tool_exec.execute
-            # Instantiate and run the lead orchestrator loop
-            lead_loop = TeamLeadAgentLoop(
-                team=team, delegate_tool=delegate_tool_exec, agent_llm=team.lead
+            smol_team = GlueSmolTeam(
+                team=team,
+                model_clients=team.models,
+                glue_config=None,
             )
-            # Run orchestration with the initial goal
-            final_json = await lead_loop.start(
-                parent_task_id=first_team_name, goal_description=input_text
-            )
-            # Display the final JSON response
+            smol_team.setup()
+            final_json = smol_team.run(input_text)
             from rich.syntax import Syntax
             from rich.align import Align
 

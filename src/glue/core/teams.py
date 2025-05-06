@@ -688,45 +688,22 @@ class Team:
         logger.info(f"Added model {model.name} to team {self.name} with role {role}")
 
     async def start_agent_loops(self, initial_input: Optional[str] = None) -> None:
-        """Start core agent loops using simplified stubs for Team Lead and Team Member agents."""
-        from .agent_loop import TeamMemberAgentLoop, TeamLeadAgentLoop
+        """Start core agent loops using GlueSmolTeam instead of legacy loops."""
+        from .glue_smolteam import GlueSmolTeam
 
         logger.info(f"Starting core agent loops for team {self.name}")
-        # Start Team Lead loop if a goal is provided
+        # Orchestrate entire team via GlueSmolTeam
         if self.config.lead and initial_input:
-            # Pass the execute coroutine of the delegate_task tool to the TeamLeadAgentLoop
-            delegate_tool_exec = self._tools.get("delegate_task")
-            if hasattr(delegate_tool_exec, "execute"):
-                delegate_tool_exec = delegate_tool_exec.execute
-            # Instantiate TeamLeadAgentLoop with team object and LLM
-            agent_llm = self.models.get(self.config.lead)
-            lead_loop = TeamLeadAgentLoop(
-                team=self, delegate_tool=delegate_tool_exec, agent_llm=agent_llm
+            smol_team = GlueSmolTeam(
+                team=self,
+                model_clients=self.models,
+                glue_config=None,
             )
-            # Track and start TeamLead loop
-            self.agent_loops[self.config.lead] = lead_loop
-            asyncio.create_task(
-                lead_loop.start(
-                    parent_task_id=self.name, goal_description=initial_input
-                )
-            )
-            logger.info(f"Started Team Lead loop for {self.config.lead}")
-        # Start Team Member loops
-        for member_id in self.config.members:
-            member_loop = TeamMemberAgentLoop(
-                member_id,
-                self.name,
-                self._tools.get("report_task_completion").execute,
-                agent_llm=self.models.get(member_id),
-            )
-            # Register all available tools in the member loop
-            for tool_name, tool in self._tools.items():
-                tool_callable = getattr(tool, "execute", tool)
-                member_loop.register_tool(tool_name, tool_callable)
-            # Track and start TeamMember loop
-            self.agent_loops[member_id] = member_loop
-            asyncio.create_task(member_loop.start(self.fetch_task_for_member))
-            logger.info(f"Started Team Member loop for {member_id}")
+            smol_team.setup()
+            self.agent_loops[self.config.lead] = smol_team
+            # Run in background to avoid blocking
+            asyncio.create_task(asyncio.to_thread(smol_team.run, initial_input))
+            logger.info(f"Started GlueSmolTeam for {self.config.lead}")
 
     def get_agent_status(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
         """Get the status of agent loops

@@ -2,19 +2,6 @@ glue app {
     name = "Multi-Agent Development Team"
     config {
         development = true
-        sticky = true  // Enable persistence
-        portkey = true  // Enable Portkey integration
-    }
-}
-
-// Define tools
-tool web_search {
-    provider = serp  // Will use SERP_API_KEY from environment
-}
-
-tool file_handler {
-    config {
-        base_path = "./workspace"  // Set the base path for file operations
     }
 }
 
@@ -66,22 +53,18 @@ magnetize {
     design_team {
         lead = architect
         members = [developer]
-        tools = [web_search, code_interpreter]
     }
 
     implementation_team {
         lead = developer
-        tools = [code_interpreter, file_handler]
     }
 
     qa_team {
         lead = tester
-        tools = [code_interpreter]
     }
 
     docs_team {
         lead = documenter
-        tools = [file_handler]
     }
 
     // Define information flow between teams
