@@ -385,7 +385,7 @@ def prompt_with_help(
 
 # ==================== Application Functions ====================
 async def run_app(
-    config_file: str, interactive: bool = False, input_text: str = None, engine: str = 'glue'
+    config_file: str, interactive: bool = False, input_text: str = None, engine: str = 'agno'
 ) -> bool:
     """Run a GLUE application from a configuration file.
 
@@ -3164,7 +3164,7 @@ def cli():
 @click.option("--interactive", "-I", is_flag=True, help="Run in interactive mode")
 @click.option("--verbose", "-v", count=True, help="Enable verbose logging")
 @click.option("--env", "-e", help="Path to .env file")
-@click.option("--engine", type=click.Choice(["glue", "agno"]), default="glue", help="Specify the execution engine")
+@click.option("--engine", type=click.Choice(["glue", "agno"]), default="agno", help="Specify the execution engine")
 def run_command(config, input, interactive, verbose, env, engine):
     """Run a GLUE application"""
     # Load environment variables if specified

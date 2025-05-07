@@ -35,8 +35,9 @@ class GlueLexer:
         "COLON": r":",
         "COMMA": r",",
         "EQUALS": r"=",
+        "DASH": r"-",  # Support for YAML list items
         "ARROW": r"(->|<-|><|<>)",  # Add support for magnetic flow operators
-        "COMMENT": r"//.*",
+        "COMMENT": r"(//|#).*",  # Support both C-style and YAML-style comments
         "WHITESPACE": r"[ \t]+",
         "NEWLINE": r"\n",
     }

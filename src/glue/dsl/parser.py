@@ -55,7 +55,7 @@ class GlueParser:
             "apply": None,
         }
 
-        # Parse tokens
+        # Parse traditional GLUE DSL tokens
         while not self._is_at_end():
             if self._check(TokenType.KEYWORD):
                 keyword = self._peek().value
@@ -69,6 +69,21 @@ class GlueParser:
                     self._parse_magnetize()
                 elif keyword == "apply":
                     self._parse_apply()
+                elif keyword == "app":
+                    # Handle 'app' keyword for YAML-style configs
+                    self._advance()  # Skip 'app' keyword
+                    # Check if the next token is '_name' for 'app_name'
+                    if not self._is_at_end() and self._check(TokenType.IDENTIFIER) and self._peek().value == "_name":
+                        self._advance()  # Skip '_name'
+                        if not self._is_at_end() and self._check(TokenType.COLON):
+                            self._advance()  # Skip ':'
+                            # Parse app name
+                            if not self._is_at_end() and self._check(TokenType.IDENTIFIER):
+                                app_name = self._advance().value
+                                self.ast["app"]["name"] = app_name
+                    else:
+                        # Just a standard 'app' token, no special handling needed
+                        pass
                 else:
                     raise SyntaxError(
                         f"Unexpected keyword at line {self._peek().line}: {keyword}"
@@ -601,14 +616,156 @@ class GlueParser:
             ValueError: If the content contains semantic errors
         """
         self.logger.info("Parsing GLUE content from string")
-
-        # Tokenize
+        
+        # Check if content is YAML format by examining the common YAML patterns
+        # This is more robust than just checking for '---' or 'app_name:'
+        first_10_lines = content.split('\n')[:10]
+        yaml_indicators = ['app_name:', 'engine:', 'teams:', 'description:', 'version:', 'magnetic_field:', 'adhesives:']
+        
+        is_yaml_format = False
+        for line in first_10_lines:
+            stripped = line.strip()
+            # Check for common YAML indicators
+            for indicator in yaml_indicators:
+                if stripped.startswith(indicator):
+                    is_yaml_format = True
+                    break
+            if is_yaml_format:
+                break
+                
+        # Check for YAML structure (key: value pattern)
+        if not is_yaml_format and ':' in content:
+            for line in first_10_lines:
+                stripped = line.strip()
+                # Look for key-value pattern with indentation
+                if ':' in stripped and not stripped.startswith('#') and not stripped.startswith('//') and not stripped.startswith('"'):
+                    is_yaml_format = True
+                    break
+        
+        if is_yaml_format:
+            self.logger.info("Detected YAML format from content, using yaml parser")
+            import yaml
+            try:
+                # Parse directly with YAML
+                config = yaml.safe_load(content)
+                return self._convert_yaml_to_ast(config)
+            except Exception as e:
+                self.logger.error(f"YAML parsing error: {str(e)}")
+                self.logger.debug(f"YAML content causing error: {content[:500]}...")
+                raise
+        
+        # Otherwise use the traditional lexer/parser
         lexer = GlueLexer()
         tokens = lexer.tokenize(content)
-
-        # Parse
         return self.parse(tokens)
 
+    def _convert_yaml_to_ast(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert YAML configuration to our internal AST format.
+        
+        This method bridges the gap between modern YAML configurations 
+        and the internal AST format used by the GLUE framework.
+        
+        Args:
+            config: The parsed YAML configuration dictionary
+            
+        Returns:
+            AST dictionary in the format expected by the rest of the framework
+        """
+        self.logger.info("Converting YAML configuration to AST format")
+        
+        # Initialize the AST with default values
+        ast = {
+            "app": {},
+            "teams": [],
+            "models": {},
+            "tools": {},
+            "flows": [],
+            "magnetize": {},
+            "apply": None,
+        }
+        
+        # Extract app information
+        if "app_name" in config:
+            ast["app"]["name"] = config["app_name"]
+        if "description" in config:
+            ast["app"]["description"] = config["description"]
+        if "version" in config:
+            ast["app"]["version"] = config["version"]
+        if "engine" in config:
+            ast["app"]["engine"] = config["engine"]
+        
+        # Process teams
+        if "teams" in config and isinstance(config["teams"], dict):
+            for team_name, team_config in config["teams"].items():
+                team = {"name": team_name}
+                
+                # Add team description
+                if "description" in team_config:
+                    team["description"] = team_config["description"]
+                
+                # Add team lead status
+                if "lead" in team_config:
+                    team["is_lead"] = bool(team_config["lead"])
+                
+                # Process team agents
+                if "agents" in team_config and isinstance(team_config["agents"], list):
+                    team["agents"] = []
+                    for agent_config in team_config["agents"]:
+                        if isinstance(agent_config, dict) and "name" in agent_config:
+                            agent = {"name": agent_config["name"]}
+                            # Add provider and model if present
+                            if "provider" in agent_config:
+                                agent["provider"] = agent_config["provider"]
+                            if "model" in agent_config:
+                                agent["model"] = agent_config["model"]
+                            team["agents"].append(agent)
+                
+                # Process team tools
+                if "tools" in team_config and isinstance(team_config["tools"], list):
+                    team["tools"] = team_config["tools"]
+                
+                ast["teams"].append(team)
+        
+        # Process magnetic field/flows
+        if "magnetic_field" in config and isinstance(config["magnetic_field"], dict):
+            field_config = config["magnetic_field"]
+            
+            # Initialize magnetize entry
+            magnetize = {}
+            if "name" in field_config:
+                magnetize["name"] = field_config["name"]
+            
+            # Process flows
+            if "flows" in field_config and isinstance(field_config["flows"], list):
+                for flow_config in field_config["flows"]:
+                    if isinstance(flow_config, dict):
+                        flow = {}
+                        if "source" in flow_config:
+                            flow["source"] = flow_config["source"]
+                        if "target" in flow_config:
+                            flow["target"] = flow_config["target"]
+                        if "type" in flow_config:
+                            flow["type"] = flow_config["type"]
+                        
+                        ast["flows"].append(flow)
+            
+            ast["magnetize"] = magnetize
+        
+        # Process adhesives
+        if "adhesives" in config and isinstance(config["adhesives"], list):
+            for adhesive_config in config["adhesives"]:
+                if isinstance(adhesive_config, dict):
+                    tool_name = adhesive_config.get("tool")
+                    adhesive_type = adhesive_config.get("type")
+                    
+                    if tool_name and adhesive_type:
+                        if tool_name not in ast["tools"]:
+                            ast["tools"][tool_name] = {}
+                        
+                        ast["tools"][tool_name]["adhesive"] = adhesive_type
+        
+        self.logger.info(f"Converted YAML config to AST with {len(ast['teams'])} teams")
+        return ast
 
 # For backward compatibility
 GlueDSLParser = GlueParser

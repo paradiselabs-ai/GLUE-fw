@@ -161,14 +161,14 @@ def test_magnetic_flow_translation():
     magnetic_field = MagneticField(name="TestField")
     
     # Add a magnetic flow from TeamA to TeamB with ATTRACT polarity
-    magnetic_field.set_flow(
+    magnetic_field.set_flow_sync(
         source_team="TeamA",
         target_team="TeamB",
         flow_type=FlowType.PUSH
     )
     
     # Add a magnetic flow from TeamB to TeamA with REPEL polarity
-    magnetic_field.set_flow(
+    magnetic_field.set_flow_sync(
         source_team="TeamB",
         target_team="TeamA",
         flow_type=FlowType.PULL
@@ -289,13 +289,13 @@ def test_magnetic_field_integration():
     magnetic_field = MagneticField(name="TestField")
     
     # Add flows to the magnetic field
-    magnetic_field.set_flow(
+    magnetic_field.set_flow_sync(
         source_team="TeamA",
         target_team="TeamB",
         flow_type=FlowType.PUSH
     )
     
-    magnetic_field.set_flow(
+    magnetic_field.set_flow_sync(
         source_team="TeamB",
         target_team="TeamA",
         flow_type=FlowType.PULL

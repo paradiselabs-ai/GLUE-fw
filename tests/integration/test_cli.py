@@ -1,10 +1,10 @@
 import pytest
-from typer.testing import CliRunner
+from click.testing import CliRunner
 import os
+import sys
 
-# Assuming your Typer app object is named 'app' in src/glue/cli.py
-# Adjust the import path if necessary
-from glue.cli import app
+# Import the Click CLI
+from glue.cli import cli
 
 runner = CliRunner()
 
@@ -25,14 +25,34 @@ def test_cli_run_basic_agno_app(tmp_path):
 
     # Run the command from the parent directory of the app file
     # to ensure relative paths work if needed later.
-    # However, typer's CliRunner handles paths relative to the cwd
-    # where pytest is run, so using the absolute path is safer.
-    result = runner.invoke(app, ["run", str(app_file)])
+    # Use Click's CLI runner with the correct structure
+    result = runner.invoke(cli, ["run", str(app_file), "--engine", "agno"])
 
     # --- RED Phase Assertion ---
     # This assertion should FAIL initially because Agno is not integrated
     # and the current 'run' command likely expects different file content/structure.
     # We expect a successful exit code once implemented.
     assert result.exit_code == 0
-    # We might also assert specific output later, e.g.:
-    # assert "Agno workflow started" in result.stdout
+    
+
+def test_cli_uses_agno_as_default_engine(tmp_path):
+    """Test that the CLI uses Agno as the default engine when none is specified."""
+    # Create a minimal test file
+    app_dir = tmp_path / "default_engine_test"
+    app_dir.mkdir()
+    app_file = app_dir / "default_engine_test.glue"
+    app_file.touch()  # Create an empty file
+    
+    # Run the command without explicitly specifying the engine
+    result = runner.invoke(cli, ["run", str(app_file)])
+    
+    # Now that we've updated the default engine to Agno, we should see Agno-related messages 
+    # in the output, even if there are errors because the test environment doesn't have Agno installed
+    # This is fine for our test purpose - we just need to verify Agno is being used by default
+        
+    # Look for Agno-specific error messages
+    assert "Error (Agno):" in result.stdout or "Agno engine:" in result.stdout
+        
+    # The command might fail with errors about missing Agno modules, that's expected
+    # in a test environment - we just need to confirm Agno was attempted
+    # We don't need to check the exit code

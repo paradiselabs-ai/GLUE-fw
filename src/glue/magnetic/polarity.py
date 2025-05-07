@@ -17,4 +17,3 @@ class MagneticPolarity(str, Enum):
     
     ATTRACT = "attract"  # Teams work together smoothly
     REPEL = "repel"      # Teams operate independently with conditional interactions
-# where is push ->  and <- pull?
