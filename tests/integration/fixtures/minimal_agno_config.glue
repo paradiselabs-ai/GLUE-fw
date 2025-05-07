@@ -1,0 +1,5 @@
+# Minimal Agno config for testing CLI integration
+# This file is used by tests/integration/test_agno_base.py
+
+app_name: MinimalAgnoTestAppForCLI
+engine: agno

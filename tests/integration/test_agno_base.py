@@ -12,7 +12,7 @@ def test_minimal_agno_workflow_via_cli():
     # TODO: Define how 'glue run' will invoke Agno initially.
     # For now, assume a hypothetical flag or default behavior shift.
     # We might need a minimal config file later.
-    result = runner.invoke(cli, ['run', '--engine', 'agno', '--config', 'path/to/minimal_agno_config.glue'])
+    result = runner.invoke(cli, ['run', '--engine', 'agno', 'tests/integration/fixtures/minimal_agno_config.glue'])
 
     # Assert successful execution (exit code 0)
     # This WILL FAIL initially as cli.py doesn't support '--engine agno' yet.

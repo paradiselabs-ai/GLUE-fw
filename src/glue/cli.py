@@ -43,13 +43,13 @@ from rich.status import Status
 # Import framework modules
 # Use direct imports to avoid circular imports
 from glue.core import GlueApp
-from glue.dsl import GlueDSLParser, GlueLexer
+from glue.dsl.parser import GlueParser
+from glue.dsl.lexer import GlueLexer
 
 # Import new utilities
 from .utils.json_utils import extract_json
 from .cliHelpers import parse_interactive_command, get_interactive_help_text
 from .utils.ui_utils import display_warning, set_cli_config
-
 
 # Constants for tools
 def get_available_tools():
@@ -385,7 +385,7 @@ def prompt_with_help(
 
 # ==================== Application Functions ====================
 async def run_app(
-    config_file: str, interactive: bool = False, input_text: str = None
+    config_file: str, interactive: bool = False, input_text: str = None, engine: str = 'glue'
 ) -> bool:
     """Run a GLUE application from a configuration file.
 
@@ -393,6 +393,7 @@ async def run_app(
         config_file: Path to the GLUE configuration file
         interactive: Whether to run in interactive mode
         input_text: Input text to process (for non-interactive mode)
+        engine: The execution engine to use ('glue' or 'agno')
 
     Returns:
         True if successful, False otherwise
@@ -402,11 +403,65 @@ async def run_app(
         get_console()
     )  # Use get_console() instead of Console() to ensure theme is applied
 
+    if engine == 'agno':
+        logger.info(f"Agno engine selected. Config file: {config_file}")
+        if not os.path.exists(config_file):
+            logger.error(f"Agno engine: Configuration file not found: {config_file}")
+            print(f"[bold red]Error (Agno):[/bold red] Configuration file not found: {config_file}")
+            return False
+        
+        try:
+            # Read the GLUE file
+            with open(config_file, "r") as f:
+                glue_content = f.read()
+
+            # Create lexer and parser
+            lexer = GlueLexer()
+            parser = GlueParser()
+            
+            # Parse the GLUE DSL into an AST
+            tokens = lexer.tokenize(glue_content)
+            ast = parser.parse(tokens)
+            
+            if not ast:
+                logger.error("Agno engine: Failed to parse GLUE DSL")
+                print(f"[bold red]Error (Agno):[/bold red] Failed to parse GLUE DSL")
+                return False
+            
+            # Translate the AST to Agno configuration
+            from glue.core.adapters.agno import GlueDSLAgnoTranslator, GlueAgnoAdapter
+            
+            translator = GlueDSLAgnoTranslator()
+            agno_config = translator.translate(ast)
+            
+            logger.info(f"Translated GLUE DSL to Agno configuration")
+            
+            # Create and run the Agno adapter
+            adapter = GlueAgnoAdapter()
+            result = adapter.run(agno_config)
+            
+            if result is None:
+                logger.error("Agno engine: Failed to run Agno workflow")
+                print(f"[bold red]Error (Agno):[/bold red] Failed to run Agno workflow")
+                return False
+                
+            logger.info("Agno engine: Successfully ran Agno workflow")
+            print(f"[bold green]Success (Agno):[/bold green] Successfully ran Agno workflow")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Agno engine: Error running Agno workflow: {str(e)}")
+            print(f"[bold red]Error (Agno):[/bold red] {str(e)}")
+            return False
+
+    # Existing GLUE engine logic starts here
+    logger.info(f"GLUE engine selected. Parsing GLUE file: {config_file}")
+    print(f"[green]Using GLUE engine. Loading configuration: {config_file}[/green]")
+
     try:
         # Check if file exists
         if not os.path.exists(config_file):
-            logger.error(f"Configuration file not found: {config_file}")
-            print(f"Error: Configuration file not found: {config_file}")
+            print(f"[bold red]Error:[/bold red] Configuration file not found: {config_file}")
             return False
 
         logger.info(f"Parsing GLUE file: {config_file}")
@@ -417,7 +472,7 @@ async def run_app(
 
         # Create lexer and parser
         lexer = GlueLexer()
-        parser = GlueDSLParser()
+        parser = GlueParser()
 
         # Parse the GLUE file
         tokens = lexer.tokenize(glue_content)
@@ -2509,11 +2564,8 @@ def list_models():
                 print(f"  - {model}")
 
 
-def display_tools(args: argparse.Namespace) -> int:
+def display_tools() -> int:
     """Display available tools.
-
-    Args:
-        args: The arguments from the parser.
 
     Returns:
         Exit code.
@@ -2572,7 +2624,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
 
         # Parse the file with lexer
         lexer = GlueLexer()
-        parser = GlueDSLParser()
+        parser = GlueParser()
 
         with Progress(
             SpinnerColumn(),
@@ -2594,7 +2646,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
                     task1, advance=1, description="[red]Lexical analysis failed"
                 )
                 console.print(
-                    f"[{CLI_CONFIG['theme']['error']}]Lexical error: {str(e)}[/{CLI_CONFIG['theme']['error']}]"
+                    f"[{CLI_CONFIG['theme']['error']}]Lexical error: {e}[/{CLI_CONFIG['theme']['error']}]"
                 )
                 sys.exit(1)
 
@@ -2610,7 +2662,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
                     task2, advance=1, description="[red]Syntax analysis failed"
                 )
                 console.print(
-                    f"[{CLI_CONFIG['theme']['error']}]Syntax error: {str(e)}[/{CLI_CONFIG['theme']['error']}]"
+                    f"[{CLI_CONFIG['theme']['error']}]Syntax error: {e}[/{CLI_CONFIG['theme']['error']}]"
                 )
                 sys.exit(1)
 
@@ -3098,1309 +3150,97 @@ def animate_typing(console: Console, text: str, speed: float = 0.03) -> None:
 
 
 # ==================== Main CLI Entry Point ====================
-def main():
-    """Main CLI entry point"""
-    # Get a themed console
-    console = get_console()
-
-    try:
-        # Display logo if not in a script or piped environment
-        if sys.stdout.isatty():
-            display_logo(console)
-
-        # Set up argument parser with rich description
-        parser = argparse.ArgumentParser(
-            prog="glue",
-            usage="%(prog)s [options]",
-            epilog="""
-            GLUE Framework (cli) version {__version__}
-            For more information and examples, visit https://github.com/example/glue
-            """,
-        )
-
-        # Create subparsers for commands
-        subparsers = parser.add_subparsers(dest="command", help="Command to run")
-
-        # Run command
-        run_parser = subparsers.add_parser("run", help="Run a GLUE application")
-        run_parser.add_argument("config", help="Path to GLUE config file")
-        run_parser.add_argument("--input", "-i", help="Input text for the app")
-        run_parser.add_argument(
-            "--interactive", "-I", action="store_true", help="Run in interactive mode"
-        )
-        run_parser.add_argument(
-            "--verbose",
-            "-v",
-            action="count",
-            default=0,
-            help="Enable verbose logging (use -vv for debug level)",
-        )
-        run_parser.add_argument("--env", "-e", help="Path to .env file")
-
-        # New command
-        new_parser = subparsers.add_parser("new", help="Create a new GLUE project")
-        new_parser.add_argument("project", help="Project name", nargs="?")
-        new_parser.add_argument(
-            "--template",
-            "-t",
-            help="Ignored - interactive mode is always used",
-            default="interactive",
-        )
-
-        # Forge command (for creating custom components)
-        forge_parser = subparsers.add_parser(
-            "forge", help="Create custom components with AI assistance"
-        )
-        forge_subparsers = forge_parser.add_subparsers(
-            dest="forge_type", help="Type of component to forge"
-        )
-
-        # Forge tool
-        forge_tool_parser = forge_subparsers.add_parser(
-            "tool", help="Create a custom tool"
-        )
-        forge_tool_parser.add_argument("name", help="Tool name")
-        forge_tool_parser.add_argument(
-            "--description", "-d", required=True, help="Tool description"
-        )
-        forge_tool_parser.add_argument(
-            "--template",
-            "-t",
-            choices=["basic", "api", "data"],
-            default="basic",
-            help="Tool template to use",
-        )
-
-        # Forge MCP
-        forge_mcp_parser = forge_subparsers.add_parser(
-            "mcp", help="Create a custom MCP integration"
-        )
-        forge_mcp_parser.add_argument("name", help="MCP name")
-        forge_mcp_parser.add_argument(
-            "--description", "-d", required=True, help="MCP description"
-        )
-
-        # Forge API
-        forge_api_parser = forge_subparsers.add_parser(
-            "api", help="Create a custom API integration"
-        )
-        forge_api_parser.add_argument("name", help="API name")
-        forge_api_parser.add_argument(
-            "--description", "-d", required=True, help="API description"
-        )
-
-        # List tools command
-        subparsers.add_parser("list-tools", help="List available tools")
-
-        # List models command
-        subparsers.add_parser("list-models", help="List available models")
-
-        # Validate command
-        validate_parser = subparsers.add_parser("validate", help="Validate a GLUE file")
-        validate_parser.add_argument("file", help="Path to GLUE file to validate")
-
-        # Version command
-        subparsers.add_parser("version", help="Show GLUE version")
-
-        # Parse arguments
-        args = parser.parse_args()
-
-        # Set up logging
-        if getattr(args, "verbose", 0) > 1:
-            log_level = logging.DEBUG
-        elif getattr(args, "verbose", 0) == 1:
-            log_level = logging.INFO
-        else:
-            log_level = logging.WARNING
-
-        logger = setup_logging(log_level)
-
-        # Process commands
-        try:
-            if args.command == "run":
-                # Load environment variables if specified
-                if args.env:
-                    from dotenv import load_dotenv
-
-                    load_dotenv(args.env)
-                elif os.path.exists(DEFAULT_ENV_FILE):
-                    # Load default .env file if it exists
-                    from dotenv import load_dotenv
-
-                    load_dotenv(DEFAULT_ENV_FILE)
-
-                # Run the application
-                asyncio.run(run_app(args.config, args.interactive, args.input))
-
-            elif args.command == "new":
-                # If no project name provided, just pass None and let create_new_project handle it
-                create_new_project(args.project)
-
-            elif args.command == "forge":
-                if not args.forge_type:
-                    # Run interactive forge command if no subcommand is specified
-                    run_forge_command()
-                elif args.forge_type == "tool":
-                    forge_tool(args.name, args.description, args.template)
-                elif args.forge_type == "mcp":
-                    forge_mcp(args.name, args.description)
-                elif args.forge_type == "api":
-                    forge_api(args.name, args.description)
-                else:
-                    forge_parser.print_help()
-
-            elif args.command == "list-tools":
-                display_tools(args)
-
-            elif args.command == "list-models":
-                list_models()
-
-            elif args.command == "validate":
-                validate_glue_file(args.file)
-
-            elif args.command == "version":
-                print(f"GLUE Framework version {__version__}")
-
-            else:
-                # If no command or unrecognized command, show help
-                parser.print_help()
-
-        except KeyboardInterrupt:
-            print("\nOperation cancelled by user")
-            sys.exit(0)
-        except Exception as e:
-            logger.error(f"Error executing command: {str(e)}", exc_info=True)
-            print(f"Error: {str(e)}")
-            sys.exit(1)
-
-    except KeyboardInterrupt:
-        print("\nOperation cancelled by user")
-        sys.exit(0)
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        sys.exit(1)
-
-
-def get_template_content(template: str, project_name: str) -> str:
-    """Create a GLUE file interactively with the user.
-
-    This function provides a rich, wizard-style interface for creating a new GLUE
-    application configuration. It guides users through a step-by-step process for defining
-    models, teams, tools, and other application settings.
-
-    Args:
-        template: Ignored - interactive mode is always used
-        project_name: Name of the project
-
-    Returns:
-        Generated GLUE file content as a string
-    """
-    from rich.prompt import Confirm
-    from rich.panel import Panel
-    from rich.table import Table
-    from rich import box
-    from rich.rule import Rule
-
-    console = get_console()
-
-    # Container for all wizard data
-    wizard_data = {
-        "current_step": 1,
-        "total_steps": 6,
-        "app_name": project_name,
-        "description": f"A multi-agent GLUE application for {project_name}",
-        "version": "0.1.0",
-        "models": [],
-        "teams": [],
-        "tools": [],
-    }
-
-    # Helper function to display wizard progress
-    def show_wizard_progress(current_step, total_steps=6):
-        progress_width = 40
-        filled = int((current_step / total_steps) * progress_width)
-
-        console.print(
-            f"\n[bright_blue]Step {current_step}/{total_steps}:[/bright_blue] Progress"
-        )
-        console.print(
-            f"[bright_blue]{'━' * filled}[/bright_blue][dim]{'━' * (progress_width - filled)}[/dim]"
-        )
-        console.print()
-
-    # Helper function to display section transition animation
-    def transition_to_section(title, step, total_steps=6):
-        console.print(f"[dim]Moving to {title} section...[/dim]")
-        time.sleep(0.2)  # Just a short pause instead of lengthy animation
-
-    # Helper function to create section headers with progress
-    def section_header(title, step, total_steps=6):
-        console.print("\n\n")
-
-        # Update and show progress
-        wizard_data["current_step"] = step
-        show_wizard_progress(step, total_steps)
-
-        # Create a simpler header
-        console.print(
-            f"[bold white on bright_blue] STEP {step}: {title.upper()} [/bold white on bright_blue]"
-        )
-        console.print()
-
-    # Helper function to create subsection headers
-    def subsection_header(title):
-        console.print()
-        console.print(f"[bold cyan]{title}[/bold cyan]")
-        console.print(Rule(style="bright_blue", characters="·"))
-
-    # Helper for creating formatted options
-    def show_options(options, default=None, descriptions=None):
-        table = Table(show_header=False, box=box.SIMPLE, expand=False)
-        table.add_column("Number", style="bold yellow", justify="right", width=4)
-        table.add_column("Option", style="cyan")
-        if descriptions:
-            table.add_column("Description", style="dim")
-
-        for i, option in enumerate(options, 1):
-            if descriptions:
-                desc = descriptions[i - 1] if i - 1 < len(descriptions) else ""
-                if default is not None and i == default:
-                    table.add_row(
-                        f"{i}", f"[bold]{option}[/bold] [dim](default)[/dim]", desc
-                    )
-                else:
-                    table.add_row(f"{i}", option, desc)
-            else:
-                if default is not None and i == default:
-                    table.add_row(f"{i}", f"[bold]{option}[/bold] [dim](default)[/dim]")
-                else:
-                    table.add_row(f"{i}", option)
-
-        console.print(table)
-
-    # Display tip panel
-    def show_tip(message, icon="💡"):
-        console.print(f"\n{icon} [bold cyan]Tip:[/bold cyan] {message}\n")
-
-    # Display custom info panel
-    def show_info(message, title="Information"):
-        console.print(f"\nℹ️ [bold blue]{title}:[/bold blue] {message}\n")
-
-    # Welcome screen
-    console.clear()
-    display_logo(console, show_version=True)
-    console.print()
-
-    # Simplified welcome panel with proper markup
-    welcome_panel = Panel(
-        f"[bold]Welcome to the GLUE Project Wizard![/bold]\n\n"
-        f"Creating project: [bold]{project_name}[/bold]\n\n"
-        "This wizard will guide you through creating your GLUE application",
-        title="🚀 Create New GLUE Project",
-        border_style="bright_blue",
-        padding=(1, 4),
-    )
-    console.print(welcome_panel)
-    console.print()
-
-    # Skip the animation, just a small delay
-    time.sleep(0.5)
-
-    # ----------------------------------------
-    # 1. APP CONFIGURATION
-    # ----------------------------------------
-    transition_to_section("APPLICATION DETAILS", 1)
-    section_header("APPLICATION DETAILS", 1)
-
-    show_tip("This section defines the basic properties of your GLUE application.")
-
-    # Application name and description
-    app_name = project_name
-    description = prompt_with_help(
-        "Description",
-        default=f"A multi-agent GLUE application for {project_name}",
-        help_text="Describe what your GLUE application does. This will appear in documentation and the app header.",
-        icon="📝",
-        console=console,
-    )
-    wizard_data["description"] = description
-
-    # Version is now automatic for first-time projects
-    version = "0.1.0"
-
-    # Application configuration
-    subsection_header("Application Configuration")
-
-    # Show configuration options in columns
-    config_table = Table.grid(padding=(0, 4))
-    config_table.add_column()
-    config_table.add_column()
-
-    development_mode = Confirm.ask(
-        "[bold cyan]Enable development mode?[/bold cyan]", default=True
-    )
-    sticky_mode = Confirm.ask(
-        "[bold cyan]Enable persistence (sticky mode)?[/bold cyan]", default=True
-    )
-    portkey_enabled = Confirm.ask(
-        "[bold cyan]Enable Portkey integration?[/bold cyan]", default=False
-    )
-
-    # Show summary of the configuration
-    config_summary = Table.grid(padding=1)
-    config_summary.add_column(style="bright_blue")
-    config_summary.add_column(style="bright_white")
-    config_summary.add_row("Project Name:", f"[bold]{app_name}[/bold]")
-    config_summary.add_row("Description:", description)
-    config_summary.add_row("Version:", version)
-    config_summary.add_row(
-        "Development Mode:", "✅ Enabled" if development_mode else "❌ Disabled"
-    )
-    config_summary.add_row(
-        "Persistence:", "✅ Enabled" if sticky_mode else "❌ Disabled"
-    )
-    config_summary.add_row(
-        "Portkey Integration:", "✅ Enabled" if portkey_enabled else "❌ Disabled"
-    )
-
-    console.print("\n")
-    console.print(
-        Panel(
-            config_summary,
-            title="📋 Application Summary",
-            border_style="bright_blue",
-            box=box.ROUNDED,
-        )
-    )
-    console.print()
-
-    # ----------------------------------------
-    # 2. MODELS CONFIGURATION
-    # ----------------------------------------
-    transition_to_section("MODELS", 2)
-    section_header("MODELS", 2)
-
-    show_tip(
-        "Models are AI agents that perform specific roles in your application. Each model has a provider, capabilities, and configuration."
-    )
-
-    models = []
-    model_names = []
-
-    console.print("[cyan]Let's add some models to your application.[/cyan]")
-    console.print(
-        "[dim]You should create at least one model to serve as a team lead.[/dim]"
-    )
-
-    # Add multiple models
-    add_model = True
-    while add_model:
-        if models:
-            subsection_header(f"Model #{len(models) + 1}")
-
-        # 2.1 Model name and provider
-        model_name = prompt_with_help(
-            "Model name",
-            default=f"model_{len(models) + 1}",
-            help_text="You can only use letters, numbers, or the _ (underscore) symbol. No spaces or special characters.",
-            icon="🤖",
-            console=console,
-        )
-
-        # Ensure unique model names
-        while model_name in model_names:
-            console.print(
-                f"[bold red]Model name '{model_name}' already exists. Please choose another name.[/bold red]"
-            )
-            model_name = prompt_with_help(
-                "Model name",
-                default=f"model_{len(models) + 1}",
-                help_text="Name must be unique and use only letters, numbers, and underscores.",
-                icon="🤖",
-                console=console,
-            )
-        model_names.append(model_name)
-
-        # 2.2 Provider selection
-        console.print("\n[bold cyan]Select a model provider:[/bold cyan]")
-        providers = ["openai", "anthropic", "openrouter", "huggingface", "custom"]
-        provider_descriptions = [
-            "OpenAI models (GPT-4, GPT-3.5)",
-            "Anthropic models (Claude)",
-            "OpenRouter (Multiple providers)",
-            "Hugging Face models (Open source)",
-            "Custom provider integration",
-        ]
-        show_options(providers, default=3, descriptions=provider_descriptions)
-        provider_idx = prompt_with_help(
-            "Provider",
-            default="3",
-            help_text="Choose the provider for this model. Providers are companies or platforms that host AI models.",
-            icon="🧠",
-            console=console,
-        )
-        try:
-            provider_idx = int(provider_idx) - 1
-            if 0 <= provider_idx < len(providers):
-                provider = providers[provider_idx]
-            else:
-                provider = "openrouter"
-        except ValueError:
-            provider = "openrouter"
-
-        # 2.3 Role description
-        role = prompt_with_help(
-            "Role description",
-            default=f"An AI assistant specialized in {model_name.replace('_', ' ')}",
-            help_text="Describe the model's role or specialty (e.g., 'Research assistant', 'Code generator').",
-            icon="📝",
-            console=console,
-        )
-
-        # 2.4 Model config
-        console.print("\n[bold cyan]Specify model configuration:[/bold cyan]")
-        model_type = None
-        temperature = 0.7
-
-        if provider == "openai":
-            console.print("[bold cyan]Select OpenAI model:[/bold cyan]")
-            openai_models = ["gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]
-            openai_descriptions = [
-                "Latest GPT-4 iteration (recommended)",
-                "Standard GPT-4 model",
-                "Faster, more economical model",
-            ]
-            show_options(openai_models, descriptions=openai_descriptions)
-            model_choice = prompt_with_help(
-                "Choose model",
-                default="1",
-                help_text="Select which OpenAI model to use.",
-                icon="🤖",
-                console=console,
-                choices=[f"{i + 1}. {m}" for i, m in enumerate(openai_models)],
-            )
-            try:
-                model_idx = int(model_choice) - 1
-                if 0 <= model_idx < len(openai_models):
-                    model_type = openai_models[model_idx]
-                else:
-                    model_type = "gpt-4-turbo"
-            except ValueError:
-                model_type = "gpt-4-turbo"
-
-            # Show temperature slider
-            console.print("\n[bold cyan]Temperature setting:[/bold cyan]")
-            console.print(
-                "[dim]Lower values (0.0-0.5): More deterministic, focused responses[/dim]"
-            )
-            console.print(
-                "[dim]Higher values (0.7-1.0): More creative, varied responses[/dim]"
-            )
-            console.print(
-                f"[bright_blue]{'◆' * 7}[/bright_blue][dim]{'◇' * 3}[/dim] [bright_white]0.7 (Default)[/bright_white]"
-            )
-
-            temp_input = prompt_with_help(
-                "Temperature (0.0-1.0)",
-                default="0.7",
-                help_text="Controls randomness/creativity. Lower = more focused, higher = more creative.",
-                icon="🌡️",
-                console=console,
-            )
-            try:
-                temp_value = float(temp_input)
-                if 0.0 <= temp_value <= 1.0:
-                    temperature = temp_value
-            except ValueError:
-                pass
-
-        # Similar sections for other providers...
-        elif provider == "anthropic":
-            # Implementation for Anthropic
-            console.print("[bold cyan]Select Anthropic model:[/bold cyan]")
-            anthropic_models = [
-                "claude-3-opus",
-                "claude-3-sonnet",
-                "claude-3-haiku",
-                "claude-2.1",
-            ]
-            anthropic_descriptions = [
-                "Most capable Claude model",
-                "Balanced performance and speed",
-                "Fastest, most compact Claude model",
-                "Previous generation model",
-            ]
-            show_options(
-                anthropic_models, descriptions=anthropic_descriptions, default=2
-            )
-            model_choice = prompt_with_help(
-                "Choose model",
-                default="2",
-                help_text="Select which Anthropic model to use.",
-                icon="🤖",
-                console=console,
-                choices=[f"{i + 1}. {m}" for i, m in enumerate(anthropic_models)],
-            )
-            try:
-                model_idx = int(model_choice) - 1
-                if 0 <= model_idx < len(anthropic_models):
-                    model_type = anthropic_models[model_idx]
-                else:
-                    model_type = "claude-3-sonnet"
-            except ValueError:
-                model_type = "claude-3-sonnet"
-
-            # Temperature setting for Anthropic
-            console.print("\n[bold cyan]Temperature setting:[/bold cyan]")
-            console.print(
-                "[dim]Lower values (0.0-0.5): More deterministic, focused responses[/dim]"
-            )
-            console.print(
-                "[dim]Higher values (0.7-1.0): More creative, varied responses[/dim]"
-            )
-            console.print(
-                f"[bright_blue]{'◆' * 7}[/bright_blue][dim]{'◇' * 3}[/dim] [bright_white]0.7 (Default)[/bright_white]"
-            )
-
-            temp_input = prompt_with_help(
-                "Temperature (0.0-1.0)",
-                default="0.7",
-                help_text="Controls randomness/creativity. Lower = more focused, higher = more creative.",
-                icon="🌡️",
-                console=console,
-            )
-            try:
-                temp_value = float(temp_input)
-                if 0.0 <= temp_value <= 1.0:
-                    temperature = temp_value
-            except ValueError:
-                pass
-
-        # Add model to list
-        model_config = {
-            "name": model_name,
-            "provider": provider,
-            "role": role,
-            "model": model_type,
-            "temperature": temperature,
-            "adhesives": ["glue", "velcro"],  # Default adhesives to prevent errors
-        }
-        models.append(model_config)
-        wizard_data["models"].append(model_config)
-
-        # Show model card with configuration
-        model_card = Table.grid(padding=1)
-        model_card.add_column(style="bright_blue")
-        model_card.add_column(style="bright_white")
-        model_card.add_row("Name:", f"[bold]{model_name}[/bold]")
-        model_card.add_row("Provider:", provider)
-        model_card.add_row("Model:", model_type or "Not specified")
-        model_card.add_row("Role:", role)
-        model_card.add_row("Temperature:", f"{temperature}")
-        model_card.add_row("Adhesives:", ", ".join(model_config["adhesives"]))
-
-        console.print("\n")
-        console.print(
-            Panel(
-                model_card,
-                title=f"🤖 Model: {model_name}",
-                border_style="green",
-                box=box.ROUNDED,
-            )
-        )
-
-        # Ask if user wants to add another model
-        if len(models) >= 1:
-            add_another = Confirm.ask(
-                "\n[bold cyan]Add another model?[/bold cyan]", default=True
-            )
-            add_model = add_another
-
-    # ----------------------------------------
-    # 3. TOOLS CONFIGURATION
-    # ----------------------------------------
-    transition_to_section("TOOLS", 3)
-    section_header("TOOLS", 3)
-
-    show_tip(
-        "Tools allow your models to interact with external systems and perform actions. Add tools that your models will need to accomplish tasks."
-    )
-
-    tools = []
-    tool_names = []
-
-    console.print("[cyan]Let's add some tools to your application.[/cyan]")
-
-    # 3.1 Web Search Tool
-    if Confirm.ask("[bold]Add web search tool?[/bold]", default=True):
-        subsection_header("Web Search Tool")
-
-        tool_name = "web_search"
-        provider = "serp"
-        max_results = prompt_with_help(
-            "Maximum search results",
-            default="5",
-            help_text="How many results should the web search tool return?",
-            icon="🔍",
-            console=console,
-        )
-        try:
-            max_results = int(max_results)
-        except ValueError:
-            max_results = 5
-
-        tools.append(
-            {"name": tool_name, "provider": provider, "max_results": max_results}
-        )
-        tool_names.append(tool_name)
-
-        console.print(
-            Panel(
-                "[green]✓[/green] Web search tool added",
-                border_style="green",
-                box=box.ROUNDED,
-                padding=(1, 1),
-            )
-        )
-
-    # 3.2 File Handler Tool
-    if Confirm.ask("[bold]Add file handler tool?[/bold]", default=True):
-        subsection_header("File Handler Tool")
-
-        tool_name = "file_handler"
-        description = "Read and write files"
-        base_path = prompt_with_help(
-            "Base path for file operations",
-            default="./workspace",
-            help_text="Directory where file operations will be allowed.",
-            icon="📁",
-            console=console,
-        )
-
-        tools.append(
-            {"name": tool_name, "description": description, "base_path": base_path}
-        )
-        tool_names.append(tool_name)
-
-        console.print(
-            Panel(
-                "[green]✓[/green] File handler tool added",
-                border_style="green",
-                box=box.ROUNDED,
-                padding=(1, 1),
-            )
-        )
-
-    # 3.3 Code Interpreter Tool
-    if Confirm.ask("[bold]Add code interpreter tool?[/bold]", default=True):
-        subsection_header("Code Interpreter Tool")
-
-        tools.append({"name": "code_interpreter", "description": "Execute Python code"})
-        tool_names.append("code_interpreter")
-
-        console.print(
-            Panel(
-                "[green]✓[/green] Code interpreter tool added",
-                border_style="green",
-                box=box.ROUNDED,
-                padding=(1, 1),
-            )
-        )
-
-    # 3.4 Custom Tools
-    add_custom = Confirm.ask("[bold cyan]Add a custom tool?[/bold cyan]", default=False)
-    while add_custom:
-        subsection_header("Custom Tool")
-
-        custom_tool_name = prompt_with_help(
-            "Tool name",
-            help_text="Give your tool a unique name (letters, numbers, underscores only).",
-            icon="🔧",
-            console=console,
-        )
-        custom_tool_description = prompt_with_help(
-            "Tool description",
-            help_text="Describe what your custom tool does.",
-            icon="📝",
-            console=console,
-        )
-
-        tools.append({"name": custom_tool_name, "description": custom_tool_description})
-        tool_names.append(custom_tool_name)
-
-        console.print(
-            Panel(
-                f"[green]✓[/green] Custom tool '{custom_tool_name}' added",
-                border_style="green",
-                box=box.ROUNDED,
-                padding=(1, 1),
-            )
-        )
-
-        # Ask once more if they want to add another custom tool
-        add_custom = Confirm.ask("[bold]Add another custom tool?[/bold]", default=False)
-
-    # ----------------------------------------
-    # 4. TEAMS CONFIGURATION
-    # ----------------------------------------
-    transition_to_section("TEAMS", 4)
-    section_header("TEAMS", 4)
-
-    show_tip(
-        "Teams organize models and assign them tools to work together. Each team needs a lead model and can have additional members."
-    )
-
-    teams = []
-    team_names = []
-
-    console.print("[cyan]Let's create teams for your models.[/cyan]")
-
-    # Must have at least one team
-    add_team = True
-    available_models = [m["name"] for m in models]
-
-    while add_team and available_models:
-        # Initialize current_team at the start of each loop
-        current_team = {}
-
-        if teams:
-            subsection_header(f"Team #{len(teams) + 1}")
-
-        # 4.1 Team name
-        team_name = prompt_with_help(
-            "Team name",
-            default=f"team_{len(teams) + 1}",
-            help_text="Name your team (letters, numbers, underscores only).",
-            icon="👥",
-            console=console,
-        )
-
-        # Ensure unique team names
-        while team_name in team_names:
-            console.print(
-                f"[bold red]Team name '{team_name}' already exists. Please choose another name.[/bold red]"
-            )
-            team_name = prompt_with_help(
-                "Team name",
-                default=f"team_{len(teams) + 1}",
-                help_text="Name your team (letters, numbers, underscores only).",
-                icon="👥",
-                console=console,
-            )
-        team_names.append(team_name)
-        current_team["name"] = team_name
-
-        # 4.2 Select lead model
-        console.print("\n[bold cyan]Select lead model for this team:[/bold cyan]")
-        show_options(available_models)
-
-        lead_idx = prompt_with_help(
-            "Lead model",
-            default="1",
-            help_text="Select the lead model for this team. This model will be the entry point for the team.",
-            icon="🤖",
-            console=console,
-        )
-        try:
-            lead_idx = int(lead_idx) - 1
-            if 0 <= lead_idx < len(available_models):
-                lead_model = available_models[lead_idx]
-            else:
-                lead_model = available_models[0]
-        except ValueError:
-            lead_model = available_models[0]
-
-        current_team["lead"] = lead_model
-
-        # Remove lead from available models for members
-        remaining_models = [m for m in available_models if m != lead_model]
-
-        # 4.3 Select member models
-        member_models = []
-        if remaining_models:
-            console.print(
-                "\n[bold cyan]Select member models for this team:[/bold cyan]"
-            )
-
-            for model in remaining_models:
-                if Confirm.ask(
-                    f"[bold cyan]Add '{model}' as a member of team '{team_name}'?[/bold cyan]",
-                    default=False,
-                ):
-                    member_models.append(model)
-
-        current_team["members"] = member_models
-
-        # 4.4 Select tools for this team
-        team_tools = []
-        if tools:
-            console.print("\n[bold cyan]Select tools for this team:[/bold cyan]")
-
-            for tool in tools:
-                tool_name = tool["name"]
-                if Confirm.ask(
-                    f"[bold cyan]Add '{tool_name}' tool to team '{team_name}'?[/bold cyan]",
-                    default=True,
-                ):
-                    team_tools.append(tool_name)
-
-        current_team["tools"] = team_tools
-
-        # Add team to teams list
-        teams.append(current_team)
-
-        # Create a summary of the team
-        member_list = ", ".join(member_models) if member_models else "None"
-        tool_list = ", ".join(team_tools) if team_tools else "None"
-
-        team_summary = Panel(
-            f"[bold]Team:[/bold] {team_name}\n"
-            f"[bold]Lead:[/bold] {lead_model}\n"
-            f"[bold]Members:[/bold] {member_list}\n"
-            f"[bold]Tools:[/bold] {tool_list}",
-            title="✅ Team Created",
-            border_style="green",
-            box=box.ROUNDED,
-            padding=(1, 2),
-        )
-        console.print(team_summary)
-
-        # Update available models for next team - make sure to exclude all assigned models
-        used_models = [current_team["lead"]] + current_team["members"]
-        for existing_team in teams[:-1]:  # Skip the team we just added
-            used_models.append(existing_team["lead"])
-            used_models.extend(existing_team["members"])
-
-        available_models = [
-            m for m in [model["name"] for model in models] if m not in used_models
-        ]
-
-        if available_models:
-            add_team = Confirm.ask(
-                "\n[bold cyan]Add another team?[/bold cyan]", default=True
-            )
-        else:
-            console.print("[dim]All models have been assigned to teams.[/dim]")
-            add_team = False
-
-    # ----------------------------------------
-    # 5. TEAM FLOWS
-    # ----------------------------------------
-    transition_to_section("TEAM FLOWS", 5)
-    section_header("TEAM FLOWS", 5)
-
-    team_flows = []
-
-    if len(teams) > 1:
-        show_tip(
-            "Team flows define how information moves between teams. Different flow types determine how teams can share information."
-        )
-
-        console.print("[cyan]Define how information flows between your teams.[/cyan]")
-
-        # Always configure flows (no prompt asking if user wants to configure)
-        flow_table = Table(box=box.SIMPLE)
-        flow_table.add_column("Flow Type", style="cyan")
-        flow_table.add_column("Description")
-
-        # Remove the one-way flow option
-        flow_table.add_row("Bidirectional", "Information flows both ways between teams")
-        flow_table.add_row(
-            "Pull-based", "Target team can request information from source"
-        )
-        flow_table.add_row(
-            "Push-based", "Source team actively sends information to target"
-        )
-        flow_table.add_row("No flow", "No information exchange between teams")
-
-        console.print(flow_table)
-        console.print()
-
-        for i, source_team in enumerate(teams):
-            for target_team in teams[i + 1 :]:
-                console.print(
-                    Panel(
-                        f"Configuring flow between [cyan]{source_team['name']}[/cyan] and [cyan]{target_team['name']}[/cyan]",
-                        border_style="blue",
-                        box=box.ROUNDED,
-                        padding=(1, 2),
-                    )
-                )
-
-                console.print("[bold]Choose flow type:[/bold]")
-                # Remove the one-way options
-                console.print("[dim]1. Bidirectional (source <-> target)[/dim]")
-                console.print("[dim]2. Pull-based (target pulls from source)[/dim]")
-                console.print("[dim]3. Push-based (source pushes to target)[/dim]")
-                console.print("[dim]4. No flow[/dim]")
-
-                flow_type = prompt_with_help(
-                    "Flow type",
-                    default="1",
-                    choices=["1", "2", "3", "4"],
-                    icon="🔀",
-                    console=console,
-                )
-
-                flow_description = ""
-                if flow_type == "1":
-                    team_flows.append(
-                        {
-                            "source": source_team["name"],
-                            "target": target_team["name"],
-                            "type": "bidirectional",
-                        }
-                    )
-                    flow_description = (
-                        f"{source_team['name']} <-> {target_team['name']}"
-                    )
-                elif flow_type == "2":
-                    team_flows.append(
-                        {
-                            "source": source_team["name"],
-                            "target": target_team["name"],
-                            "type": "pull",
-                        }
-                    )
-                    flow_description = (
-                        f"{target_team['name']} pulls from {source_team['name']}"
-                    )
-                elif flow_type == "3":
-                    team_flows.append(
-                        {
-                            "source": source_team["name"],
-                            "target": target_team["name"],
-                            "type": "push",
-                        }
-                    )
-                    flow_description = (
-                        f"{source_team['name']} pushes to {target_team['name']}"
-                    )
-                elif flow_type == "4":
-                    team_flows.append(
-                        {
-                            "source": source_team["name"],
-                            "target": target_team["name"],
-                            "type": "none",
-                        }
-                    )
-                    flow_description = f"No flow between {source_team['name']} and {target_team['name']}"
-
-                console.print(
-                    Panel(
-                        f"[green]✓[/green] Flow configured: {flow_description}",
-                        border_style="green",
-                        box=box.ROUNDED,
-                        padding=(1, 1),
-                    )
-                )
+import click
+
+@click.group()
+@click.version_option(version=__version__)
+def cli():
+    """GLUE Framework CLI"""
+    pass
+
+@cli.command("run")
+@click.argument("config", type=click.Path(exists=True, dir_okay=False))
+@click.option("--input", "-i", help="Input text for the app")
+@click.option("--interactive", "-I", is_flag=True, help="Run in interactive mode")
+@click.option("--verbose", "-v", count=True, help="Enable verbose logging")
+@click.option("--env", "-e", help="Path to .env file")
+@click.option("--engine", type=click.Choice(["glue", "agno"]), default="glue", help="Specify the execution engine")
+def run_command(config, input, interactive, verbose, env, engine):
+    """Run a GLUE application"""
+    # Load environment variables if specified
+    if env:
+        from dotenv import load_dotenv
+        load_dotenv(env)
+    elif os.path.exists(DEFAULT_ENV_FILE):
+        # Load default .env file if it exists
+        from dotenv import load_dotenv
+        load_dotenv(DEFAULT_ENV_FILE)
+
+    # Set up logging
+    if verbose > 1:
+        log_level = logging.DEBUG
+    elif verbose == 1:
+        log_level = logging.INFO
     else:
-        console.print("[dim]You only have one team, so no team flows are needed.[/dim]")
+        log_level = logging.WARNING
 
-    # ----------------------------------------
-    # 6. GENERATE GLUE FILE
-    # ----------------------------------------
-    transition_to_section("GENERATING GLUE FILE", 6)
-    section_header("GENERATING GLUE FILE", 6)
+    logger = setup_logging(log_level)
 
-    # Helper function to format lists safely
-    def format_list_safely(prefix, items):
-        """Create a properly formatted list line without any string manipulation issues."""
-        console = get_console()  # Get console for debugging inside function
-        console.print(
-            f"[dim]Inside format_list_safely for prefix '{prefix}' with items: {items}[/dim]"
-        )
-        if not items:
-            console.print(
-                "[dim]format_list_safely: No items provided, returning empty list.[/dim]"
-            )
-            return f"{prefix} = []"
+    # Run the application
+    asyncio.run(run_app(config, interactive, input, engine))
 
-        # Ensure all items are strings before attempting to build the string
-        string_items = []
-        for item in items:
-            try:
-                item_str = str(item)
-                string_items.append(item_str)
-            except Exception as e:
-                console.print(
-                    f"[red]Error converting item '{item}' to string: {e}[/red]"
-                )
-                string_items.append("")  # Add empty string on error
+@cli.command("new")
+@click.argument("project", required=False)
+@click.option("--template", "-t", default="interactive", help="Ignored - interactive mode is always used")
+def new_command(project, template):
+    """Create a new GLUE project"""
+    create_new_project(project, template)
 
-        console.print(
-            f"[dim]format_list_safely: Items converted to strings: {string_items}[/dim]"
-        )
+@cli.group("forge", invoke_without_command=True)
+@click.pass_context
+def forge_group(ctx):
+    """Create custom components with AI assistance"""
+    if ctx.invoked_without_command:
+        # Run interactive forge command if no subcommand is specified
+        run_forge_command()
 
-        # Use manual concatenation to build the string, avoiding join()
-        items_str = ""
-        try:
-            num_items = len(string_items)
-            for i, item_str in enumerate(string_items):
-                items_str += item_str
-                if i < num_items - 1:
-                    items_str += ", "
-            console.print(
-                f"[dim]format_list_safely: Manually joined items_str: '{items_str}'[/dim]"
-            )
+@forge_group.command("tool")
+@click.argument("name")
+@click.option("--description", "-d", required=True, help="Tool description")
+@click.option("--template", "-t", type=click.Choice(["basic", "api", "data"]), default="basic", help="Tool template to use")
+def forge_tool_command(name, description, template):
+    """Create a custom tool"""
+    forge_tool(name, description, template)
 
-            # Return complete line using BASIC CONCATENATION instead of f-string
-            final_line = prefix + " = [" + items_str + "]"
-            console.print(
-                f"[dim]format_list_safely: Final constructed line (basic concat): '{final_line}'[/dim]"
-            )
-            return final_line
-        except Exception as e:
-            console.print(
-                f"[red]Error during manual string building or f-string creation: {str(e)}[/red]"
-            )
-            return f"{prefix} = []"  # Fallback on error
+@forge_group.command("mcp")
+@click.argument("name")
+@click.option("--description", "-d", required=True, help="MCP description")
+def forge_mcp_command(name, description):
+    """Create a custom MCP integration"""
+    forge_mcp(name, description)
 
-    # Plain string-based approach without complex formatting
-    app_config = []
-    app_config.append(f"// {project_name} GLUE Application")
-    app_config.append("// Generated with GLUE Framework's Interactive Builder")
-    app_config.append("")
-    app_config.append("glue app {")
-    app_config.append(f'    name = "{app_name}"')
-    app_config.append(f'    description = "{description}"')
-    app_config.append(f'    version = "{version}"')
-    app_config.append("    config {")
+@forge_group.command("api")
+@click.argument("name")
+@click.option("--description", "-d", required=True, help="API description")
+def forge_api_command(name, description):
+    """Create a custom API integration"""
+    forge_api(name, description)
 
-    if development_mode:
-        app_config.append("        development = true")
-    if sticky_mode:
-        app_config.append("        sticky = true  // Enable persistence")
-    if portkey_enabled:
-        app_config.append("        portkey = true  // Enable Portkey integration")
+@cli.command("list-tools")
+def list_tools_command():
+    """List available tools"""
+    display_tools()
 
-    app_config.append("    }")
-    app_config.append("}")
+@cli.command("list-models")
+def list_models_command():
+    """List available models"""
+    list_models()
 
-    # Models section
-    for model in models:
-        app_config.append("")
-        app_config.append(f"// Model: {model['name']}")
-        app_config.append(f"model {model['name']} {{")
-        app_config.append(f"    provider = {model['provider']}")
-        app_config.append(f'    role = "{model["role"]}"')
-
-        # Add adhesives
-        adhesives_str = (
-            ", ".join([f'"{a}"' for a in model["adhesives"]])
-            if model["adhesives"]
-            else ""
-        )
-        app_config.append(f"    adhesives = [{adhesives_str}]")
-
-        # Config section
-        app_config.append("    config {")
-
-        if "model" in model and model["model"]:
-            app_config.append(f'        model = "{model["model"]}"')
-
-        app_config.append(f"        temperature = {model['temperature']}")
-        app_config.append("    }")
-        app_config.append("}")
-
-    # Tools section
-    if tools:
-        app_config.append("")
-        app_config.append("// Tools")
-
-        for tool in tools:
-            app_config.append(f"tool {tool['name']} {{")
-
-            if "provider" in tool:
-                app_config.append(f"    provider = {tool['provider']}")
-                app_config.append("    config {")
-                if "max_results" in tool:
-                    app_config.append(f"        max_results = {tool['max_results']}")
-                app_config.append("    }")
-            elif "description" in tool:
-                app_config.append(f'    description = "{tool["description"]}"')
-                if "base_path" in tool:
-                    app_config.append("    config {")
-                    app_config.append(f'        base_path = "{tool["base_path"]}"')
-                    app_config.append("    }")
-
-            app_config.append("}")
-
-    # Teams and flows
-    app_config.append("")
-    app_config.append("// Teams and flows")
-    app_config.append("magnetize {")
-
-    # Teams
-    for team in teams:
-        # Print raw debug for diagnostics
-        console.print(
-            f"[dim]TEAM DEBUG: {team['name']}, members={team['members']}, tools={team['tools']}[/dim]"
-        )
-
-        # Ensure members and tools are lists
-        if not isinstance(team["members"], list):
-            console.print(
-                f"[red]WARNING: members for {team['name']} is not a list, converting: {team['members']}"
-            )
-            team["members"] = [] if team["members"] is None else [str(team["members"])]
-
-        if not isinstance(team["tools"], list):
-            console.print(
-                f"[red]WARNING: tools for {team['name']} is not a list, converting: {team['tools']}"
-            )
-            team["tools"] = [] if team["tools"] is None else [str(team["tools"])]
-
-        # Convert any None or non-string items to strings
-        team["members"] = [str(m) if m is not None else "" for m in team["members"]]
-        team["tools"] = [str(t) if t is not None else "" for t in team["tools"]]
-
-        app_config.append(f"    {team['name']} {{")
-        app_config.append(f"        lead = {team['lead']}")
-
-        # Fix members formatting - ensure it's a properly formatted list
-        if team["members"]:
-            # Debug raw members
-            console.print(
-                f"[dim]DEBUG: Raw members before processing: {team['members']}[/dim]"
-            )
-
-            # Format member names with quotes
-            quoted_members = [f'"{str(m)}"' for m in team["members"]]
-
-            # Use the safe formatting function
-            member_line = format_list_safely("        members", quoted_members)
-            console.print(f"[dim]MEMBERS LINE (safe): '{member_line}'[/dim]")
-            app_config.append(member_line)
-        else:
-            app_config.append("        members = []")
-
-        # --- START REPLACEMENT BLOCK ---
-        # Fix tools formatting - REVERT TO USING HELPER FUNCTION like members
-        if team["tools"]:
-            # Debug raw tools
-            console.print(
-                f"[dim]DEBUG: Raw tools before HELPER processing: {team['tools']}[/dim]"
-            )
-
-            # Extra safety - ensure we have strings (keep this part)
-            sanitized_tools = []
-            for tool in team["tools"]:
-                tool_str = str(tool).strip()
-                if tool_str:  # Only add non-empty strings
-                    sanitized_tools.append(tool_str)
-                    console.print(f"[dim]Sanitized tool for helper: '{tool_str}'[/dim]")
-
-            # Use the safe formatting function for tools (no quotes needed)
-            tool_line = format_list_safely("        tools", sanitized_tools)
-            console.print(f"[dim]TOOLS LINE FROM HELPER (safe): '{tool_line}'[/dim]")
-
-            # Append the result from the helper function
-            app_config.append(tool_line)
-        else:
-            app_config.append("        tools = []")
-        # --- END REPLACEMENT BLOCK ---
-
-        app_config.append("    }")
-        app_config.append("")
-
-    # Flows
-    if team_flows:
-        app_config.append("    // Information flows between teams")
-        for flow in team_flows:
-            if flow["type"] == "bidirectional":
-                app_config.append(
-                    f"    {flow['source']} >< {flow['target']}  // Bidirectional"
-                )
-            elif flow["type"] == "pull":
-                app_config.append(f"    {flow['target']} <- {flow['source']} pull")
-            elif flow["type"] == "push":
-                app_config.append(f"    {flow['source']} -> {flow['target']} push")
-            elif flow["type"] == "none":
-                app_config.append(
-                    f"    {flow['source']} <> {flow['target']}  // No flow"
-                )
-
-    # Handle the case where we want to show a no-flow relationship
-    elif len(teams) > 1:
-        # Add explicit no-flow relationships between all teams
-        for i, source_team in enumerate(teams):
-            for target_team in teams[i + 1 :]:
-                app_config.append(
-                    f"    {source_team['name']} <> {target_team['name']}  // No flow"
-                )
-
-    # Close magnetize block
-    app_config.append("}")
-    app_config.append("")
-
-    # Apply glue
-    app_config.append("apply glue")
-
-    # Join everything into a single string
-    glue_content = "\n".join(app_config)
-
-    # Debug: Check for members and tools lines
-    console.print("[dim]FINAL DEBUG: Checking members and tools formatting...[/dim]")
-    team_config_lines = []
-    member_count = 0
-    tool_count = 0
-
-    for i, line in enumerate(glue_content.splitlines()):
-        if "members =" in line:
-            console.print(f"[dim]LINE DEBUG [{i + 1}]: {line}[/dim]")
-            team_config_lines.append((i + 1, line))
-            if (
-                "[" in line and "]" in line and len(line.strip()) > 13
-            ):  # More than just "members = []"
-                member_count += 1
-
-        if "tools =" in line:
-            console.print(f"[dim]LINE DEBUG [{i + 1}]: {line}[/dim]")
-            team_config_lines.append((i + 1, line))
-            if (
-                "[" in line and "]" in line and len(line.strip()) > 10
-            ):  # More than just "tools = []"
-                tool_count += 1
-
-    # If any issues were detected, show more details
-    if any(not ("[" in line[1] and "]" in line[1]) for line in team_config_lines):
-        console.print(
-            "[bold red]WARNING: Some member or tool lists may not be properly formatted![/bold red]"
-        )
-        console.print("[dim]This may cause issues with the GLUE file parsing.[/dim]")
-    else:
-        console.print(
-            f"[green]INFO: Found {member_count} member lists and {tool_count} tool lists properly formatted.[/green]"
-        )
-
-    console.print("\n[bold green]✅ GLUE file generated![/bold green]")
-
-    # 6.1 Display generated file
-    console.print(
-        Panel(
-            glue_content,
-            title=f"📄 {project_name}.glue",
-            border_style="green",
-            box=box.ROUNDED,
-        )
-    )
-
-    # 6.2 Final confirmation
-    if not Confirm.ask("\n[bold]Does this look good?[/bold]", default=True):
-        console.print(
-            Panel(
-                "You can edit the generated file after creation to make further adjustments.",
-                title="📝 Note",
-                border_style="yellow",
-                box=box.ROUNDED,
-            )
-        )
-
-    console.print("\n[bold green]✨ GLUE file created successfully![/bold green]")
-
-    return glue_content
-
+@cli.command("validate")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False))
+def validate_command(file):
+    """Validate a GLUE file"""
+    validate_glue_file(file)
 
 if __name__ == "__main__":
-    main()
+    cli()
