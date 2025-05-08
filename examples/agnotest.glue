@@ -1,0 +1,55 @@
+glue app {
+    name = "test the agno integration"
+    config {
+        development = true
+        sticky = true
+    }
+}
+
+tool web_search {
+    provider = serp
+    config {
+        max_results = 5
+    }
+}   
+
+tool file_handler {
+    config {
+        base_path = "./workspace"
+    }
+}
+
+model researcher {
+    provider = openrouter
+    role = "Researcher who finds information online"
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-4-maverick:free"
+    }
+}
+
+model writer {
+    provider = openrouter
+    role = "Takes the information found by the research team and writes a summary into a new file"
+    adhesives = [glue, velcro]
+    config {
+        model = "meta-llama/llama-4-maverick:free"
+    }
+}
+
+magnetize {
+    research {
+        lead = researcher
+        tools = [web_search]
+    }
+    writing {
+        lead = writer
+        tools = [file_handler]
+    }
+    flow {
+        research -> writing
+        writing <- pull
+    }
+}
+
+apply glue

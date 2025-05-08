@@ -3242,5 +3242,10 @@ def validate_command(file):
     """Validate a GLUE file"""
     validate_glue_file(file)
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for the GLUE CLI."""
     cli()
+
+if __name__ == "__main__":
+    # Run the CLI directly when script is executed
+    main()

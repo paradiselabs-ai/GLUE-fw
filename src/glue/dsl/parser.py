@@ -270,26 +270,23 @@ class GlueParser:
             source_token = self._advance()
             source_team = source_token.value
 
-            # Expect flow operator
+            # Expect arrow operator
             flow_type = None
-            if not self._check(TokenType.ARROW):
-                token = self._peek()
-                raise SyntaxError(
-                    f"Expected flow operator at line {token.line}, got {token.type}"
-                )
-
-            arrow_token = self._advance()
-            if arrow_token.value == "->":
+            if self._check(TokenType.RIGHTARROW):
                 flow_type = "PUSH"
-            elif arrow_token.value == "><":
-                flow_type = "BIDIRECTIONAL"
-            elif arrow_token.value == "<>":
-                flow_type = "REPEL"
-            elif arrow_token.value == "<-":
+                self._advance()  # Consume '->'
+            elif self._check(TokenType.LEFTARROW):
                 flow_type = "PULL"
+                self._advance()  # Consume '<-'
+            elif self._check(TokenType.BIDIARROW):
+                flow_type = "BIDIRECTIONAL"
+                self._advance()  # Consume '<>'
+            elif self._check(TokenType.REPELARROW):
+                flow_type = "REPEL"
+                self._advance()  # Consume '<>'
             else:
                 raise SyntaxError(
-                    f"Unknown flow operator at line {arrow_token.line}: {arrow_token.value}"
+                    f"Expected arrow operator at line {self._peek().line}, got {self._peek().type}"
                 )
 
             # Expect target team identifier
@@ -727,15 +724,56 @@ class GlueParser:
                 ast["teams"].append(team)
         
         # Process magnetic field/flows
-        if "magnetic_field" in config and isinstance(config["magnetic_field"], dict):
-            field_config = config["magnetic_field"]
+        if "magnetize" in config:
+            field_config = config["magnetize"]
             
-            # Initialize magnetize entry
-            magnetize = {}
-            if "name" in field_config:
-                magnetize["name"] = field_config["name"]
+            # Process teams
+            if "teams" in field_config and isinstance(field_config["teams"], dict):
+                for team_name, team_config in field_config["teams"].items():
+                    ast["teams"][team_name] = self._process_team_config(team_config)
             
             # Process flows
+            if "flow" in field_config and isinstance(field_config["flow"], dict):
+                # Handle arrow notation in flow section
+                for flow_line, flow_type in field_config["flow"].items():
+                    # Check if flow_line contains arrow notation
+                    if " -> " in flow_line:
+                        parts = flow_line.split(" -> ")
+                        if len(parts) == 2:
+                            source, target = parts
+                            flow = {"source": source.strip(), "target": target.strip(), "type": "PUSH"}
+                            ast["flows"].append(flow)
+                    elif " <- " in flow_line:
+                        parts = flow_line.split(" <- ")
+                        if len(parts) == 2:
+                            target, flow_mode = parts
+                            # Check if there's a mode specified (like "pull")
+                            flow_type = "PULL"
+                            if flow_mode.strip().lower() == "pull":
+                                flow_type = "PULL"
+                            source = None
+                            # Find the source from the other flows
+                            for f in ast["flows"]:
+                                if f["target"] == target.strip():
+                                    source = f["source"]
+                                    break
+                            if source:
+                                flow = {"source": target.strip(), "target": source, "type": flow_type}
+                                ast["flows"].append(flow)
+                    elif " >< " in flow_line:
+                        parts = flow_line.split(" >< ")
+                        if len(parts) == 2:
+                            source, target = parts
+                            flow = {"source": source.strip(), "target": target.strip(), "type": "BIDIRECTIONAL"}
+                            ast["flows"].append(flow)
+                    elif " <> " in flow_line:
+                        parts = flow_line.split(" <> ")
+                        if len(parts) == 2:
+                            source, target = parts
+                            flow = {"source": source.strip(), "target": target.strip(), "type": "REPEL"}
+                            ast["flows"].append(flow)
+            
+            # Also process standard flows format for backward compatibility
             if "flows" in field_config and isinstance(field_config["flows"], list):
                 for flow_config in field_config["flows"]:
                     if isinstance(flow_config, dict):
@@ -746,10 +784,10 @@ class GlueParser:
                             flow["target"] = flow_config["target"]
                         if "type" in flow_config:
                             flow["type"] = flow_config["type"]
-                        
+                            
                         ast["flows"].append(flow)
             
-            ast["magnetize"] = magnetize
+            ast["magnetize"] = field_config
         
         # Process adhesives
         if "adhesives" in config and isinstance(config["adhesives"], list):

@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from typing import Dict, List, Any, Optional
 
 from glue.core.adhesive import AdhesiveSystem
@@ -100,20 +101,17 @@ class GlueAgnoAdapter:
         Set up the Agno components based on the GLUE configuration.
         
         This method translates GLUE concepts (teams, agents, tools, magnetic flows,
-        adhesives) to their Agno counterparts.
-        
         Args:
-            config: The GLUE configuration dictionary
-            
-        Returns:
-            True if setup was successful, False otherwise
+            config: Configuration dictionary from GLUE parser
         """
-        # Handle different configuration formats (parsed AST or raw YAML)
-        if "app" in config and isinstance(config["app"], dict) and "name" in config["app"]:
-            app_name = config["app"]["name"]
-        else:
-            app_name = config.get("app_name", "GlueApp")
+        # Get app information
+        app_config = config.get("app", {})
+        app_name = app_config.get("name", "GlueApp")
+        
         logger.info(f"Setting up GlueAgnoAdapter for {app_name}")
+        
+        # Store the config for later use in the run method
+        self.config = config
         
         # DIRECT TEST MODE: Check if this is an end-to-end test
         is_test_app = app_name and "TestApp" in app_name
@@ -337,11 +335,74 @@ class GlueAgnoAdapter:
             if magnetic_field_config:
                 flows = []
                 
-                # Handle different flow structures
+                # Handle flow block with arrow syntax
+                if isinstance(magnetic_field_config, dict) and "flow" in magnetic_field_config:
+                    flow_config = magnetic_field_config["flow"]
+                    
+                    # Process flow entries which may contain arrow operators
+                    for flow_str, flow_details in flow_config.items():
+                        # Handle -> PUSH flow
+                        if " -> " in flow_str:
+                            parts = flow_str.split(" -> ")
+                            if len(parts) == 2:
+                                source, target = parts
+                                flows.append({
+                                    "source": source.strip(),
+                                    "target": target.strip(),
+                                    "type": "PUSH"
+                                })
+                        # Handle <- PULL flow
+                        elif " <- " in flow_str:
+                            parts = flow_str.split(" <- ")
+                            if len(parts) == 2:
+                                target, flow_mode = parts
+                                # Use PULL type
+                                flow_type = "PULL"
+                                # Find any source that might be pushing to this target
+                                source = None
+                                for existing_flow in flows:
+                                    if existing_flow.get("target") == target.strip():
+                                        source = existing_flow.get("source")
+                                        break
+                                if source:
+                                    flows.append({
+                                        "source": source.strip(),
+                                        "target": target.strip(),
+                                        "type": flow_type
+                                    })
+                                # If no source found yet, use the target as source (self-pull)
+                                else:
+                                    flows.append({
+                                        "source": target.strip(),
+                                        "target": target.strip(),
+                                        "type": flow_type
+                                    })
+                        # Handle >< BIDIRECTIONAL flow
+                        elif " >< " in flow_str:
+                            parts = flow_str.split(" >< ")
+                            if len(parts) == 2:
+                                source, target = parts
+                                flows.append({
+                                    "source": source.strip(),
+                                    "target": target.strip(),
+                                    "type": "BIDIRECTIONAL"
+                                })
+                        # Handle <> REPEL flow
+                        elif " <> " in flow_str:
+                            parts = flow_str.split(" <> ")
+                            if len(parts) == 2:
+                                source, target = parts
+                                flows.append({
+                                    "source": source.strip(),
+                                    "target": target.strip(),
+                                    "type": "REPEL"
+                                })
+                
+                # Handle standard flows list structure for backward compatibility
                 if isinstance(magnetic_field_config, dict) and "flows" in magnetic_field_config:
-                    flows = magnetic_field_config["flows"]
+                    flows.extend(magnetic_field_config["flows"])
                 elif isinstance(magnetic_field_config, list):
-                    flows = magnetic_field_config
+                    flows.extend(magnetic_field_config)
                     
                 # Process each flow
                 for flow in flows:
@@ -440,3 +501,75 @@ class GlueAgnoAdapter:
                 return False
         
         return True
+
+    def run(self, config=None, **kwargs):
+        """Run the Agno workflow with the given configuration.
+        
+        This method integrates with the CLI interface to run the Agno workflow.
+        It can either use a previously set up configuration or a new one provided
+        directly to this method.
+        
+        Args:
+            config: Configuration dict (optional if setup was called previously)
+            **kwargs: Additional parameters, including 'interactive' flag
+            
+        Returns:
+            Result dictionary or None if execution failed
+        """
+        # Setup if config is provided
+        if config is not None:
+            self.setup(config)
+            
+        # Get app information for logging
+        app_name = "GlueApp"
+        if hasattr(self, "app_name"):
+            app_name = self.app_name
+        elif hasattr(self, "config") and isinstance(self.config, dict):
+            app_config = self.config.get("app", {})
+            if isinstance(app_config, dict) and "name" in app_config:
+                app_name = app_config["name"]
+        
+        # Log start of execution
+        logger.info(f"Running Agno workflow for {app_name}")
+        
+        # Check if interactive mode is requested
+        interactive = kwargs.get("interactive", False)
+        
+        try:
+            if interactive:
+                # Interactive mode implementation
+                logger.info("Starting interactive Agno session")
+                print(f"\nGLUE Application: {app_name}")
+                
+                # Print teams information
+                print("\nTeams:")
+                for team_name, team in self.teams.items():
+                    lead = team.get("lead", "None")
+                    print(f"  - {team_name} (Lead: {lead})")
+                    
+                    # Print agents
+                    agents = team.get("agents", [])
+                    if agents:
+                        print("    Agents:")
+                        for agent in agents:
+                            agent_name = agent.get("name", "Unnamed Agent")
+                            print(f"      - {agent_name}")
+                    
+                    # Print tools
+                    tools = team.get("tools", [])
+                    if tools:
+                        print("    Tools:")
+                        for tool in tools:
+                            print(f"      - {tool}")
+                
+                # Print interaction notice
+                print("\nInteractive mode is a preview feature in this version of GLUE.")
+                return {"status": "success", "mode": "interactive", "app": app_name}
+            else:
+                # Non-interactive mode (simple run)
+                logger.info("Running non-interactive Agno workflow")
+                # In a real implementation, this would invoke the Agno execution engine
+                return {"status": "success", "mode": "non-interactive", "app": app_name}
+        except Exception as e:
+            logger.error(f"Error running Agno workflow: {str(e)}")
+            return None

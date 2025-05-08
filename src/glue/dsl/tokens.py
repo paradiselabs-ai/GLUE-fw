@@ -20,7 +20,10 @@ class TokenType(Enum):
     LBRACKET = "LBRACKET"
     RBRACKET = "RBRACKET"
     COMMA = "COMMA"
-    ARROW = "ARROW"  # For magnetic operators
+    RIGHTARROW = "RIGHTARROW"  # -> PUSH flow direction
+    LEFTARROW = "LEFTARROW"    # <- PULL flow direction
+    BIDIARROW = "BIDIARROW"    # >< BIDIRECTIONAL flow
+    REPELARROW = "REPELARROW"  # <> REPEL flow
     SEMICOLON = "SEMICOLON"
     COMMENT = "COMMENT"
     EOF = "EOF"

@@ -36,7 +36,10 @@ class GlueLexer:
         "COMMA": r",",
         "EQUALS": r"=",
         "DASH": r"-",  # Support for YAML list items
-        "ARROW": r"(->|<-|><|<>)",  # Add support for magnetic flow operators
+        "RIGHTARROW": r"->",  # PUSH direction
+        "LEFTARROW": r"<-",   # PULL direction
+        "BIDIARROW": r"><",   # BIDIRECTIONAL flow
+        "REPELARROW": r"<>",  # REPEL flow
         "COMMENT": r"(//|#).*",  # Support both C-style and YAML-style comments
         "WHITESPACE": r"[ \t]+",
         "NEWLINE": r"\n",
@@ -49,11 +52,22 @@ class GlueLexer:
         self.pos: int = 0
         self.line: int = 1
         self.column: int = 1
+        self.context_stack: List[str] = []
 
-        # Compile regex patterns
+        # Compile token patterns for efficiency
+        # Ensure arrow operators are checked before dash to prevent incorrect tokenization
         self.patterns = []
+        
+        # First add the arrow operators (they need to be matched before dash)
+        arrow_types = ["RIGHTARROW", "LEFTARROW", "BIDIARROW", "REPELARROW"]
+        for token_type in arrow_types:
+            if token_type in self.TOKEN_TYPES:
+                self.patterns.append((token_type, re.compile(self.TOKEN_TYPES[token_type])))
+        
+        # Then add all other token types
         for token_type, pattern in self.TOKEN_TYPES.items():
-            self.patterns.append((token_type, re.compile(pattern)))
+            if token_type not in arrow_types:
+                self.patterns.append((token_type, re.compile(pattern)))
 
     def tokenize(self, source: str) -> List[Token]:
         """Tokenize the input text.
