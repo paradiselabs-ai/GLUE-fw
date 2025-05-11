@@ -1,0 +1,3498 @@
+Installation Guide
+The smolagents library can be installed using pip. Here are the different installation methods and options available.
+
+Prerequisites
+Python 3.10 or newer
+pip
+Basic Installation
+Install smolagents core library with:
+
+Copied
+pip install smolagents
+Installation with Extras
+smolagents provides several optional dependencies (extras) that can be installed based on your needs. You can install these extras using the following syntax:
+
+Copied
+pip install "smolagents[extra1,extra2]"
+Tools
+These extras include various tools and integrations:
+
+toolkit: Install a default set of tools for common tasks.
+Copied
+pip install "smolagents[toolkit]"
+mcp: Add support for the Model Context Protocol (MCP) to integrate with external tools and services.
+Copied
+pip install "smolagents[mcp]"
+Model Integration
+These extras enable integration with various AI models and frameworks:
+
+openai: Add support for OpenAI API models.
+Copied
+pip install "smolagents[openai]"
+transformers: Enable Hugging Face Transformers models.
+Copied
+pip install "smolagents[transformers]"
+vllm: Add VLLM support for efficient model inference.
+Copied
+pip install "smolagents[vllm]"
+mlx-lm: Enable support for MLX-LM models.
+Copied
+pip install "smolagents[mlx-lm]"
+litellm: Add LiteLLM support for lightweight model inference.
+Copied
+pip install "smolagents[litellm]"
+bedrock: Enable support for AWS Bedrock models.
+Copied
+pip install "smolagents[bedrock]"
+Multimodal Capabilities
+Extras for handling different types of media and input:
+
+vision: Add support for image processing and computer vision tasks.
+Copied
+pip install "smolagents[vision]"
+audio: Enable audio processing capabilities.
+Copied
+pip install "smolagents[audio]"
+Remote Execution
+Extras for executing code remotely:
+
+docker: Add support for executing code in Docker containers.
+Copied
+pip install "smolagents[docker]"
+e2b: Enable E2B support for remote execution.
+Copied
+pip install "smolagents[e2b]"
+Telemetry and User Interface
+Extras for telemetry, monitoring and user interface components:
+
+telemetry: Add support for monitoring and tracing.
+Copied
+pip install "smolagents[telemetry]"
+gradio: Add support for interactive Gradio UI components.
+Copied
+pip install "smolagents[gradio]"
+Complete Installation
+To install all available extras, you can use:
+
+Copied
+pip install "smolagents[all]"
+Verifying Installation
+After installation, you can verify that smolagents is installed correctly by running:
+
+Copied
+import smolagents
+print(smolagents.__version__)
+Next Steps
+Once you have successfully installed smolagents, you can:
+
+Follow the guided tour to learn the basics.
+Explore the how-to guides for practical examples.
+Read the conceptual guides for high-level explanations.
+Check out the tutorials for in-depth tutorials on building agents.
+Explore the API reference for detailed information on classes and functions.
+
+
+Agents - Guided tour
+Open In Colab
+Open In Studio Lab
+In this guided visit, you will learn how to build an agent, how to run it, and how to customize it to make it work better for your use-case.
+
+Building your agent
+To initialize a minimal agent, you need at least these two arguments:
+
+model, a text-generation model to power your agent - because the agent is different from a simple LLM, it is a system that uses a LLM as its engine. You can use any of these options:
+
+TransformersModel takes a pre-initialized transformers pipeline to run inference on your local machine using transformers.
+InferenceClientModel leverages a huggingface_hub.InferenceClient under the hood and supports all Inference Providers on the Hub: Cerebras, Cohere, Fal, Fireworks, HF-Inference, Hyperbolic, Nebius, Novita, Replicate, SambaNova, Together, and more.
+LiteLLMModel similarly lets you call 100+ different models and providers through LiteLLM!
+AzureOpenAIServerModel allows you to use OpenAI models deployed in Azure.
+AmazonBedrockServerModel allows you to use Amazon Bedrock in AWS.
+MLXModel creates a mlx-lm pipeline to run inference on your local machine.
+tools, a list of Tools that the agent can use to solve the task. It can be an empty list. You can also add the default toolbox on top of your tools list by defining the optional argument add_base_tools=True.
+
+Once you have these two arguments, tools and model, you can create an agent and run it. You can use any LLM you’d like, either through Inference Providers, transformers, ollama, LiteLLM, Azure OpenAI, Amazon Bedrock, or mlx-lm.
+
+Inference Providers need a HF_TOKEN to authenticate, but a free HF account already comes with included credits. Upgrade to PRO to raise your included credits.
+
+To access gated models or rise your rate limits with a PRO account, you need to set the environment variable HF_TOKEN or pass token variable upon initialization of InferenceClientModel. You can get your token from your settings page
+
+Copied
+from smolagents import CodeAgent, InferenceClientModel
+
+model_id = "meta-llama/Llama-3.3-70B-Instruct" 
+
+model = InferenceClientModel(model_id=model_id, token="<YOUR_HUGGINGFACEHUB_API_TOKEN>") # You can choose to not pass any model_id to InferenceClientModel to use a default model
+# you can also specify a particular provider e.g. provider="together" or provider="sambanova"
+agent = CodeAgent(tools=[], model=model, add_base_tools=True)
+
+agent.run(
+    "Could you give me the 118th number in the Fibonacci sequence?",
+)
+CodeAgent and ToolCallingAgent
+The CodeAgent is our default agent. It will write and execute python code snippets at each step.
+
+By default, the execution is done in your local environment. This should be safe because the only functions that can be called are the tools you provided (especially if it’s only tools by Hugging Face) and a set of predefined safe functions like print or functions from the math module, so you’re already limited in what can be executed.
+
+The Python interpreter also doesn’t allow imports by default outside of a safe list, so all the most obvious attacks shouldn’t be an issue. You can authorize additional imports by passing the authorized modules as a list of strings in argument additional_authorized_imports upon initialization of your CodeAgent:
+
+Copied
+model = InferenceClientModel()
+agent = CodeAgent(tools=[], model=model, additional_authorized_imports=['requests', 'bs4'])
+agent.run("Could you get me the title of the page at url 'https://huggingface.co/blog'?")
+Additionally, as an extra security layer, access to submodule is forbidden by default, unless explicitly authorized within the import list. For instance, to access the numpy.random submodule, you need to add 'numpy.random' to the additional_authorized_imports list. This could also be authorized by using numpy.*, which will allow numpy as well as any subpackage like numpy.random and its own subpackages.
+
+The LLM can generate arbitrary code that will then be executed: do not add any unsafe imports!
+
+The execution will stop at any code trying to perform an illegal operation or if there is a regular Python error with the code generated by the agent.
+
+You can also use E2B code executor or Docker instead of a local Python interpreter. For E2B, first set the E2B_API_KEY environment variable and then pass executor_type="e2b" upon agent initialization. For Docker, pass executor_type="docker" during initialization.
+
+Learn more about code execution in this tutorial.
+
+We also support the widely-used way of writing actions as JSON-like blobs: this is ToolCallingAgent, it works much in the same way like CodeAgent, of course without additional_authorized_imports since it doesn’t execute code:
+
+Copied
+from smolagents import ToolCallingAgent
+
+agent = ToolCallingAgent(tools=[], model=model)
+agent.run("Could you get me the title of the page at url 'https://huggingface.co/blog'?")
+Inspecting an agent run
+Here are a few useful attributes to inspect what happened after a run:
+
+agent.logs stores the fine-grained logs of the agent. At every step of the agent’s run, everything gets stored in a dictionary that then is appended to agent.logs.
+Running agent.write_memory_to_messages() writes the agent’s memory as list of chat messages for the Model to view. This method goes over each step of the log and only stores what it’s interested in as a message: for instance, it will save the system prompt and task in separate messages, then for each step it will store the LLM output as a message, and the tool call output as another message. Use this if you want a higher-level view of what has happened - but not every log will be transcripted by this method.
+Tools
+A tool is an atomic function to be used by an agent. To be used by an LLM, it also needs a few attributes that constitute its API and will be used to describe to the LLM how to call this tool:
+
+A name
+A description
+Input types and descriptions
+An output type
+You can for instance check the PythonInterpreterTool: it has a name, a description, input descriptions, an output type, and a forward method to perform the action.
+
+When the agent is initialized, the tool attributes are used to generate a tool description which is baked into the agent’s system prompt. This lets the agent know which tools it can use and why.
+
+Default toolbox
+If you install smolagents with the “toolkit” extra, it comes with a default toolbox for empowering agents, that you can add to your agent upon initialization with argument add_base_tools=True:
+
+DuckDuckGo web search*: performs a web search using DuckDuckGo browser.
+Python code interpreter: runs your LLM generated Python code in a secure environment. This tool will only be added to ToolCallingAgent if you initialize it with add_base_tools=True, since code-based agent can already natively execute Python code
+Transcriber: a speech-to-text pipeline built on Whisper-Turbo that transcribes an audio to text.
+You can manually use a tool by calling it with its arguments.
+
+Copied
+# !pip install smolagents[toolkit]
+from smolagents import WebSearchTool
+
+search_tool = WebSearchTool()
+print(search_tool("Who's the current president of Russia?"))
+Create a new tool
+You can create your own tool for use cases not covered by the default tools from Hugging Face. For example, let’s create a tool that returns the most downloaded model for a given task from the Hub.
+
+You’ll start with the code below.
+
+Copied
+from huggingface_hub import list_models
+
+task = "text-classification"
+
+most_downloaded_model = next(iter(list_models(filter=task, sort="downloads", direction=-1)))
+print(most_downloaded_model.id)
+This code can quickly be converted into a tool, just by wrapping it in a function and adding the tool decorator: This is not the only way to build the tool: you can directly define it as a subclass of Tool, which gives you more flexibility, for instance the possibility to initialize heavy class attributes.
+
+Let’s see how it works for both options:
+
+Copied
+from smolagents import tool
+
+
+def model_download_tool(task: str) -> str:
+    """
+    This is a tool that returns the most downloaded model of a given task on the Hugging Face Hub.
+    It returns the name of the checkpoint.
+
+    Args:
+        task: The task for which to get the download count.
+    """
+    most_downloaded_model = next(iter(list_models(filter=task, sort="downloads", direction=-1)))
+    return most_downloaded_model.id
+The function needs:
+
+A clear name. The name should be descriptive enough of what this tool does to help the LLM brain powering the agent. Since this tool returns the model with the most downloads for a task, let’s name it model_download_tool.
+Type hints on both inputs and output
+A description, that includes an ‘Args:’ part where each argument is described (without a type indication this time, it will be pulled from the type hint). Same as for the tool name, this description is an instruction manual for the LLM powering your agent, so do not neglect it.
+All these elements will be automatically baked into the agent’s system prompt upon initialization: so strive to make them as clear as possible!
+
+This definition format is the same as tool schemas used in apply_chat_template, the only difference is the added tool decorator: read more on our tool use API here.
+
+Then you can directly initialize your agent:
+
+Copied
+from smolagents import CodeAgent, InferenceClientModel
+agent = CodeAgent(tools=[model_download_tool], model=InferenceClientModel())
+agent.run(
+    "Can you give me the name of the model that has the most downloads in the 'text-to-video' task on the Hugging Face Hub?"
+)
+You get the following logs:
+
+Copied
+╭──────────────────────────────────────── New run ─────────────────────────────────────────╮
+│                                                                                          │
+│ Can you give me the name of the model that has the most downloads in the 'text-to-video' │
+│ task on the Hugging Face Hub?                                                            │
+│                                                                                          │
+╰─ InferenceClientModel - Qwen/Qwen2.5-Coder-32B-Instruct ───────────────────────────────────────────╯
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Step 0 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+╭─ Executing this code: ───────────────────────────────────────────────────────────────────╮
+│   1 model_name = model_download_tool(task="text-to-video")                               │
+│   2 print(model_name)                                                                    │
+╰──────────────────────────────────────────────────────────────────────────────────────────╯
+Execution logs:
+ByteDance/AnimateDiff-Lightning
+
+Out: None
+[Step 0: Duration 0.27 seconds| Input tokens: 2,069 | Output tokens: 60]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ Step 1 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+╭─ Executing this code: ───────────────────────────────────────────────────────────────────╮
+│   1 final_answer("ByteDance/AnimateDiff-Lightning")                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────╯
+Out - Final answer: ByteDance/AnimateDiff-Lightning
+[Step 1: Duration 0.10 seconds| Input tokens: 4,288 | Output tokens: 148]
+Out[20]: 'ByteDance/AnimateDiff-Lightning'
+Read more on tools in the dedicated tutorial.
+
+Multi-agents
+Multi-agent systems have been introduced with Microsoft’s framework Autogen.
+
+In this type of framework, you have several agents working together to solve your task instead of only one. It empirically yields better performance on most benchmarks. The reason for this better performance is conceptually simple: for many tasks, rather than using a do-it-all system, you would prefer to specialize units on sub-tasks. Here, having agents with separate tool sets and memories allows to achieve efficient specialization. For instance, why fill the memory of the code generating agent with all the content of webpages visited by the web search agent? It’s better to keep them separate.
+
+You can easily build hierarchical multi-agent systems with smolagents.
+
+To do so, just ensure your agent has name anddescription attributes, which will then be embedded in the manager agent’s system prompt to let it know how to call this managed agent, as we also do for tools. Then you can pass this managed agent in the parameter managed_agents upon initialization of the manager agent.
+
+Here’s an example of making an agent that managed a specific web search agent using our native WebSearchTool:
+
+Copied
+from smolagents import CodeAgent, InferenceClientModel, WebSearchTool
+
+model = InferenceClientModel()
+
+web_agent = CodeAgent(
+    tools=[WebSearchTool()],
+    model=model,
+    name="web_search",
+    description="Runs web searches for you. Give it your query as an argument."
+)
+
+manager_agent = CodeAgent(
+    tools=[], model=model, managed_agents=[web_agent]
+)
+
+manager_agent.run("Who is the CEO of Hugging Face?")
+For an in-depth example of an efficient multi-agent implementation, see how we pushed our multi-agent system to the top of the GAIA leaderboard.
+
+Talk with your agent and visualize its thoughts in a cool Gradio interface
+You can use GradioUI to interactively submit tasks to your agent and observe its thought and execution process, here is an example:
+
+Copied
+from smolagents import (
+    load_tool,
+    CodeAgent,
+    InferenceClientModel,
+    GradioUI
+)
+
+# Import tool from Hub
+image_generation_tool = load_tool("m-ric/text-to-image", trust_remote_code=True)
+
+model = InferenceClientModel(model_id=model_id)
+
+# Initialize the agent with the image generation tool
+agent = CodeAgent(tools=[image_generation_tool], model=model)
+
+GradioUI(agent).launch()
+Under the hood, when the user types a new answer, the agent is launched with agent.run(user_request, reset=False). The reset=False flag means the agent’s memory is not flushed before launching this new task, which lets the conversation go on.
+
+You can also use this reset=False argument to keep the conversation going in any other agentic application.
+
+In gradio UIs, if you want to allow users to interrupt a running agent, you could do this with a button that triggers method agent.interrupt(). This will stop the agent at the end of its current step, then raise an error.
+
+Next steps
+Finally, when you’ve configured your agent to your needs, you can share it to the Hub!
+
+Copied
+agent.push_to_hub("m-ric/my_agent")
+Similarly, to load an agent that has been pushed to hub, if you trust the code from its tools, use:
+
+Copied
+agent.from_hub("m-ric/my_agent", trust_remote_code=True)
+For more in-depth usage, you will then want to check out our tutorials:
+
+the explanation of how our code agents work
+this guide on how to build good agents.
+the in-depth guide for tool usage.
+
+Building good agents
+Open In Colab
+Open In Studio Lab
+There’s a world of difference between building an agent that works and one that doesn’t. How can we build agents that fall into the former category? In this guide, we’re going to talk about best practices for building agents.
+
+If you’re new to building agents, make sure to first read the intro to agents and the guided tour of smolagents.
+
+The best agentic systems are the simplest: simplify the workflow as much as you can
+Giving an LLM some agency in your workflow introduces some risk of errors.
+
+Well-programmed agentic systems have good error logging and retry mechanisms anyway, so the LLM engine has a chance to self-correct their mistake. But to reduce the risk of LLM error to the maximum, you should simplify your workflow!
+
+Let’s revisit the example from the intro to agents: a bot that answers user queries for a surf trip company. Instead of letting the agent do 2 different calls for “travel distance API” and “weather API” each time they are asked about a new surf spot, you could just make one unified tool “return_spot_information”, a function that calls both APIs at once and returns their concatenated outputs to the user.
+
+This will reduce costs, latency, and error risk!
+
+The main guideline is: Reduce the number of LLM calls as much as you can.
+
+This leads to a few takeaways:
+
+Whenever possible, group 2 tools in one, like in our example of the two APIs.
+Whenever possible, logic should be based on deterministic functions rather than agentic decisions.
+Improve the information flow to the LLM engine
+Remember that your LLM engine is like an intelligent robot, trapped into a room with the only communication with the outside world being notes passed under a door.
+
+It won’t know of anything that happened if you don’t explicitly put that into its prompt.
+
+So first start with making your task very clear! Since an agent is powered by an LLM, minor variations in your task formulation might yield completely different results.
+
+Then, improve the information flow towards your agent in tool use.
+
+Particular guidelines to follow:
+
+Each tool should log (by simply using print statements inside the tool’s forward method) everything that could be useful for the LLM engine.
+In particular, logging detail on tool execution errors would help a lot!
+For instance, here’s a tool that retrieves weather data based on location and date-time:
+
+First, here’s a poor version:
+
+Copied
+import datetime
+from smolagents import tool
+
+def get_weather_report_at_coordinates(coordinates, date_time):
+    # Dummy function, returns a list of [temperature in °C, risk of rain on a scale 0-1, wave height in m]
+    return [28.0, 0.35, 0.85]
+
+def convert_location_to_coordinates(location):
+    # Returns dummy coordinates
+    return [3.3, -42.0]
+
+
+def get_weather_api(location: str, date_time: str) -> str:
+    """
+    Returns the weather report.
+
+    Args:
+        location: the name of the place that you want the weather for.
+        date_time: the date and time for which you want the report.
+    """
+    lon, lat = convert_location_to_coordinates(location)
+    date_time = datetime.strptime(date_time)
+    return str(get_weather_report_at_coordinates((lon, lat), date_time))
+Why is it bad?
+
+there’s no precision of the format that should be used for date_time
+there’s no detail on how location should be specified.
+there’s no logging mechanism trying to make explicit failure cases like location not being in a proper format, or date_time not being properly formatted.
+the output format is hard to understand
+If the tool call fails, the error trace logged in memory can help the LLM reverse engineer the tool to fix the errors. But why leave it with so much heavy lifting to do?
+
+A better way to build this tool would have been the following:
+
+Copied
+
+def get_weather_api(location: str, date_time: str) -> str:
+    """
+    Returns the weather report.
+
+    Args:
+        location: the name of the place that you want the weather for. Should be a place name, followed by possibly a city name, then a country, like "Anchor Point, Taghazout, Morocco".
+        date_time: the date and time for which you want the report, formatted as '%m/%d/%y %H:%M:%S'.
+    """
+    lon, lat = convert_location_to_coordinates(location)
+    try:
+        date_time = datetime.strptime(date_time)
+    except Exception as e:
+        raise ValueError("Conversion of `date_time` to datetime format failed, make sure to provide a string in format '%m/%d/%y %H:%M:%S'. Full trace:" + str(e))
+    temperature_celsius, risk_of_rain, wave_height = get_weather_report_at_coordinates((lon, lat), date_time)
+    return f"Weather report for {location}, {date_time}: Temperature will be {temperature_celsius}°C, risk of rain is {risk_of_rain*100:.0f}%, wave height is {wave_height}m."
+In general, to ease the load on your LLM, the good question to ask yourself is: “How easy would it be for me, if I was dumb and using this tool for the first time ever, to program with this tool and correct my own errors?“.
+
+Give more arguments to the agent
+To pass some additional objects to your agent beyond the simple string describing the task, you can use the additional_args argument to pass any type of object:
+
+Copied
+from smolagents import CodeAgent, InferenceClientModel
+
+model_id = "meta-llama/Llama-3.3-70B-Instruct"
+
+agent = CodeAgent(tools=[], model=InferenceClientModel(model_id=model_id), add_base_tools=True)
+
+agent.run(
+    "Why does Mike not know many people in New York?",
+    additional_args={"mp3_sound_file_url":'https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/transformers/recording.mp3'}
+)
+For instance, you can use this additional_args argument to pass images or strings that you want your agent to leverage.
+
+How to debug your agent
+1. Use a stronger LLM
+In an agentic workflows, some of the errors are actual errors, some other are the fault of your LLM engine not reasoning properly. For instance, consider this trace for an CodeAgent that I asked to create a car picture:
+
+Copied
+==================================================================================================== New task ====================================================================================================
+Make me a cool car picture
+──────────────────────────────────────────────────────────────────────────────────────────────────── New step ────────────────────────────────────────────────────────────────────────────────────────────────────
+Agent is executing the code below: ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+image_generator(prompt="A cool, futuristic sports car with LED headlights, aerodynamic design, and vibrant color, high-res, photorealistic")
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+Last output from code snippet: ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/var/folders/6m/9b1tts6d5w960j80wbw9tx3m0000gn/T/tmpx09qfsdd/652f0007-3ee9-44e2-94ac-90dae6bb89a4.png
+Step 1:
+
+- Time taken: 16.35 seconds
+- Input tokens: 1,383
+- Output tokens: 77
+──────────────────────────────────────────────────────────────────────────────────────────────────── New step ────────────────────────────────────────────────────────────────────────────────────────────────────
+Agent is executing the code below: ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+final_answer("/var/folders/6m/9b1tts6d5w960j80wbw9tx3m0000gn/T/tmpx09qfsdd/652f0007-3ee9-44e2-94ac-90dae6bb89a4.png")
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Print outputs:
+
+Last output from code snippet: ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+/var/folders/6m/9b1tts6d5w960j80wbw9tx3m0000gn/T/tmpx09qfsdd/652f0007-3ee9-44e2-94ac-90dae6bb89a4.png
+Final answer:
+/var/folders/6m/9b1tts6d5w960j80wbw9tx3m0000gn/T/tmpx09qfsdd/652f0007-3ee9-44e2-94ac-90dae6bb89a4.png
+The user sees, instead of an image being returned, a path being returned to them. It could look like a bug from the system, but actually the agentic system didn’t cause the error: it’s just that the LLM brain did the mistake of not saving the image output into a variable. Thus it cannot access the image again except by leveraging the path that was logged while saving the image, so it returns the path instead of an image.
+
+The first step to debugging your agent is thus “Use a more powerful LLM”. Alternatives like Qwen2/5-72B-Instruct wouldn’t have made that mistake.
+
+2. Provide more guidance / more information
+You can also use less powerful models, provided you guide them more effectively.
+
+Put yourself in the shoes of your model: if you were the model solving the task, would you struggle with the information available to you (from the system prompt + task formulation + tool description) ?
+
+Would you need some added clarifications?
+
+To provide extra information, we do not recommend to change the system prompt right away: the default system prompt has many adjustments that you do not want to mess up except if you understand the prompt very well. Better ways to guide your LLM engine are:
+
+If it’s about the task to solve: add all these details to the task. The task could be 100s of pages long.
+If it’s about how to use tools: the description attribute of your tools.
+3. Change the system prompt (generally not advised)
+If above clarifications are not sufficient, you can change the system prompt.
+
+Let’s see how it works. For example, let us check the default system prompt for the CodeAgent (below version is shortened by skipping zero-shot examples).
+
+Copied
+print(agent.prompt_templates["system_prompt"])
+Here is what you get:
+
+Copied
+You are an expert assistant who can solve any task using code blobs. You will be given a task to solve as best you can.
+To do so, you have been given access to a list of tools: these tools are basically Python functions which you can call with code.
+To solve the task, you must plan forward to proceed in a series of steps, in a cycle of 'Thought:', 'Code:', and 'Observation:' sequences.
+
+At each step, in the 'Thought:' sequence, you should first explain your reasoning towards solving the task and the tools that you want to use.
+Then in the 'Code:' sequence, you should write the code in simple Python. The code sequence must end with '<end_code>' sequence.
+During each intermediate step, you can use 'print()' to save whatever important information you will then need.
+These print outputs will then appear in the 'Observation:' field, which will be available as input for the next step.
+In the end you have to return a final answer using the `final_answer` tool.
+
+Here are a few examples using notional tools:
+---
+Task: "Generate an image of the oldest person in this document."
+
+Thought: I will proceed step by step and use the following tools: `document_qa` to find the oldest person in the document, then `image_generator` to generate an image according to the answer.
+Code:
+```py
+answer = document_qa(document=document, question="Who is the oldest person mentioned?")
+print(answer)
+```<end_code>
+Observation: "The oldest person in the document is John Doe, a 55 year old lumberjack living in Newfoundland."
+
+Thought: I will now generate an image showcasing the oldest person.
+Code:
+```py
+image = image_generator("A portrait of John Doe, a 55-year-old man living in Canada.")
+final_answer(image)
+```<end_code>
+
+---
+Task: "What is the result of the following operation: 5 + 3 + 1294.678?"
+
+Thought: I will use python code to compute the result of the operation and then return the final answer using the `final_answer` tool
+Code:
+```py
+result = 5 + 3 + 1294.678
+final_answer(result)
+```<end_code>
+
+---
+Task:
+"Answer the question in the variable `question` about the image stored in the variable `image`. The question is in French.
+You have been provided with these additional arguments, that you can access using the keys as variables in your python code:
+{'question': 'Quel est l'animal sur l'image?', 'image': 'path/to/image.jpg'}"
+
+Thought: I will use the following tools: `translator` to translate the question into English and then `image_qa` to answer the question on the input image.
+Code:
+```py
+translated_question = translator(question=question, src_lang="French", tgt_lang="English")
+print(f"The translated question is {translated_question}.")
+answer = image_qa(image=image, question=translated_question)
+final_answer(f"The answer is {answer}")
+```<end_code>
+
+---
+Task:
+In a 1979 interview, Stanislaus Ulam discusses with Martin Sherwin about other great physicists of his time, including Oppenheimer.
+What does he say was the consequence of Einstein learning too much math on his creativity, in one word?
+
+Thought: I need to find and read the 1979 interview of Stanislaus Ulam with Martin Sherwin.
+Code:
+```py
+pages = search(query="1979 interview Stanislaus Ulam Martin Sherwin physicists Einstein")
+print(pages)
+```<end_code>
+Observation:
+No result found for query "1979 interview Stanislaus Ulam Martin Sherwin physicists Einstein".
+
+Thought: The query was maybe too restrictive and did not find any results. Let's try again with a broader query.
+Code:
+```py
+pages = search(query="1979 interview Stanislaus Ulam")
+print(pages)
+```<end_code>
+Observation:
+Found 6 pages:
+[Stanislaus Ulam 1979 interview](https://ahf.nuclearmuseum.org/voices/oral-histories/stanislaus-ulams-interview-1979/)
+
+[Ulam discusses Manhattan Project](https://ahf.nuclearmuseum.org/manhattan-project/ulam-manhattan-project/)
+
+(truncated)
+
+Thought: I will read the first 2 pages to know more.
+Code:
+```py
+for url in ["https://ahf.nuclearmuseum.org/voices/oral-histories/stanislaus-ulams-interview-1979/", "https://ahf.nuclearmuseum.org/manhattan-project/ulam-manhattan-project/"]:
+    whole_page = visit_webpage(url)
+    print(whole_page)
+    print("\n" + "="*80 + "\n")  # Print separator between pages
+```<end_code>
+Observation:
+Manhattan Project Locations:
+Los Alamos, NM
+Stanislaus Ulam was a Polish-American mathematician. He worked on the Manhattan Project at Los Alamos and later helped design the hydrogen bomb. In this interview, he discusses his work at
+(truncated)
+
+Thought: I now have the final answer: from the webpages visited, Stanislaus Ulam says of Einstein: "He learned too much mathematics and sort of diminished, it seems to me personally, it seems to me his purely physics creativity." Let's answer in one word.
+Code:
+```py
+final_answer("diminished")
+```<end_code>
+
+---
+Task: "Which city has the highest population: Guangzhou or Shanghai?"
+
+Thought: I need to get the populations for both cities and compare them: I will use the tool `search` to get the population of both cities.
+Code:
+```py
+for city in ["Guangzhou", "Shanghai"]:
+    print(f"Population {city}:", search(f"{city} population")
+```<end_code>
+Observation:
+Population Guangzhou: ['Guangzhou has a population of 15 million inhabitants as of 2021.']
+Population Shanghai: '26 million (2019)'
+
+Thought: Now I know that Shanghai has the highest population.
+Code:
+```py
+final_answer("Shanghai")
+```<end_code>
+
+---
+Task: "What is the current age of the pope, raised to the power 0.36?"
+
+Thought: I will use the tool `wiki` to get the age of the pope, and confirm that with a web search.
+Code:
+```py
+pope_age_wiki = wiki(query="current pope age")
+print("Pope age as per wikipedia:", pope_age_wiki)
+pope_age_search = web_search(query="current pope age")
+print("Pope age as per google search:", pope_age_search)
+```<end_code>
+Observation:
+Pope age: "The pope Francis is currently 88 years old."
+
+Thought: I know that the pope is 88 years old. Let's compute the result using python code.
+Code:
+```py
+pope_current_age = 88 ** 0.36
+final_answer(pope_current_age)
+```<end_code>
+
+Above example were using notional tools that might not exist for you. On top of performing computations in the Python code snippets that you create, you only have access to these tools:
+{%- for tool in tools.values() %}
+- {{ tool.name }}: {{ tool.description }}
+    Takes inputs: {{tool.inputs}}
+    Returns an output of type: {{tool.output_type}}
+{%- endfor %}
+
+{%- if managed_agents and managed_agents.values() | list %}
+You can also give tasks to team members.
+Calling a team member works the same as for calling a tool: simply, the only argument you can give in the call is 'task', a long string explaining your task.
+Given that this team member is a real human, you should be very verbose in your task.
+Here is a list of the team members that you can call:
+{%- for agent in managed_agents.values() %}
+- {{ agent.name }}: {{ agent.description }}
+{%- endfor %}
+{%- else %}
+{%- endif %}
+
+Here are the rules you should always follow to solve your task:
+1. Always provide a 'Thought:' sequence, and a 'Code:\n```py' sequence ending with '```<end_code>' sequence, else you will fail.
+2. Use only variables that you have defined!
+3. Always use the right arguments for the tools. DO NOT pass the arguments as a dict as in 'answer = wiki({'query': "What is the place where James Bond lives?"})', but use the arguments directly as in 'answer = wiki(query="What is the place where James Bond lives?")'.
+4. Take care to not chain too many sequential tool calls in the same code block, especially when the output format is unpredictable. For instance, a call to search has an unpredictable return format, so do not have another tool call that depends on its output in the same block: rather output results with print() to use them in the next block.
+5. Call a tool only when needed, and never re-do a tool call that you previously did with the exact same parameters.
+6. Don't name any new variable with the same name as a tool: for instance don't name a variable 'final_answer'.
+7. Never create any notional variables in our code, as having these in your logs will derail you from the true variables.
+8. You can use imports in your code, but only from the following list of modules: {{authorized_imports}}
+9. The state persists between code executions: so if in one step you've created variables or imported modules, these will all persist.
+10. Don't give up! You're in charge of solving the task, not providing directions to solve it.
+
+Now Begin! If you solve the task correctly, you will receive a reward of $1,000,000.
+As you can see, there are placeholders like "{{ tool.description }}": these will be used upon agent initialization to insert certain automatically generated descriptions of tools or managed agents.
+
+So while you can overwrite this system prompt template by passing your custom prompt as an argument to the system_prompt parameter, your new system prompt can contain the following placeholders:
+
+To insert tool descriptions:
+Copied
+{%- for tool in tools.values() %}
+- {{ tool.name }}: {{ tool.description }}
+    Takes inputs: {{tool.inputs}}
+    Returns an output of type: {{tool.output_type}}
+{%- endfor %}
+To insert the descriptions for managed agents if there are any:
+Copied
+{%- if managed_agents and managed_agents.values() | list %}
+You can also give tasks to team members.
+Calling a team member works the same as for calling a tool: simply, the only argument you can give in the call is 'task', a long string explaining your task.
+Given that this team member is a real human, you should be very verbose in your task.
+Here is a list of the team members that you can call:
+{%- for agent in managed_agents.values() %}
+- {{ agent.name }}: {{ agent.description }}
+{%- endfor %}
+{%- endif %}
+For CodeAgent only, to insert the list of authorized imports: "{{authorized_imports}}"
+Then you can change the system prompt as follows:
+
+Copied
+agent.prompt_templates["system_prompt"] = agent.prompt_templates["system_prompt"] + "\nHere you go!"
+This also works with the ToolCallingAgent.
+
+4. Extra planning
+We provide a model for a supplementary planning step, that an agent can run regularly in-between normal action steps. In this step, there is no tool call, the LLM is simply asked to update a list of facts it knows and to reflect on what steps it should take next based on those facts.
+
+Copied
+from smolagents import load_tool, CodeAgent, InferenceClientModel, WebSearchTool
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Import tool from Hub
+image_generation_tool = load_tool("m-ric/text-to-image", trust_remote_code=True)
+
+search_tool = WebSearchTool()
+
+agent = CodeAgent(
+    tools=[search_tool, image_generation_tool],
+    model=InferenceClientModel(model_id="Qwen/Qwen2.5-72B-Instruct"),
+    planning_interval=3 # This is where you activate planning!
+)
+
+# Run it!
+result = agent.run(
+    "How long would a cheetah at full speed take to run the length of Pont Alexandre III?",
+)
+
+
+
+Tools
+Open In Colab
+Open In Studio Lab
+Here, we’re going to see advanced tool usage.
+
+If you’re new to building agents, make sure to first read the intro to agents and the guided tour of smolagents.
+
+Tools
+What is a tool, and how to build one?
+Share your tool to the Hub
+Import a Space as a tool
+Use LangChain tools
+Manage your agent’s toolbox
+Use a collection of tools
+What is a tool, and how to build one?
+A tool is mostly a function that an LLM can use in an agentic system.
+
+But to use it, the LLM will need to be given an API: name, tool description, input types and descriptions, output type.
+
+So it cannot be only a function. It should be a class.
+
+So at core, the tool is a class that wraps a function with metadata that helps the LLM understand how to use it.
+
+Here’s how it looks:
+
+Copied
+from smolagents import Tool
+
+class HFModelDownloadsTool(Tool):
+    name = "model_download_counter"
+    description = """
+    This is a tool that returns the most downloaded model of a given task on the Hugging Face Hub.
+    It returns the name of the checkpoint."""
+    inputs = {
+        "task": {
+            "type": "string",
+            "description": "the task category (such as text-classification, depth-estimation, etc)",
+        }
+    }
+    output_type = "string"
+
+    def forward(self, task: str):
+        from huggingface_hub import list_models
+
+        model = next(iter(list_models(filter=task, sort="downloads", direction=-1)))
+        return model.id
+
+model_downloads_tool = HFModelDownloadsTool()
+The custom tool subclasses Tool to inherit useful methods. The child class also defines:
+
+An attribute name, which corresponds to the name of the tool itself. The name usually describes what the tool does. Since the code returns the model with the most downloads for a task, let’s name it model_download_counter.
+An attribute description is used to populate the agent’s system prompt.
+An inputs attribute, which is a dictionary with keys "type" and "description". It contains information that helps the Python interpreter make educated choices about the input.
+An output_type attribute, which specifies the output type. The types for both inputs and output_type should be Pydantic formats, they can be either of these: ~AUTHORIZED_TYPES().
+A forward method which contains the inference code to be executed.
+And that’s all it needs to be used in an agent!
+
+There’s another way to build a tool. In the guided_tour, we implemented a tool using the @tool decorator. The tool() decorator is the recommended way to define simple tools, but sometimes you need more than this: using several methods in a class for more clarity, or using additional class attributes.
+
+In this case, you can build your tool by subclassing Tool as described above.
+
+Share your tool to the Hub
+You can share your custom tool to the Hub as a Space repository by calling push_to_hub() on the tool. Make sure you’ve created a repository for it on the Hub and are using a token with read access.
+
+Copied
+model_downloads_tool.push_to_hub("{your_username}/hf-model-downloads", token="<YOUR_HUGGINGFACEHUB_API_TOKEN>")
+For the push to Hub to work, your tool will need to respect some rules:
+
+All methods are self-contained, e.g. use variables that come either from their args.
+As per the above point, all imports should be defined directly within the tool’s functions, else you will get an error when trying to call save() or push_to_hub() with your custom tool.
+If you subclass the __init__ method, you can give it no other argument than self. This is because arguments set during a specific tool instance’s initialization are hard to track, which prevents from sharing them properly to the hub. And anyway, the idea of making a specific class is that you can already set class attributes for anything you need to hard-code (just set your_variable=(...) directly under the class YourTool(Tool): line). And of course you can still create a class attribute anywhere in your code by assigning stuff to self.your_variable.
+Once your tool is pushed to Hub, you can visualize it. Here is the model_downloads_tool that I’ve pushed. It has a nice gradio interface.
+
+When diving into the tool files, you can find that all the tool’s logic is under tool.py. That is where you can inspect a tool shared by someone else.
+
+Then you can load the tool with load_tool() or create it with from_hub() and pass it to the tools parameter in your agent. Since running tools means running custom code, you need to make sure you trust the repository, thus we require to pass trust_remote_code=True to load a tool from the Hub.
+
+Copied
+from smolagents import load_tool, CodeAgent
+
+model_download_tool = load_tool(
+    "{your_username}/hf-model-downloads",
+    trust_remote_code=True
+)
+Import a Space as a tool
+You can directly import a Gradio Space from the Hub as a tool using the Tool.from_space() method!
+
+You only need to provide the id of the Space on the Hub, its name, and a description that will help your agent understand what the tool does. Under the hood, this will use gradio-client library to call the Space.
+
+For instance, let’s import the FLUX.1-dev Space from the Hub and use it to generate an image.
+
+Copied
+image_generation_tool = Tool.from_space(
+    "black-forest-labs/FLUX.1-schnell",
+    name="image_generator",
+    description="Generate an image from a prompt"
+)
+
+image_generation_tool("A sunny beach")
+And voilà, here’s your image! 🏖️
+
+
+Then you can use this tool just like any other tool. For example, let’s improve the prompt a rabbit wearing a space suit and generate an image of it. This example also shows how you can pass additional arguments to the agent.
+
+Copied
+from smolagents import CodeAgent, InferenceClientModel
+
+model = InferenceClientModel(model_id="Qwen/Qwen2.5-Coder-32B-Instruct")
+agent = CodeAgent(tools=[image_generation_tool], model=model)
+
+agent.run(
+    "Improve this prompt, then generate an image of it.", additional_args={'user_prompt': 'A rabbit wearing a space suit'}
+)
+Copied
+=== Agent thoughts:
+improved_prompt could be "A bright blue space suit wearing rabbit, on the surface of the moon, under a bright orange sunset, with the Earth visible in the background"
+
+Now that I have improved the prompt, I can use the image generator tool to generate an image based on this prompt.
+>>> Agent is executing the code below:
+image = image_generator(prompt="A bright blue space suit wearing rabbit, on the surface of the moon, under a bright orange sunset, with the Earth visible in the background")
+final_answer(image)
+
+How cool is this? 🤩
+
+Use LangChain tools
+We love Langchain and think it has a very compelling suite of tools. To import a tool from LangChain, use the from_langchain() method.
+
+Here is how you can use it to recreate the intro’s search result using a LangChain web search tool. This tool will need pip install langchain google-search-results -q to work properly.
+
+Copied
+from langchain.agents import load_tools
+
+search_tool = Tool.from_langchain(load_tools(["serpapi"])[0])
+
+agent = CodeAgent(tools=[search_tool], model=model)
+
+agent.run("How many more blocks (also denoted as layers) are in BERT base encoder compared to the encoder from the architecture proposed in Attention is All You Need?")
+Manage your agent’s toolbox
+You can manage an agent’s toolbox by adding or replacing a tool in attribute agent.tools, since it is a standard dictionary.
+
+Let’s add the model_download_tool to an existing agent initialized with only the default toolbox.
+
+Copied
+from smolagents import InferenceClientModel
+
+model = InferenceClientModel(model_id="Qwen/Qwen2.5-Coder-32B-Instruct")
+
+agent = CodeAgent(tools=[], model=model, add_base_tools=True)
+agent.tools[model_download_tool.name] = model_download_tool
+Now we can leverage the new tool:
+
+Copied
+agent.run(
+    "Can you give me the name of the model that has the most downloads in the 'text-to-video' task on the Hugging Face Hub but reverse the letters?"
+)
+Beware of not adding too many tools to an agent: this can overwhelm weaker LLM engines.
+
+Use a collection of tools
+You can leverage tool collections by using ToolCollection. It supports loading either a collection from the Hub or an MCP server tools.
+
+Tool Collection from a collection in the Hub
+You can leverage it with the slug of the collection you want to use. Then pass them as a list to initialize your agent, and start using them!
+
+Copied
+from smolagents import ToolCollection, CodeAgent
+
+image_tool_collection = ToolCollection.from_hub(
+    collection_slug="huggingface-tools/diffusion-tools-6630bb19a942c2306a2cdb6f",
+    token="<YOUR_HUGGINGFACEHUB_API_TOKEN>"
+)
+agent = CodeAgent(tools=[*image_tool_collection.tools], model=model, add_base_tools=True)
+
+agent.run("Please draw me a picture of rivers and lakes.")
+To speed up the start, tools are loaded only if called by the agent.
+
+Tool Collection from any MCP server
+Leverage tools from the hundreds of MCP servers available on glama.ai or smithery.ai.
+
+Security Warning: Using MCP servers comes with security risks:
+
+Trust is essential: Only use MCP servers from trusted sources. Malicious servers can execute harmful code on your machine.
+Stdio-based MCP servers will always execute code on your machine (that’s their intended functionality).
+SSE-based MCP servers while the remote MCP servers will not be able to execute code on your machine, still proceed with caution.
+Always verify the source and integrity of any MCP server before connecting to it, especially for production environments.
+
+The MCP servers tools can be loaded with ToolCollection.from_mcp().
+
+For stdio-based MCP servers, pass the server parameters as an instance of mcp.StdioServerParameters:
+
+Copied
+from smolagents import ToolCollection, CodeAgent
+from mcp import StdioServerParameters
+
+server_parameters = StdioServerParameters(
+    command="uvx",
+    args=["--quiet", "pubmedmcp@0.1.3"],
+    env={"UV_PYTHON": "3.12", **os.environ},
+)
+
+with ToolCollection.from_mcp(server_parameters, trust_remote_code=True) as tool_collection:
+    agent = CodeAgent(tools=[*tool_collection.tools], model=model, add_base_tools=True)
+    agent.run("Please find a remedy for hangover.")
+For SSE-based MCP servers, simply pass a dict with parameters to mcp.client.sse.sse_client:
+
+Copied
+from smolagents import ToolCollection, CodeAgent
+
+with ToolCollection.from_mcp({"url": "http://127.0.0.1:8000/sse"}, trust_remote_code=True) as tool_collection:
+    agent = CodeAgent(tools=[*tool_collection.tools], add_base_tools=True)
+    agent.run("Please find a remedy for hangover.")
+Use MCP tools with MCPClient directly
+You can also work with MCP tools by using the MCPClient directly, which gives you more control over the connection and tool management:
+
+For stdio-based MCP servers:
+
+Copied
+from smolagents import MCPClient, CodeAgent
+from mcp import StdioServerParameters
+import os
+
+server_parameters = StdioServerParameters(
+    command="uvx",  # Using uvx ensures dependencies are available
+    args=["--quiet", "pubmedmcp@0.1.3"],
+    env={"UV_PYTHON": "3.12", **os.environ},
+)
+
+with MCPClient(server_parameters) as tools:
+    agent = CodeAgent(tools=tools, model=model, add_base_tools=True)
+    agent.run("Please find the latest research on COVID-19 treatment.")
+For SSE-based MCP servers:
+
+Copied
+from smolagents import MCPClient, CodeAgent
+
+with MCPClient({"url": "http://127.0.0.1:8000/sse"}) as tools:
+    agent = CodeAgent(tools=tools, model=model, add_base_tools=True)
+    agent.run("Please find a remedy for hangover.")
+You can also manually manage the connection lifecycle with the try…finally pattern:
+
+Copied
+from smolagents import MCPClient, CodeAgent
+from mcp import StdioServerParameters
+import os
+
+# Initialize server parameters
+server_parameters = StdioServerParameters(
+    command="uvx",
+    args=["--quiet", "pubmedmcp@0.1.3"],
+    env={"UV_PYTHON": "3.12", **os.environ},
+)
+
+# Manually manage the connection
+try:
+    mcp_client = MCPClient(server_parameters)
+    tools = mcp_client.get_tools()
+
+    # Use the tools with your agent
+    agent = CodeAgent(tools=tools, model=model, add_base_tools=True)
+    result = agent.run("What are the recent therapeutic approaches for Alzheimer's disease?")
+
+    # Process the result as needed
+    print(f"Agent response: {result}")
+finally:
+    # Always ensure the connection is properly closed
+    mcp_client.disconnect()
+You can also connect to multiple MCP servers at once by passing a list of server parameters:
+
+Copied
+from smolagents import MCPClient, CodeAgent
+from mcp import StdioServerParameters
+import os
+
+server_params1 = StdioServerParameters(
+    command="uvx",
+    args=["--quiet", "pubmedmcp@0.1.3"],
+    env={"UV_PYTHON": "3.12", **os.environ},
+)
+
+server_params2 = {"url": "http://127.0.0.1:8000/sse"}
+
+with MCPClient([server_params1, server_params2]) as tools:
+    agent = CodeAgent(tools=tools, model=model, add_base_tools=True)
+    agent.run("Please analyze the latest research and suggest remedies for headaches.")
+Security Warning: The same security warnings mentioned for ToolCollection.from_mcp apply when using MCPClient directly.
+
+
+Secure code execution
+Open In Colab
+Open In Studio Lab
+If you’re new to building agents, make sure to first read the intro to agents and the guided tour of smolagents.
+
+Code agents
+Multiple research papers have shown that having the LLM write its actions (the tool calls) in code is much better than the current standard format for tool calling, which is across the industry different shades of “writing actions as a JSON of tools names and arguments to use”.
+
+Why is code better? Well, because we crafted our code languages specifically to be great at expressing actions performed by a computer. If JSON snippets were a better way, this package would have been written in JSON snippets and the devil would be laughing at us.
+
+Code is just a better way to express actions on a computer. It has better:
+
+Composability: could you nest JSON actions within each other, or define a set of JSON actions to re-use later, the same way you could just define a python function?
+Object management: how do you store the output of an action like generate_image in JSON?
+Generality: code is built to express simply anything you can have a computer do.
+Representation in LLM training corpus: why not leverage this benediction of the sky that plenty of quality actions have already been included in LLM training corpus?
+This is illustrated on the figure below, taken from Executable Code Actions Elicit Better LLM Agents.
+
+
+This is why we put emphasis on proposing code agents, in this case python agents, which meant putting higher effort on building secure python interpreters.
+
+Local code execution??
+By default, the CodeAgent runs LLM-generated code in your environment.
+
+This is inherently risky, LLM-generated code could be harmful to your environment.
+
+Malicious code execution can occur in several ways:
+
+Plain LLM error: LLMs are still far from perfect and may unintentionally generate harmful commands while attempting to be helpful. While this risk is low, instances have been observed where an LLM attempted to execute potentially dangerous code.
+Supply chain attack: Running an untrusted or compromised LLM could expose a system to harmful code generation. While this risk is extremely low when using well-known models on secure inference infrastructure, it remains a theoretical possibility.
+Prompt injection: an agent browsing the web could arrive on a malicious website that contains harmful instructions, thus injecting an attack into the agent’s memory
+Exploitation of publicly accessible agents: Agents exposed to the public can be misused by malicious actors to execute harmful code. Attackers may craft adversarial inputs to exploit the agent’s execution capabilities, leading to unintended consequences. Once malicious code is executed, whether accidentally or intentionally, it can damage the file system, exploit local or cloud-based resources, abuse API services, and even compromise network security.
+One could argue that on the spectrum of agency, code agents give much higher agency to the LLM on your system than other less agentic setups: this goes hand-in-hand with higher risk.
+
+So you need to be very mindful of security.
+
+To improve safety, we propose a range of measures that propose elevated levels of security, at a higher setup cost.
+
+We advise you to keep in mind that no solution will be 100% safe.
+
+
+Our local Python executor
+To add a first layer of security, code execution in smolagents is not performed by the vanilla Python interpreter. We have re-built a more secure LocalPythonExecutor from the ground up.
+
+To be precise, this interpreter works by loading the Abstract Syntax Tree (AST) from your Code and executes it operation by operation, making sure to always follow certain rules:
+
+By default, imports are disallowed unless they have been explicitly added to an authorization list by the user.
+Furthermore, access to submodules is disabled by default, and each must be explicitly authorized in the import list as well, or you can pass for instance numpy.* to allow both numpy and all its subpackags, like numpy.random or numpy.a.b.
+Note that some seemingly innocuous packages like random can give access to potentially harmful submodules, as in random._os.
+The total count of elementary operations processed is capped to prevent infinite loops and resource bloating.
+Any operation that has not been explicitly defined in our custom interpreter will raise an error.
+You could try these safeguards as follows:
+
+Copied
+from smolagents.local_python_executor import LocalPythonExecutor
+
+# Set up custom executor, authorize package "numpy"
+custom_executor = LocalPythonExecutor(["numpy"])
+
+# Utilisty for pretty printing errors
+def run_capture_exception(command: str):
+    try:
+        custom_executor(harmful_command)
+    except Exception as e:
+        print("ERROR:\n", e)
+
+# Undefined command just do not work
+harmful_command="!echo Bad command"
+run_capture_exception(harmful_command)
+# >>> ERROR: invalid syntax (<unknown>, line 1)
+
+
+# Imports like os will not be performed unless explicitly added to `additional_authorized_imports`
+harmful_command="import os; exit_code = os.system("echo Bad command")"
+run_capture_exception(harmful_command)
+# >>> ERROR: Code execution failed at line 'import os' due to: InterpreterError: Import of os is not allowed. Authorized imports are: ['statistics', 'numpy', 'itertools', 'time', 'queue', 'collections', 'math', 'random', 're', 'datetime', 'stat', 'unicodedata']
+
+# Even in authorized imports, potentially harmful packages will not be imported
+harmful_command="import random; random._os.system('echo Bad command')"
+run_capture_exception(harmful_command)
+# >>> ERROR: Code execution failed at line 'random._os.system('echo Bad command')' due to: InterpreterError: Forbidden access to module: os
+
+# Infinite loop are interrupted after N operations
+harmful_command="""
+while True:
+    pass
+"""
+run_capture_exception(harmful_command)
+# >>> ERROR: Code execution failed at line 'while True: pass' due to: InterpreterError: Maximum number of 1000000 iterations in While loop exceeded
+These safeguards make out interpreter is safer. We have used it on a diversity of use cases, without ever observing any damage to the environment.
+
+It’s important to understand that no local python sandbox can ever be completely secure. While our interpreter provides significant safety improvements over the standard Python interpreter, it is still possible for a determined attacker or a fine-tuned malicious LLM to find vulnerabilities and potentially harm your environment.
+
+For example, if you’ve allowed packages like Pillow to process images, the LLM could generate code that creates thousands of large image files to fill your hard drive. Other advanced escape techniques might exploit deeper vulnerabilities in authorized packages.
+
+Running LLM-generated code in your local environment always carries some inherent risk. The only way to run LLM-generated code with truly robust security isolation is to use remote execution options like E2B or Docker, as detailed below.
+
+The risk of a malicious attack is low when using well-known LLMs from trusted inference providers, but it is not zero. For high-security applications or when using less trusted models, you should consider using a remote execution sandbox.
+
+Sandbox approaches for secure code execution
+When working with AI agents that execute code, security is paramount. There are two main approaches to sandboxing code execution in smolagents, each with different security properties and capabilities:
+
+Sandbox approaches comparison
+
+Running individual code snippets in a sandbox: This approach (left side of diagram) only executes the agent-generated Python code snippets in a sandbox while keeping the rest of the agentic system in your local environment. It’s simpler to set up using executor_type="e2b" or executor_type="docker", but it doesn’t support multi-agents and still requires passing state data between your environment and the sandbox.
+
+Running the entire agentic system in a sandbox: This approach (right side of diagram) runs the entire agentic system, including the agent, model, and tools, within a sandbox environment. This provides better isolation but requires more manual setup and may require passing sensitive credentials (like API keys) to the sandbox environment.
+
+This guide describes how to set up and use both types of sandbox approaches for your agent applications.
+
+E2B setup
+Installation
+Create an E2B account at e2b.dev
+Install the required packages:
+Copied
+pip install 'smolagents[e2b]'
+Running your agent in E2B: quick start
+We provide a simple way to use an E2B Sandbox: simply add executor_type="e2b" to the agent initialization, as follows:
+
+Copied
+from smolagents import InferenceClientModel, CodeAgent
+
+agent = CodeAgent(model=InferenceClientModel(), tools=[], executor_type="e2b")
+
+agent.run("Can you give me the 100th Fibonacci number?")
+This solution send the agent state to the server at the start of each agent.run(). Then the models are called from the local environment, but the generated code will be sent to the sandbox for execution, and only the output will be returned.
+
+This is illustrated in the figure below.
+
+sandboxed code execution
+
+However, since any call to a managed agent would require model calls, since we do not transfer secrets to the remote sandbox, the model call would lack credentials. Hence this solution does not work (yet) with more complicated multi-agent setups.
+
+Running your agent in E2B: multi-agents
+To use multi-agents in an E2B sandbox, you need to run your agents completely from within E2B.
+
+Here is how to do it:
+
+Copied
+from e2b_code_interpreter import Sandbox
+import os
+
+# Create the sandbox
+sandbox = Sandbox()
+
+# Install required packages
+sandbox.commands.run("pip install smolagents")
+
+def run_code_raise_errors(sandbox, code: str, verbose: bool = False) -> str:
+    execution = sandbox.run_code(
+        code,
+        envs={'HF_TOKEN': os.getenv('HF_TOKEN')}
+    )
+    if execution.error:
+        execution_logs = "\n".join([str(log) for log in execution.logs.stdout])
+        logs = execution_logs
+        logs += execution.error.traceback
+        raise ValueError(logs)
+    return "\n".join([str(log) for log in execution.logs.stdout])
+
+# Define your agent application
+agent_code = """
+import os
+from smolagents import CodeAgent, InferenceClientModel
+
+# Initialize the agents
+agent = CodeAgent(
+    model=InferenceClientModel(token=os.getenv("HF_TOKEN"), provider="together"),
+    tools=[],
+    name="coder_agent",
+    description="This agent takes care of your difficult algorithmic problems using code."
+)
+
+manager_agent = CodeAgent(
+    model=InferenceClientModel(token=os.getenv("HF_TOKEN"), provider="together"),
+    tools=[],
+    managed_agents=[agent],
+)
+
+# Run the agent
+response = manager_agent.run("What's the 20th Fibonacci number?")
+print(response)
+"""
+
+# Run the agent code in the sandbox
+execution_logs = run_code_raise_errors(sandbox, agent_code)
+print(execution_logs)
+Docker setup
+Installation
+Install Docker on your system
+Install the required packages:
+Copied
+pip install 'smolagents[docker]'
+Running your agent in E2B: quick start
+Similar to the E2B Sandbox above, to quickly get started with Docker, simply add executor_type="docker" to the agent initialization, like:
+
+Copied
+from smolagents import InferenceClientModel, CodeAgent
+
+agent = CodeAgent(model=InferenceClientModel(), tools=[], executor_type="docker")
+
+agent.run("Can you give me the 100th Fibonacci number?")
+Advanced docker usage
+If you want to run multi-agent systems in Docker, you’ll need to setup a custom interpreter in a sandbox.
+
+Here is how to setup the a Dockerfile:
+
+Copied
+FROM python:3.10-bullseye
+
+# Install build dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        python3-dev && \
+    pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir smolagents && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Run with limited privileges
+USER nobody
+
+# Default command
+CMD ["python", "-c", "print('Container ready')"]
+Create a sandbox manager to run code:
+
+Copied
+import docker
+import os
+from typing import Optional
+
+class DockerSandbox:
+    def __init__(self):
+        self.client = docker.from_env()
+        self.container = None
+
+    def create_container(self):
+        try:
+            image, build_logs = self.client.images.build(
+                path=".",
+                tag="agent-sandbox",
+                rm=True,
+                forcerm=True,
+                buildargs={},
+                # decode=True
+            )
+        except docker.errors.BuildError as e:
+            print("Build error logs:")
+            for log in e.build_log:
+                if 'stream' in log:
+                    print(log['stream'].strip())
+            raise
+
+        # Create container with security constraints and proper logging
+        self.container = self.client.containers.run(
+            "agent-sandbox",
+            command="tail -f /dev/null",  # Keep container running
+            detach=True,
+            tty=True,
+            mem_limit="512m",
+            cpu_quota=50000,
+            pids_limit=100,
+            security_opt=["no-new-privileges"],
+            cap_drop=["ALL"],
+            environment={
+                "HF_TOKEN": os.getenv("HF_TOKEN")
+            },
+        )
+
+    def run_code(self, code: str) -> Optional[str]:
+        if not self.container:
+            self.create_container()
+
+        # Execute code in container
+        exec_result = self.container.exec_run(
+            cmd=["python", "-c", code],
+            user="nobody"
+        )
+
+        # Collect all output
+        return exec_result.output.decode() if exec_result.output else None
+
+
+    def cleanup(self):
+        if self.container:
+            try:
+                self.container.stop()
+            except docker.errors.NotFound:
+                # Container already removed, this is expected
+                pass
+            except Exception as e:
+                print(f"Error during cleanup: {e}")
+            finally:
+                self.container = None  # Clear the reference
+
+# Example usage:
+sandbox = DockerSandbox()
+
+try:
+    # Define your agent code
+    agent_code = """
+import os
+from smolagents import CodeAgent, InferenceClientModel
+
+# Initialize the agent
+agent = CodeAgent(
+    model=InferenceClientModel(token=os.getenv("HF_TOKEN"), provider="together"),
+    tools=[]
+)
+
+# Run the agent
+response = agent.run("What's the 20th Fibonacci number?")
+print(response)
+"""
+
+    # Run the code in the sandbox
+    output = sandbox.run_code(agent_code)
+    print(output)
+
+finally:
+    sandbox.cleanup()
+Best practices for sandboxes
+These key practices apply to both E2B and Docker sandboxes:
+
+Resource management
+
+Set memory and CPU limits
+Implement execution timeouts
+Monitor resource usage
+Security
+
+Run with minimal privileges
+Disable unnecessary network access
+Use environment variables for secrets
+Environment
+
+Keep dependencies minimal
+Use fixed package versions
+If you use base images, update them regularly
+Cleanup
+
+Always ensure proper cleanup of resources, especially for Docker containers, to avoid having dangling containers eating up resources.
+✨ By following these practices and implementing proper cleanup procedures, you can ensure your agent runs safely and efficiently in a sandboxed environment.
+
+Comparing security approaches
+As illustrated in the diagram earlier, both sandboxing approaches have different security implications:
+
+Approach 1: Running just the code snippets in a sandbox
+Pros:
+Easier to set up with a simple parameter (executor_type="e2b" or executor_type="docker")
+No need to transfer API keys to the sandbox
+Better protection for your local environment
+Cons:
+Doesn’t support multi-agents (managed agents)
+Still requires transferring state between your environment and the sandbox
+Limited to specific code execution
+Approach 2: Running the entire agentic system in a sandbox
+Pros:
+Supports multi-agents
+Complete isolation of the entire agent system
+More flexible for complex agent architectures
+Cons:
+Requires more manual setup
+May require transferring sensitive API keys to the sandbox
+Potentially higher latency due to more complex operations
+Choose the approach that best balances your security needs with your application’s requirements. For most applications with simpler agent architectures, Approach 1 provides a good balance of security and ease of use. For more complex multi-agent systems where you need full isolation, Approach 2, while more involved to set up, offers better security guarantees.
+
+
+
+Manage your agent’s memory
+Open In Colab
+Open In Studio Lab
+In the end, an agent can be defined by simple components: it has tools, prompts. And most importantly, it has a memory of past steps, drawing a history of planning, execution, and errors.
+
+Replay your agent’s memory
+We propose several features to inspect a past agent run.
+
+You can instrument the agent’s run to display it in a great UI that lets you zoom in/out on specific steps, as highlighted in the instrumentation guide.
+
+You can also use agent.replay(), as follows:
+
+After the agent has run:
+
+Copied
+from smolagents import InferenceClientModel, CodeAgent
+
+agent = CodeAgent(tools=[], model=InferenceClientModel(), verbosity_level=0)
+
+result = agent.run("What's the 20th Fibonacci number?")
+If you want to replay this last run, just use:
+
+Copied
+agent.replay()
+Dynamically change the agent’s memory
+Many advanced use cases require dynamic modification of the agent’s memory.
+
+You can access the agent’s memory using:
+
+Copied
+from smolagents import ActionStep
+
+system_prompt_step = agent.memory.system_prompt
+print("The system prompt given to the agent was:")
+print(system_prompt_step.system_prompt)
+
+task_step = agent.memory.steps[0]
+print("\n\nThe first task step was:")
+print(task_step.task)
+
+for step in agent.memory.steps:
+    if isinstance(step, ActionStep):
+        if step.error is not None:
+            print(f"\nStep {step.step_number} got this error:\n{step.error}\n")
+        else:
+            print(f"\nStep {step.step_number} got these observations:\n{step.observations}\n")
+Use agent.memory.get_full_steps() to get full steps as dictionaries.
+
+You can also use step callbacks to dynamically change the agent’s memory.
+
+Step callbacks can access the agent itself in their arguments, so they can access any memory step as highlighted above, and change it if needed. For instance, let’s say you are observing screenshots of each step performed by a web browser agent. You want to log the newest screenshot, and remove the images from ancient steps to save on token costs.
+
+You could run something like the following. Note: this code is incomplete, some imports and object definitions have been removed for the sake of concision, visit the original script to get the full working code.
+
+Copied
+import helium
+from PIL import Image
+from io import BytesIO
+from time import sleep
+
+def update_screenshot(memory_step: ActionStep, agent: CodeAgent) -> None:
+    sleep(1.0)  # Let JavaScript animations happen before taking the screenshot
+    driver = helium.get_driver()
+    latest_step = memory_step.step_number
+    for previous_memory_step in agent.memory.steps:  # Remove previous screenshots from logs for lean processing
+        if isinstance(previous_memory_step, ActionStep) and previous_memory_step.step_number <= latest_step - 2:
+            previous_memory_step.observations_images = None
+    png_bytes = driver.get_screenshot_as_png()
+    image = Image.open(BytesIO(png_bytes))
+    memory_step.observations_images = [image.copy()]
+Then you should pass this function in the step_callbacks argument upon initialization of your agent:
+
+Copied
+CodeAgent(
+    tools=[WebSearchTool(), go_back, close_popups, search_item_ctrl_f],
+    model=model,
+    additional_authorized_imports=["helium"],
+    step_callbacks=[update_screenshot],
+    max_steps=20,
+    verbosity_level=2,
+)
+Head to our vision web browser code to see the full working example.
+
+Run agents one step at a time
+This can be useful in case you have tool calls that take days: you can just run your agents step by step. This will also let you update the memory on each step.
+
+Copied
+from smolagents import InferenceClientModel, CodeAgent, ActionStep, TaskStep
+
+agent = CodeAgent(tools=[], model=InferenceClientModel(), verbosity_level=1)
+agent.python_executor.send_tools({**agent.tools})
+print(agent.memory.system_prompt)
+
+task = "What is the 20th Fibonacci number?"
+
+# You could modify the memory as needed here by inputting the memory of another agent.
+# agent.memory.steps = previous_agent.memory.steps
+
+# Let's start a new task!
+agent.memory.steps.append(TaskStep(task=task, task_images=[]))
+
+final_answer = None
+step_number = 1
+while final_answer is None and step_number <= 10:
+    memory_step = ActionStep(
+        step_number=step_number,
+        observations_images=[],
+    )
+    # Run one step.
+    final_answer = agent.step(memory_step)
+    agent.memory.steps.append(memory_step)
+    step_number += 1
+
+    # Change the memory as you please!
+    # For instance to update the latest step:
+    # agent.memory.steps[-1] = ...
+
+print("The final answer is:", final_answer)
+
+
+Introduction to Agents
+🤔 What are agents?
+Any efficient system using AI will need to provide LLMs some kind of access to the real world: for instance the possibility to call a search tool to get external information, or to act on certain programs in order to solve a task. In other words, LLMs should have agency. Agentic programs are the gateway to the outside world for LLMs.
+
+AI Agents are programs where LLM outputs control the workflow.
+
+Any system leveraging LLMs will integrate the LLM outputs into code. The influence of the LLM’s input on the code workflow is the level of agency of LLMs in the system.
+
+Note that with this definition, “agent” is not a discrete, 0 or 1 definition: instead, “agency” evolves on a continuous spectrum, as you give more or less power to the LLM on your workflow.
+
+See in the table below how agency can vary across systems:
+
+Agency Level	Description	Short name	Example Code
+☆☆☆	LLM output has no impact on program flow	Simple processor	process_llm_output(llm_response)
+★☆☆	LLM output controls an if/else switch	Router	if llm_decision(): path_a() else: path_b()
+★★☆	LLM output controls function execution	Tool call	run_function(llm_chosen_tool, llm_chosen_args)
+★★☆	LLM output controls iteration and program continuation	Multi-step Agent	while llm_should_continue(): execute_next_step()
+★★★	One agentic workflow can start another agentic workflow	Multi-Agent	if llm_trigger(): execute_agent()
+★★★	LLM acts in code, can define its own tools / start other agents	Code Agents	def custom_tool(args): ...
+The multi-step agent has this code structure:
+
+Copied
+memory = [user_defined_task]
+while llm_should_continue(memory): # this loop is the multi-step part
+    action = llm_get_next_action(memory) # this is the tool-calling part
+    observations = execute_action(action)
+    memory += [action, observations]
+This agentic system runs in a loop, executing a new action at each step (the action can involve calling some pre-determined tools that are just functions), until its observations make it apparent that a satisfactory state has been reached to solve the given task. Here’s an example of how a multi-step agent can solve a simple math question:
+
+
+✅ When to use agents / ⛔ when to avoid them
+Agents are useful when you need an LLM to determine the workflow of an app. But they’re often overkill. The question is: do I really need flexibility in the workflow to efficiently solve the task at hand? If the pre-determined workflow falls short too often, that means you need more flexibility. Let’s take an example: say you’re making an app that handles customer requests on a surfing trip website.
+
+You could know in advance that the requests will belong to either of 2 buckets (based on user choice), and you have a predefined workflow for each of these 2 cases.
+
+Want some knowledge on the trips? ⇒ give them access to a search bar to search your knowledge base
+Wants to talk to sales? ⇒ let them type in a contact form.
+If that deterministic workflow fits all queries, by all means just code everything! This will give you a 100% reliable system with no risk of error introduced by letting unpredictable LLMs meddle in your workflow. For the sake of simplicity and robustness, it’s advised to regularize towards not using any agentic behaviour.
+
+But what if the workflow can’t be determined that well in advance?
+
+For instance, a user wants to ask: "I can come on Monday, but I forgot my passport so risk being delayed to Wednesday, is it possible to take me and my stuff to surf on Tuesday morning, with a cancellation insurance?" This question hinges on many factors, and probably none of the predetermined criteria above will suffice for this request.
+
+If the pre-determined workflow falls short too often, that means you need more flexibility.
+
+That is where an agentic setup helps.
+
+In the above example, you could just make a multi-step agent that has access to a weather API for weather forecasts, Google Maps API to compute travel distance, an employee availability dashboard and a RAG system on your knowledge base.
+
+Until recently, computer programs were restricted to pre-determined workflows, trying to handle complexity by piling up if/else switches. They focused on extremely narrow tasks, like “compute the sum of these numbers” or “find the shortest path in this graph”. But actually, most real-life tasks, like our trip example above, do not fit in pre-determined workflows. Agentic systems open up the vast world of real-world tasks to programs!
+
+Why smolagents ?
+For some low-level agentic use cases, like chains or routers, you can write all the code yourself. You’ll be much better that way, since it will let you control and understand your system better.
+
+But once you start going for more complicated behaviours like letting an LLM call a function (that’s “tool calling”) or letting an LLM run a while loop (“multi-step agent”), some abstractions become necessary:
+
+For tool calling, you need to parse the agent’s output, so this output needs a predefined format like “Thought: I should call tool ‘get_weather’. Action: get_weather(Paris).”, that you parse with a predefined function, and system prompt given to the LLM should notify it about this format.
+For a multi-step agent where the LLM output determines the loop, you need to give a different prompt to the LLM based on what happened in the last loop iteration: so you need some kind of memory.
+See? With these two examples, we already found the need for a few items to help us:
+
+Of course, an LLM that acts as the engine powering the system
+A list of tools that the agent can access
+A parser that extracts tool calls from the LLM output
+A system prompt synced with the parser
+A memory
+But wait, since we give room to LLMs in decisions, surely they will make mistakes: so we need error logging and retry mechanisms.
+
+All these elements need tight coupling to make a well-functioning system. That’s why we decided we needed to make basic building blocks to make all this stuff work together.
+
+Code agents
+In a multi-step agent, at each step, the LLM can write an action, in the form of some calls to external tools. A common format (used by Anthropic, OpenAI, and many others) for writing these actions is generally different shades of “writing actions as a JSON of tools names and arguments to use, which you then parse to know which tool to execute and with which arguments”.
+
+Multiple research papers have shown that having the tool calling LLMs in code is much better.
+
+The reason for this simply that we crafted our code languages specifically to be the best possible way to express actions performed by a computer. If JSON snippets were a better expression, JSON would be the top programming language and programming would be hell on earth.
+
+The figure below, taken from Executable Code Actions Elicit Better LLM Agents, illustrates some advantages of writing actions in code:
+
+
+Writing actions in code rather than JSON-like snippets provides better:
+
+Composability: could you nest JSON actions within each other, or define a set of JSON actions to re-use later, the same way you could just define a python function?
+Object management: how do you store the output of an action like generate_image in JSON?
+Generality: code is built to express simply anything you can have a computer do.
+Representation in LLM training data: plenty of quality code actions are already included in LLMs’ training data which means they’re already trained for this!
+
+
+How do multi-step agents work?
+The ReAct framework (Yao et al., 2022) is currently the main approach to building agents.
+
+The name is based on the concatenation of two words, “Reason” and “Act.” Indeed, agents following this architecture will solve their task in as many steps as needed, each step consisting of a Reasoning step, then an Action step where it formulates tool calls that will bring it closer to solving the task at hand.
+
+All agents in smolagents are based on singular MultiStepAgent class, which is an abstraction of ReAct framework.
+
+On a basic level, this class performs actions on a cycle of following steps, where existing variables and knowledge is incorporated into the agent logs like below:
+
+Initialization: the system prompt is stored in a SystemPromptStep, and the user query is logged into a TaskStep .
+
+While loop (ReAct loop):
+
+Use agent.write_memory_to_messages() to write the agent logs into a list of LLM-readable chat messages.
+Send these messages to a Model object to get its completion. Parse the completion to get the action (a JSON blob for ToolCallingAgent, a code snippet for CodeAgent).
+Execute the action and logs result into memory (an ActionStep).
+At the end of each step, we run all callback functions defined in agent.step_callbacks .
+Optionally, when planning is activated, a plan can be periodically revised and stored in a PlanningStep . This includes feeding facts about the task at hand to the memory.
+
+For a CodeAgent, it looks like the figure below.
+
+
+Here is a video overview of how that works:
+
+
+We implement two versions of agents:
+
+CodeAgent is the preferred type of agent: it generates its tool calls as blobs of code.
+ToolCallingAgent generates tool calls as a JSON in its output, as is commonly done in agentic frameworks. We incorporate this option because it can be useful in some narrow cases where you can do fine with only one tool call per step: for instance, for web browsing, you need to wait after each action on the page to monitor how the page changes.
+Read Open-source LLMs as LangChain Agents blog post to learn more about multi-step agents.
+
+Text-to-SQL
+Open In Colab
+Open In Studio Lab
+In this tutorial, we’ll see how to implement an agent that leverages SQL using smolagents.
+
+Let’s start with the golden question: why not keep it simple and use a standard text-to-SQL pipeline?
+
+A standard text-to-sql pipeline is brittle, since the generated SQL query can be incorrect. Even worse, the query could be incorrect, but not raise an error, instead giving some incorrect/useless outputs without raising an alarm.
+
+👉 Instead, an agent system is able to critically inspect outputs and decide if the query needs to be changed or not, thus giving it a huge performance boost.
+
+Let’s build this agent! 💪
+
+Run the line below to install required dependencies:
+
+Copied
+!pip install smolagents python-dotenv sqlalchemy --upgrade -q
+To call Inference Providers, you will need a valid token as your environment variable HF_TOKEN. We use python-dotenv to load it.
+
+Copied
+from dotenv import load_dotenv
+load_dotenv()
+Then, we setup the SQL environment:
+
+Copied
+from sqlalchemy import (
+    create_engine,
+    MetaData,
+    Table,
+    Column,
+    String,
+    Integer,
+    Float,
+    insert,
+    inspect,
+    text,
+)
+
+engine = create_engine("sqlite:///:memory:")
+metadata_obj = MetaData()
+
+def insert_rows_into_table(rows, table, engine=engine):
+    for row in rows:
+        stmt = insert(table).values(**row)
+        with engine.begin() as connection:
+            connection.execute(stmt)
+
+table_name = "receipts"
+receipts = Table(
+    table_name,
+    metadata_obj,
+    Column("receipt_id", Integer, primary_key=True),
+    Column("customer_name", String(16), primary_key=True),
+    Column("price", Float),
+    Column("tip", Float),
+)
+metadata_obj.create_all(engine)
+
+rows = [
+    {"receipt_id": 1, "customer_name": "Alan Payne", "price": 12.06, "tip": 1.20},
+    {"receipt_id": 2, "customer_name": "Alex Mason", "price": 23.86, "tip": 0.24},
+    {"receipt_id": 3, "customer_name": "Woodrow Wilson", "price": 53.43, "tip": 5.43},
+    {"receipt_id": 4, "customer_name": "Margaret James", "price": 21.11, "tip": 1.00},
+]
+insert_rows_into_table(rows, receipts)
+Build our agent
+Now let’s make our SQL table retrievable by a tool.
+
+The tool’s description attribute will be embedded in the LLM’s prompt by the agent system: it gives the LLM information about how to use the tool. This is where we want to describe the SQL table.
+
+Copied
+inspector = inspect(engine)
+columns_info = [(col["name"], col["type"]) for col in inspector.get_columns("receipts")]
+
+table_description = "Columns:\n" + "\n".join([f"  - {name}: {col_type}" for name, col_type in columns_info])
+print(table_description)
+Copied
+Columns:
+  - receipt_id: INTEGER
+  - customer_name: VARCHAR(16)
+  - price: FLOAT
+  - tip: FLOAT
+Now let’s build our tool. It needs the following: (read the tool doc for more detail)
+
+A docstring with an Args: part listing arguments.
+Type hints on both inputs and output.
+Copied
+from smolagents import tool
+
+
+def sql_engine(query: str) -> str:
+    """
+    Allows you to perform SQL queries on the table. Returns a string representation of the result.
+    The table is named 'receipts'. Its description is as follows:
+        Columns:
+        - receipt_id: INTEGER
+        - customer_name: VARCHAR(16)
+        - price: FLOAT
+        - tip: FLOAT
+
+    Args:
+        query: The query to perform. This should be correct SQL.
+    """
+    output = ""
+    with engine.connect() as con:
+        rows = con.execute(text(query))
+        for row in rows:
+            output += "\n" + str(row)
+    return output
+Now let us create an agent that leverages this tool.
+
+We use the CodeAgent, which is smolagents’ main agent class: an agent that writes actions in code and can iterate on previous output according to the ReAct framework.
+
+The model is the LLM that powers the agent system. InferenceClientModel allows you to call LLMs using HF’s Inference API, either via Serverless or Dedicated endpoint, but you could also use any proprietary API.
+
+Copied
+from smolagents import CodeAgent, InferenceClientModel
+
+agent = CodeAgent(
+    tools=[sql_engine],
+    model=InferenceClientModel(model_id="meta-llama/Meta-Llama-3.1-8B-Instruct"),
+)
+agent.run("Can you give me the name of the client who got the most expensive receipt?")
+Level 2: Table joins
+Now let’s make it more challenging! We want our agent to handle joins across multiple tables.
+
+So let’s make a second table recording the names of waiters for each receipt_id!
+
+Copied
+table_name = "waiters"
+waiters = Table(
+    table_name,
+    metadata_obj,
+    Column("receipt_id", Integer, primary_key=True),
+    Column("waiter_name", String(16), primary_key=True),
+)
+metadata_obj.create_all(engine)
+
+rows = [
+    {"receipt_id": 1, "waiter_name": "Corey Johnson"},
+    {"receipt_id": 2, "waiter_name": "Michael Watts"},
+    {"receipt_id": 3, "waiter_name": "Michael Watts"},
+    {"receipt_id": 4, "waiter_name": "Margaret James"},
+]
+insert_rows_into_table(rows, waiters)
+Since we changed the table, we update the SQLExecutorTool with this table’s description to let the LLM properly leverage information from this table.
+
+Copied
+updated_description = """Allows you to perform SQL queries on the table. Beware that this tool's output is a string representation of the execution output.
+It can use the following tables:"""
+
+inspector = inspect(engine)
+for table in ["receipts", "waiters"]:
+    columns_info = [(col["name"], col["type"]) for col in inspector.get_columns(table)]
+
+    table_description = f"Table '{table}':\n"
+
+    table_description += "Columns:\n" + "\n".join([f"  - {name}: {col_type}" for name, col_type in columns_info])
+    updated_description += "\n\n" + table_description
+
+print(updated_description)
+Since this request is a bit harder than the previous one, we’ll switch the LLM engine to use the more powerful Qwen/Qwen2.5-Coder-32B-Instruct!
+
+Copied
+sql_engine.description = updated_description
+
+agent = CodeAgent(
+    tools=[sql_engine],
+    model=InferenceClientModel(model_id="Qwen/Qwen2.5-Coder-32B-Instruct"),
+)
+
+agent.run("Which waiter got more total money from tips?")
+It directly works! The setup was surprisingly simple, wasn’t it?
+
+This example is done! We’ve touched upon these concepts:
+
+Building new tools.
+Updating a tool’s description.
+Switching to a stronger LLM helps agent reasoning.
+✅ Now you can go build this text-to-SQL system you’ve always dreamt of! ✨
+
+
+
+Orchestrate a multi-agent system 🤖🤝🤖
+Open In Colab
+Open In Studio Lab
+In this notebook we will make a multi-agent web browser: an agentic system with several agents collaborating to solve problems using the web!
+
+It will be a simple hierarchy:
+
+Copied
+              +----------------+
+              | Manager agent  |
+              +----------------+
+                       |
+        _______________|______________
+       |                              |
+Code Interpreter            +------------------+
+    tool                    | Web Search agent |
+                            +------------------+
+                               |            |
+                        Web Search tool     |
+                                   Visit webpage tool
+Let’s set up this system.
+
+Run the line below to install the required dependencies:
+
+Copied
+!pip install smolagents[toolkit] --upgrade -q
+Let’s login to HF in order to call Inference Providers:
+
+Copied
+from huggingface_hub import login
+
+login()
+⚡️ Our agent will be powered by Qwen/Qwen2.5-Coder-32B-Instruct using InferenceClientModel class that uses HF’s Inference API: the Inference API allows to quickly and easily run any OS model.
+
+Note: The Inference API hosts models based on various criteria, and deployed models may be updated or replaced without prior notice. Learn more about it here.
+
+Copied
+model_id = "Qwen/Qwen2.5-Coder-32B-Instruct"
+🔍 Create a web search tool
+For web browsing, we can already use our native WebSearchTool tool to provide a Google search equivalent.
+
+But then we will also need to be able to peak into the page found by the WebSearchTool. To do so, we could import the library’s built-in VisitWebpageTool, but we will build it again to see how it’s done.
+
+So let’s create our VisitWebpageTool tool from scratch using markdownify.
+
+Copied
+import re
+import requests
+from markdownify import markdownify
+from requests.exceptions import RequestException
+from smolagents import tool
+
+
+
+def visit_webpage(url: str) -> str:
+    """Visits a webpage at the given URL and returns its content as a markdown string.
+
+    Args:
+        url: The URL of the webpage to visit.
+
+    Returns:
+        The content of the webpage converted to Markdown, or an error message if the request fails.
+    """
+    try:
+        # Send a GET request to the URL
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an exception for bad status codes
+
+        # Convert the HTML content to Markdown
+        markdown_content = markdownify(response.text).strip()
+
+        # Remove multiple line breaks
+        markdown_content = re.sub(r"\n{3,}", "\n\n", markdown_content)
+
+        return markdown_content
+
+    except RequestException as e:
+        return f"Error fetching the webpage: {str(e)}"
+    except Exception as e:
+        return f"An unexpected error occurred: {str(e)}"
+Ok, now let’s initialize and test our tool!
+
+Copied
+print(visit_webpage("https://en.wikipedia.org/wiki/Hugging_Face")[:500])
+Build our multi-agent system 🤖🤝🤖
+Now that we have all the tools search and visit_webpage, we can use them to create the web agent.
+
+Which configuration to choose for this agent?
+
+Web browsing is a single-timeline task that does not require parallel tool calls, so JSON tool calling works well for that. We thus choose a ToolCallingAgent.
+Also, since sometimes web search requires exploring many pages before finding the correct answer, we prefer to increase the number of max_steps to 10.
+Copied
+from smolagents import (
+    CodeAgent,
+    ToolCallingAgent,
+    InferenceClientModel,
+    WebSearchTool,
+    LiteLLMModel,
+)
+
+model = InferenceClientModel(model_id=model_id)
+
+web_agent = ToolCallingAgent(
+    tools=[WebSearchTool(), visit_webpage],
+    model=model,
+    max_steps=10,
+    name="web_search_agent",
+    description="Runs web searches for you.",
+)
+Note that we gave this agent attributes name and description, mandatory attributes to make this agent callable by its manager agent.
+
+Then we create a manager agent, and upon initialization we pass our managed agent to it in its managed_agents argument.
+
+Since this agent is the one tasked with the planning and thinking, advanced reasoning will be beneficial, so a CodeAgent will be the best choice.
+
+Also, we want to ask a question that involves the current year and does additional data calculations: so let us add additional_authorized_imports=["time", "numpy", "pandas"], just in case the agent needs these packages.
+
+Copied
+manager_agent = CodeAgent(
+    tools=[],
+    model=model,
+    managed_agents=[web_agent],
+    additional_authorized_imports=["time", "numpy", "pandas"],
+)
+That’s all! Now let’s run our system! We select a question that requires both some calculation and research:
+
+Copied
+answer = manager_agent.run("If LLM training continues to scale up at the current rhythm until 2030, what would be the electric power in GW required to power the biggest training runs by 2030? What would that correspond to, compared to some countries? Please provide a source for any numbers used.")
+We get this report as the answer:
+
+Copied
+Based on current growth projections and energy consumption estimates, if LLM trainings continue to scale up at the 
+current rhythm until 2030:
+
+1. The electric power required to power the biggest training runs by 2030 would be approximately 303.74 GW, which 
+translates to about 2,660,762 GWh/year.
+
+2. Comparing this to countries' electricity consumption:
+   - It would be equivalent to about 34% of China's total electricity consumption.
+   - It would exceed the total electricity consumption of India (184%), Russia (267%), and Japan (291%).
+   - It would be nearly 9 times the electricity consumption of countries like Italy or Mexico.
+
+3. Source of numbers:
+   - The initial estimate of 5 GW for future LLM training comes from AWS CEO Matt Garman.
+   - The growth projection used a CAGR of 79.80% from market research by Springs.
+   - Country electricity consumption data is from the U.S. Energy Information Administration, primarily for the year 
+2021.
+Seems like we’ll need some sizeable powerplants if the scaling hypothesis continues to hold true.
+
+Our agents managed to efficiently collaborate towards solving the task! ✅
+
+💡 You can easily extend this orchestration to more agents: one does the code execution, one the web search, one handles file loadings…
+
+
+Web Browser Automation with Agents 🤖🌐
+Open In Colab
+Open In Studio Lab
+In this notebook, we’ll create an agent-powered web browser automation system! This system can navigate websites, interact with elements, and extract information automatically.
+
+The agent will be able to:
+
+ Navigate to web pages
+ Click on elements
+ Search within pages
+ Handle popups and modals
+ Extract information
+Let’s set up this system step by step!
+
+First, run these lines to install the required dependencies:
+
+Copied
+pip install smolagents selenium helium pillow -q
+Let’s import our required libraries and set up environment variables:
+
+Copied
+from io import BytesIO
+from time import sleep
+
+import helium
+from dotenv import load_dotenv
+from PIL import Image
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+
+from smolagents import CodeAgent, tool
+from smolagents.agents import ActionStep
+
+# Load environment variables
+load_dotenv()
+Now let’s create our core browser interaction tools that will allow our agent to navigate and interact with web pages:
+
+Copied
+
+def search_item_ctrl_f(text: str, nth_result: int = 1) -> str:
+    """
+    Searches for text on the current page via Ctrl + F and jumps to the nth occurrence.
+    Args:
+        text: The text to search for
+        nth_result: Which occurrence to jump to (default: 1)
+    """
+    elements = driver.find_elements(By.XPATH, f"//*[contains(text(), '{text}')]")
+    if nth_result > len(elements):
+        raise Exception(f"Match n°{nth_result} not found (only {len(elements)} matches found)")
+    result = f"Found {len(elements)} matches for '{text}'."
+    elem = elements[nth_result - 1]
+    driver.execute_script("arguments[0].scrollIntoView(true);", elem)
+    result += f"Focused on element {nth_result} of {len(elements)}"
+    return result
+
+
+def go_back() -> None:
+    """Goes back to previous page."""
+    driver.back()
+
+
+def close_popups() -> str:
+    """
+    Closes any visible modal or pop-up on the page. Use this to dismiss pop-up windows!
+    This does not work on cookie consent banners.
+    """
+    webdriver.ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+Let’s set up our browser with Chrome and configure screenshot capabilities:
+
+Copied
+# Configure Chrome options
+chrome_options = webdriver.ChromeOptions()
+chrome_options.add_argument("--force-device-scale-factor=1")
+chrome_options.add_argument("--window-size=1000,1350")
+chrome_options.add_argument("--disable-pdf-viewer")
+chrome_options.add_argument("--window-position=0,0")
+
+# Initialize the browser
+driver = helium.start_chrome(headless=False, options=chrome_options)
+
+# Set up screenshot callback
+def save_screenshot(memory_step: ActionStep, agent: CodeAgent) -> None:
+    sleep(1.0)  # Let JavaScript animations happen before taking the screenshot
+    driver = helium.get_driver()
+    current_step = memory_step.step_number
+    if driver is not None:
+        for previous_memory_step in agent.memory.steps:  # Remove previous screenshots for lean processing
+            if isinstance(previous_memory_step, ActionStep) and previous_memory_step.step_number <= current_step - 2:
+                previous_memory_step.observations_images = None
+        png_bytes = driver.get_screenshot_as_png()
+        image = Image.open(BytesIO(png_bytes))
+        print(f"Captured a browser screenshot: {image.size} pixels")
+        memory_step.observations_images = [image.copy()]  # Create a copy to ensure it persists
+
+    # Update observations with current URL
+    url_info = f"Current url: {driver.current_url}"
+    memory_step.observations = (
+        url_info if memory_step.observations is None else memory_step.observations + "\n" + url_info
+    )
+Now let’s create our web automation agent:
+
+Copied
+from smolagents import InferenceClientModel
+
+# Initialize the model
+model_id = "meta-llama/Llama-3.3-70B-Instruct"  # You can change this to your preferred model
+model = InferenceClientModel(model_id=model_id)
+
+# Create the agent
+agent = CodeAgent(
+    tools=[go_back, close_popups, search_item_ctrl_f],
+    model=model,
+    additional_authorized_imports=["helium"],
+    step_callbacks=[save_screenshot],
+    max_steps=20,
+    verbosity_level=2,
+)
+
+# Import helium for the agent
+agent.python_executor("from helium import *", agent.state)
+The agent needs instructions on how to use Helium for web automation. Here are the instructions we’ll provide:
+
+Copied
+helium_instructions = """
+You can use helium to access websites. Don't bother about the helium driver, it's already managed.
+We've already ran "from helium import *"
+Then you can go to pages!
+Code:
+```py
+go_to('github.com/trending')
+```<end_code>
+
+You can directly click clickable elements by inputting the text that appears on them.
+Code:
+```py
+click("Top products")
+```<end_code>
+
+If it's a link:
+Code:
+```py
+click(Link("Top products"))
+```<end_code>
+
+If you try to interact with an element and it's not found, you'll get a LookupError.
+In general stop your action after each button click to see what happens on your screenshot.
+Never try to login in a page.
+
+To scroll up or down, use scroll_down or scroll_up with as an argument the number of pixels to scroll from.
+Code:
+```py
+scroll_down(num_pixels=1200) # This will scroll one viewport down
+```<end_code>
+
+When you have pop-ups with a cross icon to close, don't try to click the close icon by finding its element or targeting an 'X' element (this most often fails).
+Just use your built-in tool `close_popups` to close them:
+Code:
+```py
+close_popups()
+```<end_code>
+
+You can use .exists() to check for the existence of an element. For example:
+Code:
+```py
+if Text('Accept cookies?').exists():
+    click('I accept')
+```<end_code>
+"""
+Now we can run our agent with a task! Let’s try finding information on Wikipedia:
+
+Copied
+search_request = """
+Please navigate to https://en.wikipedia.org/wiki/Chicago and give me a sentence containing the word "1992" that mentions a construction accident.
+"""
+
+agent_output = agent.run(search_request + helium_instructions)
+print("Final output:")
+print(agent_output)
+You can run different tasks by modifying the request. For example, here’s for me to know if I should work harder:
+
+Copied
+github_request = """
+I'm trying to find how hard I have to work to get a repo in github.com/trending.
+Can you navigate to the profile for the top author of the top trending repo, and give me their total number of commits over the last year?
+"""
+
+agent_output = agent.run(github_request + helium_instructions)
+print("Final output:")
+print(agent_output)
+The system is particularly effective for tasks like:
+
+Data extraction from websites
+Web research automation
+UI testing and verification
+Content monitoring
+
+
+Agents
+Smolagents is an experimental API which is subject to change at any time. Results returned by the agents can vary as the APIs or underlying models are prone to change.
+
+To learn more about agents and tools make sure to read the introductory guide. This page contains the API docs for the underlying classes.
+
+Agents
+Our agents inherit from MultiStepAgent, which means they can act in multiple steps, each step consisting of one thought, then one tool call and execution. Read more in this conceptual guide.
+
+We provide two types of agents, based on the main Agent class.
+
+CodeAgent is the default agent, it writes its tool calls in Python code.
+ToolCallingAgent writes its tool calls in JSON.
+Both require arguments model and list of tools tools at initialization.
+
+Classes of agents
+class smolagents.MultiStepAgent
+<
+source
+>
+( tools: listmodel: Modelprompt_templates: smolagents.agents.PromptTemplates | None = Nonemax_steps: int = 20add_base_tools: bool = Falseverbosity_level: LogLevel = <LogLevel.INFO: 1>grammar: dict[str, str] | None = Nonemanaged_agents: list | None = Nonestep_callbacks: list[collections.abc.Callable] | None = Noneplanning_interval: int | None = Nonename: str | None = Nonedescription: str | None = Noneprovide_run_summary: bool = Falsefinal_answer_checks: list[collections.abc.Callable] | None = Nonelogger: smolagents.monitoring.AgentLogger | None = None )
+
+Expand 14 parameters
+Parameters
+
+tools (list[Tool]) — Tools that the agent can use.
+model (Callable[[list[dict[str, str]]], ChatMessage]) — Model that will generate the agent’s actions.
+prompt_templates (PromptTemplates, optional) — Prompt templates.
+max_steps (int, default 20) — Maximum number of steps the agent can take to solve the task.
+add_base_tools (bool, default False) — Whether to add the base tools to the agent’s tools.
+verbosity_level (LogLevel, default LogLevel.INFO) — Level of verbosity of the agent’s logs.
+grammar (dict[str, str], optional) — Grammar used to parse the LLM output.
+managed_agents (list, optional) — Managed agents that the agent can call.
+step_callbacks (list[Callable], optional) — Callbacks that will be called at each step.
+planning_interval (int, optional) — Interval at which the agent will run a planning step.
+name (str, optional) — Necessary for a managed agent only - the name by which this agent can be called.
+description (str, optional) — Necessary for a managed agent only - the description of this agent.
+provide_run_summary (bool, optional) — Whether to provide a run summary when called as a managed agent.
+final_answer_checks (list, optional) — List of Callables to run before returning a final answer for checking validity.
+Agent class that solves the given task step by step, using the ReAct framework: While the objective is not reached, the agent will perform a cycle of action (given by the LLM) and observation (obtained from the environment).
+
+extract_action
+<
+source
+>
+( model_output: strsplit_token: str )
+
+Parameters
+
+model_output (str) — Output of the LLM
+split_token (str) — Separator for the action. Should match the example in the system prompt.
+Parse action from the LLM output
+
+from_dict
+<
+source
+>
+( agent_dict: dict**kwargs ) → MultiStepAgent
+
+Parameters
+
+agent_dict (dict[str, Any]) — Dictionary representation of the agent.
+**kwargs — Additional keyword arguments that will override agent_dict values.
+Returns
+
+MultiStepAgent
+
+Instance of the agent class.
+
+
+Create agent from a dictionary representation.
+
+from_folder
+<
+source
+>
+( folder: str | pathlib.Path**kwargs )
+
+Parameters
+
+folder (str or Path) — The folder where the agent is saved.
+**kwargs — Additional keyword arguments that will be passed to the agent’s init.
+Loads an agent from a local folder.
+
+from_hub
+<
+source
+>
+( repo_id: strtoken: str | None = Nonetrust_remote_code: bool = False**kwargs )
+
+Parameters
+
+repo_id (str) — The name of the repo on the Hub where your tool is defined.
+token (str, optional) — The token to identify you on hf.co. If unset, will use the token generated when running huggingface-cli login (stored in ~/.huggingface).
+trust_remote_code(bool, optional, defaults to False) — This flags marks that you understand the risk of running remote code and that you trust this tool. If not setting this to True, loading the tool from Hub will fail.
+kwargs (additional keyword arguments, optional) — Additional keyword arguments that will be split in two: all arguments relevant to the Hub (such as cache_dir, revision, subfolder) will be used when downloading the files for your agent, and the others will be passed along to its init.
+Loads an agent defined on the Hub.
+
+Loading a tool from the Hub means that you’ll download the tool and execute it locally. ALWAYS inspect the tool you’re downloading before loading it within your runtime, as you would do when installing a package using pip/npm/apt.
+
+initialize_system_prompt
+<
+source
+>
+( )
+
+To be implemented in child classes
+
+interrupt
+<
+source
+>
+( )
+
+Interrupts the agent execution.
+
+provide_final_answer
+<
+source
+>
+( task: strimages: list['PIL.Image.Image'] | None = None ) → str
+
+Parameters
+
+task (str) — Task to perform.
+images (list[PIL.Image.Image], optional) — Image(s) objects.
+Returns
+
+str
+
+Final answer to the task.
+
+
+Provide the final answer to the task, based on the logs of the agent’s interactions.
+
+push_to_hub
+<
+source
+>
+( repo_id: strcommit_message: str = 'Upload agent'private: bool | None = Nonetoken: bool | str | None = Nonecreate_pr: bool = False )
+
+Parameters
+
+repo_id (str) — The name of the repository you want to push to. It should contain your organization name when pushing to a given organization.
+commit_message (str, optional, defaults to "Upload agent") — Message to commit while pushing.
+private (bool, optional, defaults to None) — Whether to make the repo private. If None, the repo will be public unless the organization’s default is private. This value is ignored if the repo already exists.
+token (bool or str, optional) — The token to use as HTTP bearer authorization for remote files. If unset, will use the token generated when running huggingface-cli login (stored in ~/.huggingface).
+create_pr (bool, optional, defaults to False) — Whether to create a PR with the uploaded files or directly commit.
+Upload the agent to the Hub.
+
+replay
+<
+source
+>
+( detailed: bool = False )
+
+Parameters
+
+detailed (bool, optional) — If True, also displays the memory at each step. Defaults to False. Careful: will increase log length exponentially. Use only for debugging.
+Prints a pretty replay of the agent’s steps.
+
+run
+<
+source
+>
+( task: strstream: bool = Falsereset: bool = Trueimages: list['PIL.Image.Image'] | None = Noneadditional_args: dict | None = Nonemax_steps: int | None = None )
+
+Parameters
+
+task (str) — Task to perform.
+stream (bool) — Whether to run in streaming mode. If True, returns a generator that yields each step as it is executed. You must iterate over this generator to process the individual steps (e.g., using a for loop or next()). If False, executes all steps internally and returns only the final answer after completion.
+reset (bool) — Whether to reset the conversation or keep it going from previous run.
+images (list[PIL.Image.Image], optional) — Image(s) objects.
+additional_args (dict, optional) — Any other variables that you want to pass to the agent run, for instance images or dataframes. Give them clear names!
+max_steps (int, optional) — Maximum number of steps the agent can take to solve the task. if not provided, will use the agent’s default value.
+Run the agent for the given task.
+
+Example:
+
+Copied
+from smolagents import CodeAgent
+agent = CodeAgent(tools=[])
+agent.run("What is the result of 2 power 3.7384?")
+save
+<
+source
+>
+( output_dir: str | pathlib.Pathrelative_path: str | None = None )
+
+Parameters
+
+output_dir (str or Path) — The folder in which you want to save your agent.
+Saves the relevant code files for your agent. This will copy the code of your agent in output_dir as well as autogenerate:
+
+a tools folder containing the logic for each of the tools under tools/{tool_name}.py.
+a managed_agents folder containing the logic for each of the managed agents.
+an agent.json file containing a dictionary representing your agent.
+a prompt.yaml file containing the prompt templates used by your agent.
+an app.py file providing a UI for your agent when it is exported to a Space with agent.push_to_hub()
+a requirements.txt containing the names of the modules used by your tool (as detected when inspecting its code)
+step
+<
+source
+>
+( memory_step: ActionStep )
+
+Perform one step in the ReAct framework: the agent thinks, acts, and observes the result. Returns either None if the step is not final, or the final answer.
+
+to_dict
+<
+source
+>
+( ) → dict
+
+Returns
+
+dict
+
+Dictionary representation of the agent.
+
+
+Convert the agent to a dictionary representation.
+
+visualize
+<
+source
+>
+( )
+
+Creates a rich tree visualization of the agent’s structure.
+
+write_memory_to_messages
+<
+source
+>
+( summary_mode: bool | None = False )
+
+Reads past llm_outputs, actions, and observations or errors from the memory into a series of messages that can be used as input to the LLM. Adds a number of keywords (such as PLAN, error, etc) to help the LLM.
+
+class smolagents.CodeAgent
+<
+source
+>
+( tools: listmodel: Modelprompt_templates: smolagents.agents.PromptTemplates | None = Nonegrammar: dict[str, str] | None = Noneadditional_authorized_imports: list[str] | None = Noneplanning_interval: int | None = Noneexecutor_type: str | None = 'local'executor_kwargs: dict[str, typing.Any] | None = Nonemax_print_outputs_length: int | None = Nonestream_outputs: bool = False**kwargs )
+
+Parameters
+
+tools (list[Tool]) — Tools that the agent can use.
+model (Model) — Model that will generate the agent’s actions.
+prompt_templates (PromptTemplates, optional) — Prompt templates.
+grammar (dict[str, str], optional) — Grammar used to parse the LLM output.
+additional_authorized_imports (list[str], optional) — Additional authorized imports for the agent.
+planning_interval (int, optional) — Interval at which the agent will run a planning step.
+executor_type (str, default "local") — Which executor type to use between "local", "e2b", or "docker".
+executor_kwargs (dict, optional) — Additional arguments to pass to initialize the executor.
+max_print_outputs_length (int, optional) — Maximum length of the print outputs.
+stream_outputs (bool, optional, default False) — Whether to stream outputs during execution.
+**kwargs — Additional keyword arguments.
+In this agent, the tool calls will be formulated by the LLM in code format, then parsed and executed.
+
+from_dict
+<
+source
+>
+( agent_dict: dict**kwargs ) → CodeAgent
+
+Parameters
+
+agent_dict (dict[str, Any]) — Dictionary representation of the agent.
+**kwargs — Additional keyword arguments that will override agent_dict values.
+Returns
+
+CodeAgent
+
+Instance of the CodeAgent class.
+
+
+Create CodeAgent from a dictionary representation.
+
+class smolagents.ToolCallingAgent
+<
+source
+>
+( tools: listmodel: Callableprompt_templates: smolagents.agents.PromptTemplates | None = Noneplanning_interval: int | None = None**kwargs )
+
+Parameters
+
+tools (list[Tool]) — Tools that the agent can use.
+model (Callable[[list[dict[str, str]]], ChatMessage]) — Model that will generate the agent’s actions.
+prompt_templates (PromptTemplates, optional) — Prompt templates.
+planning_interval (int, optional) — Interval at which the agent will run a planning step.
+**kwargs — Additional keyword arguments.
+This agent uses JSON-like tool calls, using method model.get_tool_call to leverage the LLM engine’s tool calling capabilities.
+
+execute_tool_call
+<
+source
+>
+( tool_name: strarguments: dict[str, str] | str )
+
+Parameters
+
+tool_name (str) — Name of the tool or managed agent to execute.
+arguments (dict[str, str] | str) — Arguments passed to the tool call.
+Execute a tool or managed agent with the provided arguments.
+
+The arguments are replaced with the actual values from the state if they refer to state variables.
+
+ManagedAgent
+This class is deprecated since 1.8.0: now you simply need to pass attributes name and description to a normal agent to make it callable by a manager agent.
+
+stream_to_gradio
+smolagents.stream_to_gradio
+<
+source
+>
+( agenttask: strtask_images: list | None = Nonereset_agent_memory: bool = Falseadditional_args: dict | None = None )
+
+Runs an agent with the given task and streams the messages from the agent as gradio ChatMessages.
+
+GradioUI
+You must have gradio installed to use the UI. Please run pip install smolagents[gradio] if it’s not the case.
+
+class smolagents.GradioUI
+<
+source
+>
+( agent: MultiStepAgentfile_upload_folder: str | None = None )
+
+A one-line interface to launch your agent in Gradio
+
+upload_file
+<
+source
+>
+( filefile_uploads_logallowed_file_types = None )
+
+Handle file uploads, default allowed types are .pdf, .docx, and .txt
+
+Prompts
+class smolagents.PromptTemplates
+<
+source
+>
+( )
+
+Parameters
+
+system_prompt (str) — System prompt.
+planning (PlanningPromptTemplate) — Planning prompt templates.
+managed_agent (ManagedAgentPromptTemplate) — Managed agent prompt templates.
+final_answer (FinalAnswerPromptTemplate) — Final answer prompt templates.
+Prompt templates for the agent.
+
+class smolagents.PlanningPromptTemplate
+<
+source
+>
+( )
+
+Parameters
+
+plan (str) — Initial plan prompt.
+update_plan_pre_messages (str) — Update plan pre-messages prompt.
+update_plan_post_messages (str) — Update plan post-messages prompt.
+Prompt templates for the planning step.
+
+class smolagents.ManagedAgentPromptTemplate
+<
+source
+>
+( )
+
+Parameters
+
+task (str) — Task prompt.
+report (str) — Report prompt.
+Prompt templates for the managed agent.
+
+class smolagents.FinalAnswerPromptTemplate
+<
+source
+>
+( )
+
+Parameters
+
+pre_messages (str) — Pre-messages prompt.
+post_messages (str) — Post-messages prompt.
+Prompt templates for the final answer.
+
+
+Models
+Smolagents is an experimental API which is subject to change at any time. Results returned by the agents can vary as the APIs or underlying models are prone to change.
+
+To learn more about agents and tools make sure to read the introductory guide. This page contains the API docs for the underlying classes.
+
+Models
+Your custom Model
+You’re free to create and use your own models to power your agent.
+
+You could subclass the base Model class to create a model for your agent. The main criteria is to subclass the generate method, with these two criteria:
+
+It follows the messages format (List[Dict[str, str]]) for its input messages, and it returns an object with a .content attribute.
+It stops generating outputs at the sequences passed in the argument stop_sequences.
+For defining your LLM, you can make a CustomModel class that inherits from the base Model class. It should have a generate method that takes a list of messages and returns an object with a .content attribute containing the text. The generate method also needs to accept a stop_sequences argument that indicates when to stop generating.
+
+Copied
+from huggingface_hub import login, InferenceClient
+
+login("<YOUR_HUGGINGFACEHUB_API_TOKEN>")
+
+model_id = "meta-llama/Llama-3.3-70B-Instruct"
+
+client = InferenceClient(model=model_id)
+
+class CustomModel(Model):
+    def generate(messages, stop_sequences=["Task"]):
+        response = client.chat_completion(messages, stop=stop_sequences, max_tokens=1024)
+        answer = response.choices[0].message
+        return answer
+
+custom_model = CustomModel()
+Additionally, generate can also take a grammar argument. In the case where you specify a grammar upon agent initialization, this argument will be passed to the calls to model, with the grammar that you defined upon initialization, to allow constrained generation in order to force properly-formatted agent outputs.
+
+TransformersModel
+For convenience, we have added a TransformersModel that implements the points above by building a local transformers pipeline for the model_id given at initialization.
+
+Copied
+from smolagents import TransformersModel
+
+model = TransformersModel(model_id="HuggingFaceTB/SmolLM-135M-Instruct")
+
+print(model([{"role": "user", "content": [{"type": "text", "text": "Ok!"}]}], stop_sequences=["great"]))
+Copied
+>>> What a
+You must have transformers and torch installed on your machine. Please run pip install smolagents[transformers] if it’s not the case.
+
+class smolagents.TransformersModel
+<
+source
+>
+( model_id: str | None = Nonedevice_map: str | None = Nonetorch_dtype: str | None = Nonetrust_remote_code: bool = False**kwargs )
+
+Parameters
+
+model_id (str) — The Hugging Face model ID to be used for inference. This can be a path or model identifier from the Hugging Face model hub. For example, "Qwen/Qwen2.5-Coder-32B-Instruct".
+device_map (str, optional) — The device_map to initialize your model with.
+torch_dtype (str, optional) — The torch_dtype to initialize your model with.
+trust_remote_code (bool, default False) — Some models on the Hub require running remote code: for this model, you would have to set this flag to True.
+kwargs (dict, optional) — Any additional keyword arguments that you want to use in model.generate(), for instance max_new_tokens or device.
+**kwargs — Additional keyword arguments to pass to model.generate(), for instance max_new_tokens or device.
+Raises
+
+ValueError
+
+ValueError — If the model name is not provided.
+
+A class that uses Hugging Face’s Transformers library for language model interaction.
+
+This model allows you to load and use Hugging Face’s models locally using the Transformers library. It supports features like stop sequences and grammar customization.
+
+You must have transformers and torch installed on your machine. Please run pip install smolagents[transformers] if it’s not the case.
+
+Example:
+
+Copied
+engine = TransformersModel(
+    model_id="Qwen/Qwen2.5-Coder-32B-Instruct",
+    device="cuda",
+    max_new_tokens=5000,
+)
+messages = [{"role": "user", "content": "Explain quantum mechanics in simple terms."}]
+response = engine(messages, stop_sequences=["END"])
+print(response)
+"Quantum mechanics is the branch of physics that studies..."
+InferenceClientModel
+The HfApiModel wraps huggingface_hub’s InferenceClient for the execution of the LLM. It supports all Inference Providers available on the Hub: Cerebras, Cohere, Fal, Fireworks, HF-Inference, Hyperbolic, Nebius, Novita, Replicate, SambaNova, Together, and more.
+
+Copied
+from smolagents import InferenceClientModel
+
+messages = [
+  {"role": "user", "content": [{"type": "text", "text": "Hello, how are you?"}]}
+]
+
+model = InferenceClientModel(provider="novita")
+print(model(messages))
+Copied
+>>> Of course! If you change your mind, feel free to reach out. Take care!
+class smolagents.InferenceClientModel
+<
+source
+>
+( model_id: str = 'Qwen/Qwen2.5-Coder-32B-Instruct'provider: str | None = Nonetoken: str | None = Nonetimeout: int = 120client_kwargs: dict[str, typing.Any] | None = Nonecustom_role_conversions: dict[str, str] | None = Noneapi_key: str | None = Nonebill_to: str | None = None**kwargs )
+
+Expand 9 parameters
+Parameters
+
+model_id (str, optional, default "Qwen/Qwen2.5-Coder-32B-Instruct") — The Hugging Face model ID to be used for inference. This can be a model identifier from the Hugging Face model hub or a URL to a deployed Inference Endpoint. Currently, it defaults to "Qwen/Qwen2.5-Coder-32B-Instruct", but this may change in the future.
+provider (str, optional) — Name of the provider to use for inference. Can be "black-forest-labs", "cerebras", "cohere", "fal-ai", "fireworks-ai", "hf-inference", "hyperbolic", "nebius", "novita", "openai", "replicate", “sambanova”, “together”`, etc. Currently, it defaults to hf-inference (HF Inference API).
+token (str, optional) — Token used by the Hugging Face API for authentication. This token need to be authorized ‘Make calls to the serverless Inference Providers’. If the model is gated (like Llama-3 models), the token also needs ‘Read access to contents of all public gated repos you can access’. If not provided, the class will try to use environment variable ‘HF_TOKEN’, else use the token stored in the Hugging Face CLI configuration.
+timeout (int, optional, defaults to 120) — Timeout for the API request, in seconds.
+client_kwargs (dict[str, Any], optional) — Additional keyword arguments to pass to the Hugging Face InferenceClient.
+custom_role_conversions (dict[str, str], optional) — Custom role conversion mapping to convert message roles in others. Useful for specific models that do not support specific message roles like “system”.
+api_key (str, optional) — Token to use for authentication. This is a duplicated argument from token to make InferenceClientModel follow the same pattern as openai.OpenAI client. Cannot be used if token is set. Defaults to None.
+bill_to (str, optional) — The billing account to use for the requests. By default the requests are billed on the user’s account. Requests can only be billed to an organization the user is a member of, and which has subscribed to Enterprise Hub.
+**kwargs — Additional keyword arguments to pass to the Hugging Face API.
+Raises
+
+ValueError
+
+ValueError — If the model name is not provided.
+
+A class to interact with Hugging Face’s Inference Providers for language model interaction.
+
+This model allows you to communicate with Hugging Face’s models using Inference Providers. It can be used in both serverless mode or with a dedicated endpoint, supporting features like stop sequences and grammar customization.
+
+Providers include Cerebras, Cohere, Fal, Fireworks, HF-Inference, Hyperbolic, Nebius, Novita, Replicate, SambaNova, Together, and more.
+
+Example:
+
+Copied
+engine = InferenceClientModel(
+    model_id="Qwen/Qwen2.5-Coder-32B-Instruct",
+    provider="together",
+    token="your_hf_token_here",
+    max_tokens=5000,
+)
+messages = [{"role": "user", "content": "Explain quantum mechanics in simple terms."}]
+response = engine(messages, stop_sequences=["END"])
+print(response)
+"Quantum mechanics is the branch of physics that studies..."
+create_client
+<
+source
+>
+( )
+
+Create the Hugging Face client.
+
+LiteLLMModel
+The LiteLLMModel leverages LiteLLM to support 100+ LLMs from various providers. You can pass kwargs upon model initialization that will then be used whenever using the model, for instance below we pass temperature.
+
+Copied
+from smolagents import LiteLLMModel
+
+messages = [
+  {"role": "user", "content": [{"type": "text", "text": "Hello, how are you?"}]}
+]
+
+model = LiteLLMModel(model_id="anthropic/claude-3-5-sonnet-latest", temperature=0.2, max_tokens=10)
+print(model(messages))
+class smolagents.LiteLLMModel
+<
+source
+>
+( model_id: str | None = Noneapi_base: str | None = Noneapi_key: str | None = Nonecustom_role_conversions: dict[str, str] | None = Noneflatten_messages_as_text: bool | None = None**kwargs )
+
+Parameters
+
+model_id (str) — The model identifier to use on the server (e.g. “gpt-3.5-turbo”).
+api_base (str, optional) — The base URL of the provider API to call the model.
+api_key (str, optional) — The API key to use for authentication.
+custom_role_conversions (dict[str, str], optional) — Custom role conversion mapping to convert message roles in others. Useful for specific models that do not support specific message roles like “system”.
+flatten_messages_as_text (bool, optional) — Whether to flatten messages as text. Defaults to True for models that start with “ollama”, “groq”, “cerebras”.
+**kwargs — Additional keyword arguments to pass to the OpenAI API.
+Model to use LiteLLM Python SDK to access hundreds of LLMs.
+
+create_client
+<
+source
+>
+( )
+
+Create the LiteLLM client.
+
+LiteLLMRouterModel
+The LiteLLMRouterModel is a wrapper around the LiteLLM Router that leverages advanced routing strategies: load-balancing across multiple deployments, prioritizing critical requests via queueing, and implementing basic reliability measures such as cooldowns, fallbacks, and exponential backoff retries.
+
+Copied
+from smolagents import LiteLLMRouterModel
+
+messages = [
+  {"role": "user", "content": [{"type": "text", "text": "Hello, how are you?"}]}
+]
+
+model = LiteLLMRouterModel(
+    model_id="llama-3.3-70b",
+    model_list=[
+        {
+            "model_name": "llama-3.3-70b",
+            "litellm_params": {"model": "groq/llama-3.3-70b", "api_key": os.getenv("GROQ_API_KEY")},
+        },
+        {
+            "model_name": "llama-3.3-70b",
+            "litellm_params": {"model": "cerebras/llama-3.3-70b", "api_key": os.getenv("CEREBRAS_API_KEY")},
+        },
+    ],
+    client_kwargs={
+        "routing_strategy": "simple-shuffle",
+    },
+)
+print(model(messages))
+class smolagents.LiteLLMRouterModel
+<
+source
+>
+( model_id: strmodel_list: listclient_kwargs: dict[str, typing.Any] | None = Nonecustom_role_conversions: dict[str, str] | None = Noneflatten_messages_as_text: bool | None = None**kwargs )
+
+Parameters
+
+model_id (str) — Identifier for the model group to use from the model list (e.g., “model-group-1”).
+model_list (list[dict[str, Any]]) — Model configurations to be used for routing. Each configuration should include the model group name and any necessary parameters. For more details, refer to the LiteLLM Routing documentation.
+client_kwargs (dict[str, Any], optional) — Additional configuration parameters for the Router client. For more details, see the LiteLLM Routing Configurations.
+custom_role_conversions (dict[str, str], optional) — Custom role conversion mapping to convert message roles in others. Useful for specific models that do not support specific message roles like “system”.
+flatten_messages_as_text (bool, optional) — Whether to flatten messages as text. Defaults to True for models that start with “ollama”, “groq”, “cerebras”.
+**kwargs — Additional keyword arguments to pass to the LiteLLM Router completion method.
+Router‑based client for interacting with the LiteLLM Python SDK Router.
+
+This class provides a high-level interface for distributing requests among multiple language models using the LiteLLM SDK’s routing capabilities. It is responsible for initializing and configuring the router client, applying custom role conversions, and managing message formatting to ensure seamless integration with various LLMs.
+
+Example:
+
+Copied
+import os
+from smolagents import CodeAgent, WebSearchTool, LiteLLMRouterModel
+os.environ["OPENAI_API_KEY"] = ""
+os.environ["AWS_ACCESS_KEY_ID"] = ""
+os.environ["AWS_SECRET_ACCESS_KEY"] = ""
+os.environ["AWS_REGION"] = ""
+llm_loadbalancer_model_list = [
+    {
+        "model_name": "model-group-1",
+        "litellm_params": {
+            "model": "gpt-4o-mini",
+            "api_key": os.getenv("OPENAI_API_KEY"),
+        },
+    },
+    {
+        "model_name": "model-group-1",
+        "litellm_params": {
+            "model": "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+            "aws_access_key_id": os.getenv("AWS_ACCESS_KEY_ID"),
+            "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
+            "aws_region_name": os.getenv("AWS_REGION"),
+        },
+    },
+]
+model = LiteLLMRouterModel(
+   model_id="model-group-1",
+   model_list=llm_loadbalancer_model_list,
+   client_kwargs={
+       "routing_strategy":"simple-shuffle"
+   }
+)
+agent = CodeAgent(tools=[WebSearchTool()], model=model)
+agent.run("How many seconds would it take for a leopard at full speed to run through Pont des Arts?")
+OpenAIServerModel
+This class lets you call any OpenAIServer compatible model. Here’s how you can set it (you can customise the api_base url to point to another server):
+
+Copied
+import os
+from smolagents import OpenAIServerModel
+
+model = OpenAIServerModel(
+    model_id="gpt-4o",
+    api_base="https://api.openai.com/v1",
+    api_key=os.environ["OPENAI_API_KEY"],
+)
+class smolagents.OpenAIServerModel
+<
+source
+>
+( model_id: strapi_base: str | None = Noneapi_key: str | None = Noneorganization: str | None = Noneproject: str | None = Noneclient_kwargs: dict[str, typing.Any] | None = Nonecustom_role_conversions: dict[str, str] | None = Noneflatten_messages_as_text: bool = False**kwargs )
+
+Parameters
+
+model_id (str) — The model identifier to use on the server (e.g. “gpt-3.5-turbo”).
+api_base (str, optional) — The base URL of the OpenAI-compatible API server.
+api_key (str, optional) — The API key to use for authentication.
+organization (str, optional) — The organization to use for the API request.
+project (str, optional) — The project to use for the API request.
+client_kwargs (dict[str, Any], optional) — Additional keyword arguments to pass to the OpenAI client (like organization, project, max_retries etc.).
+custom_role_conversions (dict[str, str], optional) — Custom role conversion mapping to convert message roles in others. Useful for specific models that do not support specific message roles like “system”.
+flatten_messages_as_text (bool, default False) — Whether to flatten messages as text.
+**kwargs — Additional keyword arguments to pass to the OpenAI API.
+This model connects to an OpenAI-compatible API server.
+
+AzureOpenAIServerModel
+AzureOpenAIServerModel allows you to connect to any Azure OpenAI deployment.
+
+Below you can find an example of how to set it up, note that you can omit the azure_endpoint, api_key, and api_version arguments, provided you’ve set the corresponding environment variables — AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and OPENAI_API_VERSION.
+
+Pay attention to the lack of an AZURE_ prefix for OPENAI_API_VERSION, this is due to the way the underlying openai package is designed.
+
+Copied
+import os
+
+from smolagents import AzureOpenAIServerModel
+
+model = AzureOpenAIServerModel(
+    model_id = os.environ.get("AZURE_OPENAI_MODEL"),
+    azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
+    api_key=os.environ.get("AZURE_OPENAI_API_KEY"),
+    api_version=os.environ.get("OPENAI_API_VERSION")    
+)
+class smolagents.AzureOpenAIServerModel
+<
+source
+>
+( model_id: strazure_endpoint: str | None = Noneapi_key: str | None = Noneapi_version: str | None = Noneclient_kwargs: dict[str, typing.Any] | None = Nonecustom_role_conversions: dict[str, str] | None = None**kwargs )
+
+Parameters
+
+model_id (str) — The model deployment name to use when connecting (e.g. “gpt-4o-mini”).
+azure_endpoint (str, optional) — The Azure endpoint, including the resource, e.g. https://example-resource.azure.openai.com/. If not provided, it will be inferred from the AZURE_OPENAI_ENDPOINT environment variable.
+api_key (str, optional) — The API key to use for authentication. If not provided, it will be inferred from the AZURE_OPENAI_API_KEY environment variable.
+api_version (str, optional) — The API version to use. If not provided, it will be inferred from the OPENAI_API_VERSION environment variable.
+client_kwargs (dict[str, Any], optional) — Additional keyword arguments to pass to the AzureOpenAI client (like organization, project, max_retries etc.).
+custom_role_conversions (dict[str, str], optional) — Custom role conversion mapping to convert message roles in others. Useful for specific models that do not support specific message roles like “system”.
+**kwargs — Additional keyword arguments to pass to the Azure OpenAI API.
+This model connects to an Azure OpenAI deployment.
+
+AmazonBedrockServerModel
+AmazonBedrockServerModel helps you connect to Amazon Bedrock and run your agent with any available models.
+
+Below is an example setup. This class also offers additional options for customization.
+
+Copied
+import os
+
+from smolagents import AmazonBedrockServerModel
+
+model = AmazonBedrockServerModel(
+    model_id = os.environ.get("AMAZON_BEDROCK_MODEL_ID"),
+)
+class smolagents.AmazonBedrockServerModel
+<
+source
+>
+( model_id: strclient = Noneclient_kwargs: dict[str, typing.Any] | None = Nonecustom_role_conversions: dict[str, str] | None = None**kwargs )
+
+Parameters
+
+model_id (str) — The model identifier to use on Bedrock (e.g. “us.amazon.nova-pro-v1:0”).
+client (boto3.client, optional) — A custom boto3 client for AWS interactions. If not provided, a default client will be created.
+client_kwargs (dict[str, Any], optional) — Keyword arguments used to configure the boto3 client if it needs to be created internally. Examples include region_name, config, or endpoint_url.
+custom_role_conversions (dict[str, str], optional) — Custom role conversion mapping to convert message roles in others. Useful for specific models that do not support specific message roles like “system”. Defaults to converting all roles to “user” role to enable using all the Bedrock models.
+flatten_messages_as_text (bool, default False) — Whether to flatten messages as text.
+**kwargs — Additional keyword arguments passed directly to the underlying API calls.
+A model class for interacting with Amazon Bedrock Server models through the Bedrock API.
+
+This class provides an interface to interact with various Bedrock language models, allowing for customized model inference, guardrail configuration, message handling, and other parameters allowed by boto3 API.
+
+Example: Creating a model instance with default settings:
+
+bedrock_model = AmazonBedrockServerModel( … model_id=‘us.amazon.nova-pro-v1:0’ … )
+
+Creating a model instance with a custom boto3 client:
+
+import boto3 client = boto3.client(‘bedrock-runtime’, region_name=‘us-west-2’) bedrock_model = AmazonBedrockServerModel( … model_id=‘us.amazon.nova-pro-v1:0’, … client=client … )
+
+Creating a model instance with client_kwargs for internal client creation:
+
+bedrock_model = AmazonBedrockServerModel( … model_id=‘us.amazon.nova-pro-v1:0’, … client_kwargs={‘region_name’: ‘us-west-2’, ‘endpoint_url’: ’https://custom-endpoint.com’} … )
+
+Creating a model instance with inference and guardrail configurations:
+
+additional_api_config = { … “inferenceConfig”: { … “maxTokens”: 3000 … }, … “guardrailConfig”: { … “guardrailIdentifier”: “identify1”, … “guardrailVersion”: ‘v1’ … }, … } bedrock_model = AmazonBedrockServerModel( … model_id=‘anthropic.claude-3-haiku-20240307-v1:0’, … **additional_api_config … )
+
+MLXModel
+Copied
+from smolagents import MLXModel
+
+model = MLXModel(model_id="HuggingFaceTB/SmolLM-135M-Instruct")
+
+print(model([{"role": "user", "content": "Ok!"}], stop_sequences=["great"]))
+Copied
+>>> What a
+You must have mlx-lm installed on your machine. Please run pip install smolagents[mlx-lm] if it’s not the case.
+
+class smolagents.MLXModel
+<
+source
+>
+( model_id: strtool_name_key: str = 'name'tool_arguments_key: str = 'arguments'trust_remote_code: bool = False**kwargs )
+
+Parameters
+
+model_id (str) — The Hugging Face model ID to be used for inference. This can be a path or model identifier from the Hugging Face model hub.
+tool_name_key (str) — The key, which can usually be found in the model’s chat template, for retrieving a tool name.
+tool_arguments_key (str) — The key, which can usually be found in the model’s chat template, for retrieving tool arguments.
+trust_remote_code (bool) — Some models on the Hub require running remote code: for this model, you would have to set this flag to True.
+kwargs (dict, optional) — Any additional keyword arguments that you want to use in model.generate(), for instance max_tokens.
+A class to interact with models loaded using MLX on Apple silicon.
+
+You must have mlx-lm installed on your machine. Please run pip install smolagents[mlx-lm] if it’s not the case.
+
+Example:
+
+Copied
+engine = MLXModel(
+    model_id="mlx-community/Qwen2.5-Coder-32B-Instruct-4bit",
+    max_tokens=10000,
+)
+messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "Explain quantum mechanics in simple terms."}
+        ]
+    }
+]
+response = engine(messages, stop_sequences=["END"])
+print(response)
+"Quantum mechanics is the branch of physics that studies..."
+VLLMModel
+Model to use vLLM for fast LLM inference and serving.
+
+Copied
+from smolagents import VLLMModel
+
+model = VLLMModel(model_id="HuggingFaceTB/SmolLM-135M-Instruct")
+
+print(model([{"role": "user", "content": "Ok!"}], stop_sequences=["great"]))
+You must have vllm installed on your machine. Please run pip install smolagents[vllm] if it’s not the case.
+
+class smolagents.VLLMModel
+<
+source
+>
+( model_idmodel_kwargs: dict[str, typing.Any] | None = None**kwargs )
+
+Parameters
+
+model_id (str) — The Hugging Face model ID to be used for inference. This can be a path or model identifier from the Hugging Face model hub.
+model_kwargs (dict[str, Any], optional) — Additional keyword arguments to pass to the vLLM model (like revision, max_model_len, etc.).
+Model to use vLLM for fast LLM inference and serving.
+
+
+Tools
+Smolagents is an experimental API which is subject to change at any time. Results returned by the agents can vary as the APIs or underlying models are prone to change.
+
+To learn more about agents and tools make sure to read the introductory guide. This page contains the API docs for the underlying classes.
+
+Tools
+load_tool
+smolagents.load_tool
+<
+source
+>
+( repo_idmodel_repo_id: str | None = Nonetoken: str | None = Nonetrust_remote_code: bool = False**kwargs )
+
+Parameters
+
+repo_id (str) — Space repo ID of a tool on the Hub.
+model_repo_id (str, optional) — Use this argument to use a different model than the default one for the tool you selected.
+token (str, optional) — The token to identify you on hf.co. If unset, will use the token generated when running huggingface-cli login (stored in ~/.huggingface).
+trust_remote_code (bool, optional, defaults to False) — This needs to be accepted in order to load a tool from Hub.
+kwargs (additional keyword arguments, optional) — Additional keyword arguments that will be split in two: all arguments relevant to the Hub (such as cache_dir, revision, subfolder) will be used when downloading the files for your tool, and the others will be passed along to its init.
+Main function to quickly load a tool from the Hub.
+
+Loading a tool means that you’ll download the tool and execute it locally. ALWAYS inspect the tool you’re downloading before loading it within your runtime, as you would do when installing a package using pip/npm/apt.
+
+tool
+smolagents.tool
+<
+source
+>
+( tool_function: Callable )
+
+Parameters
+
+tool_function (Callable) — Function to convert into a Tool subclass. Should have type hints for each input and a type hint for the output. Should also have a docstring including the description of the function and an ‘Args:’ part where each argument is described.
+Convert a function into an instance of a dynamically created Tool subclass.
+
+Tool
+class smolagents.Tool
+<
+source
+>
+( *args**kwargs )
+
+A base class for the functions used by the agent. Subclass this and implement the forward method as well as the following class attributes:
+
+description (str) — A short description of what your tool does, the inputs it expects and the output(s) it will return. For instance ‘This is a tool that downloads a file from a url. It takes the url as input, and returns the text contained in the file’.
+name (str) — A performative name that will be used for your tool in the prompt to the agent. For instance "text-classifier" or "image_generator".
+inputs (Dict[str, Dict[str, Union[str, type, bool]]]) — The dict of modalities expected for the inputs. It has one typekey and a descriptionkey. This is used by launch_gradio_demo or to make a nice space from your tool, and also can be used in the generated description for your tool.
+output_type (type) — The type of the tool output. This is used by launch_gradio_demo or to make a nice space from your tool, and also can be used in the generated description for your tool.
+You can also override the method setup() if your tool has an expensive operation to perform before being usable (such as loading a model). setup() will be called the first time you use your tool, but not at instantiation.
+
+from_dict
+<
+source
+>
+( tool_dict: dict[str, Any]**kwargs ) → Tool
+
+Parameters
+
+tool_dict (dict[str, Any]) — Dictionary representation of the tool.
+**kwargs — Additional keyword arguments to pass to the tool’s constructor.
+Returns
+
+Tool
+
+Tool object.
+
+
+Create tool from a dictionary representation.
+
+from_gradio
+<
+source
+>
+( gradio_tool )
+
+Creates a Tool from a gradio tool.
+
+from_hub
+<
+source
+>
+( repo_id: strtoken: str | None = Nonetrust_remote_code: bool = False**kwargs )
+
+Parameters
+
+repo_id (str) — The name of the Space repo on the Hub where your tool is defined.
+token (str, optional) — The token to identify you on hf.co. If unset, will use the token generated when running huggingface-cli login (stored in ~/.huggingface).
+trust_remote_code(str, optional, defaults to False) — This flags marks that you understand the risk of running remote code and that you trust this tool. If not setting this to True, loading the tool from Hub will fail.
+kwargs (additional keyword arguments, optional) — Additional keyword arguments that will be split in two: all arguments relevant to the Hub (such as cache_dir, revision, subfolder) will be used when downloading the files for your tool, and the others will be passed along to its init.
+Loads a tool defined on the Hub.
+
+Loading a tool from the Hub means that you’ll download the tool and execute it locally. ALWAYS inspect the tool you’re downloading before loading it within your runtime, as you would do when installing a package using pip/npm/apt.
+
+from_langchain
+<
+source
+>
+( langchain_tool )
+
+Creates a Tool from a langchain tool.
+
+from_space
+<
+source
+>
+( space_id: strname: strdescription: strapi_name: str | None = Nonetoken: str | None = None ) → Tool
+
+Parameters
+
+space_id (str) — The id of the Space on the Hub.
+name (str) — The name of the tool.
+description (str) — The description of the tool.
+api_name (str, optional) — The specific api_name to use, if the space has several tabs. If not precised, will default to the first available api.
+token (str, optional) — Add your token to access private spaces or increase your GPU quotas.
+Returns
+
+Tool
+
+The Space, as a tool.
+
+
+Creates a Tool from a Space given its id on the Hub.
+
+Examples:
+
+Copied
+image_generator = Tool.from_space(
+    space_id="black-forest-labs/FLUX.1-schnell",
+    name="image-generator",
+    description="Generate an image from a prompt"
+)
+image = image_generator("Generate an image of a cool surfer in Tahiti")
+Copied
+face_swapper = Tool.from_space(
+    "tuan2308/face-swap",
+    "face_swapper",
+    "Tool that puts the face shown on the first image on the second image. You can give it paths to images.",
+)
+image = face_swapper('./aymeric.jpeg', './ruth.jpg')
+push_to_hub
+<
+source
+>
+( repo_id: strcommit_message: str = 'Upload tool'private: bool | None = Nonetoken: bool | str | None = Nonecreate_pr: bool = False )
+
+Parameters
+
+repo_id (str) — The name of the repository you want to push your tool to. It should contain your organization name when pushing to a given organization.
+commit_message (str, optional, defaults to "Upload tool") — Message to commit while pushing.
+private (bool, optional) — Whether to make the repo private. If None (default), the repo will be public unless the organization’s default is private. This value is ignored if the repo already exists.
+token (bool or str, optional) — The token to use as HTTP bearer authorization for remote files. If unset, will use the token generated when running huggingface-cli login (stored in ~/.huggingface).
+create_pr (bool, optional, defaults to False) — Whether to create a PR with the uploaded files or directly commit.
+Upload the tool to the Hub.
+
+save
+<
+source
+>
+( output_dir: str | Pathtool_file_name: str = 'tool'make_gradio_app: bool = True )
+
+Parameters
+
+output_dir (str or Path) — The folder in which you want to save your tool.
+tool_file_name (str, optional) — The file name in which you want to save your tool.
+make_gradio_app (bool, optional, defaults to True) — Whether to also export a requirements.txt file and Gradio UI.
+Saves the relevant code files for your tool so it can be pushed to the Hub. This will copy the code of your tool in output_dir as well as autogenerate:
+
+a {tool_file_name}.py file containing the logic for your tool. If you pass make_gradio_app=True, this will also write:
+an app.py file providing a UI for your tool when it is exported to a Space with tool.push_to_hub()
+a requirements.txt containing the names of the modules used by your tool (as detected when inspecting its code)
+setup
+<
+source
+>
+( )
+
+Overwrite this method here for any operation that is expensive and needs to be executed before you start using your tool. Such as loading a big model.
+
+to_dict
+<
+source
+>
+( )
+
+Returns a dictionary representing the tool
+
+launch_gradio_demo
+smolagents.launch_gradio_demo
+<
+source
+>
+( tool: Tool )
+
+Parameters
+
+tool (Tool) — The tool for which to launch the demo.
+Launches a gradio demo for a tool. The corresponding tool class needs to properly implement the class attributes inputs and output_type.
+
+Default tools
+PythonInterpreterTool
+class smolagents.PythonInterpreterTool
+<
+source
+>
+( *argsauthorized_imports = None**kwargs )
+
+FinalAnswerTool
+class smolagents.FinalAnswerTool
+<
+source
+>
+( *args**kwargs )
+
+UserInputTool
+class smolagents.UserInputTool
+<
+source
+>
+( *args**kwargs )
+
+WebSearchTool
+class smolagents.WebSearchTool
+<
+source
+>
+( max_results = 10 )
+
+DuckDuckGoSearchTool
+class smolagents.DuckDuckGoSearchTool
+<
+source
+>
+( max_results = 10**kwargs )
+
+GoogleSearchTool
+class smolagents.GoogleSearchTool
+<
+source
+>
+( provider: str = 'serpapi' )
+
+VisitWebpageTool
+class smolagents.VisitWebpageTool
+<
+source
+>
+( max_output_length: int = 40000 )
+
+SpeechToTextTool
+class smolagents.SpeechToTextTool
+<
+source
+>
+( *args**kwargs )
+
+ToolCollection
+class smolagents.ToolCollection
+<
+source
+>
+( tools: list[Tool] )
+
+Tool collections enable loading a collection of tools in the agent’s toolbox.
+
+Collections can be loaded from a collection in the Hub or from an MCP server, see:
+
+ToolCollection.from_hub()
+ToolCollection.from_mcp()
+For example and usage, see: ToolCollection.from_hub() and ToolCollection.from_mcp()
+
+from_hub
+<
+source
+>
+( collection_slug: strtoken: str | None = Nonetrust_remote_code: bool = False ) → ToolCollection
+
+Parameters
+
+collection_slug (str) — The collection slug referencing the collection.
+token (str, optional) — The authentication token if the collection is private.
+trust_remote_code (bool, optional, defaults to False) — Whether to trust the remote code.
+Returns
+
+ToolCollection
+
+A tool collection instance loaded with the tools.
+
+
+Loads a tool collection from the Hub.
+
+it adds a collection of tools from all Spaces in the collection to the agent’s toolbox
+
+[!NOTE] Only Spaces will be fetched, so you can feel free to add models and datasets to your collection if you’d like for this collection to showcase them.
+
+Example:
+
+Copied
+from smolagents import ToolCollection, CodeAgent
+
+image_tool_collection = ToolCollection.from_hub("huggingface-tools/diffusion-tools-6630bb19a942c2306a2cdb6f")
+agent = CodeAgent(tools=[*image_tool_collection.tools], add_base_tools=True)
+
+agent.run("Please draw me a picture of rivers and lakes.")
+from_mcp
+<
+source
+>
+( server_parameters: 'mcp.StdioServerParameters' | dicttrust_remote_code: bool = False ) → ToolCollection
+
+Parameters
+
+server_parameters (mcp.StdioServerParameters or dict) — The server parameters to use to connect to the MCP server. If a dict is provided, it is assumed to be the parameters of mcp.client.sse.sse_client.
+trust_remote_code (bool, optional, defaults to False) — Whether to trust the execution of code from tools defined on the MCP server. This option should only be set to True if you trust the MCP server, and undertand the risks associated with running remote code on your local machine. If set to False, loading tools from MCP will fail.
+Returns
+
+ToolCollection
+
+A tool collection instance.
+
+
+Automatically load a tool collection from an MCP server.
+
+This method supports both SSE and Stdio MCP servers. Look at the server_parameters argument for more details on how to connect to an SSE or Stdio MCP server.
+
+Note: a separate thread will be spawned to run an asyncio event loop handling the MCP server.
+
+Example with a Stdio MCP server:
+
+Copied
+from smolagents import ToolCollection, CodeAgent
+from mcp import StdioServerParameters
+
+server_parameters = StdioServerParameters(
+    command="uv",
+    args=["--quiet", "pubmedmcp@0.1.3"],
+    env={"UV_PYTHON": "3.12", **os.environ},
+)
+
+with ToolCollection.from_mcp(server_parameters, trust_remote_code=True) as tool_collection:
+    agent = CodeAgent(tools=[*tool_collection.tools], add_base_tools=True)
+    agent.run("Please find a remedy for hangover.")
+Example with an SSE MCP server:
+
+Copied
+with ToolCollection.from_mcp({"url": "http://127.0.0.1:8000/sse"}, trust_remote_code=True) as tool_collection:
+    agent = CodeAgent(tools=[*tool_collection.tools], add_base_tools=True)
+    agent.run("Please find a remedy for hangover.")
+MCP Client
+class smolagents.MCPClient
+<
+source
+>
+( server_parameters: 'StdioServerParameters' | dict[str, Any] | list['StdioServerParameters' | dict[str, Any]] )
+
+Parameters
+
+server_parameters (StdioServerParameters | dict[str, Any] | list[StdioServerParameters | dict[str, Any]]) — MCP server parameters (stdio or sse). Can be a list if you want to connect multiple MCPs at once.
+Manages the connection to an MCP server and make its tools available to SmolAgents.
+
+Note: tools can only be accessed after the connection has been started with the connect() method, done during the init. If you don’t use the context manager we strongly encourage to use “try … finally” to ensure the connection is cleaned up.
+
+Example:
+
+Copied
+# fully managed context manager + stdio
+with MCPClient(...) as tools:
+    # tools are now available
+
+# context manager + sse
+with MCPClient({"url": "http://localhost:8000/sse"}) as tools:
+    # tools are now available
+
+# manually manage the connection via the mcp_client object:
+try:
+    mcp_client = MCPClient(...)
+    tools = mcp_client.get_tools()
+
+    # use your tools here.
+finally:
+    mcp_client.stop()
+connect
+<
+source
+>
+( )
+
+Connect to the MCP server and initialize the tools.
+
+disconnect
+<
+source
+>
+( exc_type: type[BaseException] | None = Noneexc_value: BaseException | None = Noneexc_traceback: TracebackType | None = None )
+
+Disconnect from the MCP server
+
+get_tools
+<
+source
+>
+( ) → list[Tool]
+
+Returns
+
+list[Tool]
+
+The SmolAgents tools available from the MCP server.
+
+
+Raises
+
+ValueError
+
+ValueError — If the MCP server tools is None (usually assuming the server is not started).
+
+The SmolAgents tools available from the MCP server.
+
+Note: for now, this always returns the tools available at the creation of the session, but it will in a future release return also new tools available from the MCP server if any at call time.
+
+Agent Types
+Agents can handle any type of object in-between tools; tools, being completely multimodal, can accept and return text, image, audio, video, among other types. In order to increase compatibility between tools, as well as to correctly render these returns in ipython (jupyter, colab, ipython notebooks, …), we implement wrapper classes around these types.
+
+The wrapped objects should continue behaving as initially; a text object should still behave as a string, an image object should still behave as a PIL.Image.
+
+These types have three specific purposes:
+
+Calling to_raw on the type should return the underlying object
+Calling to_string on the type should return the object as a string: that can be the string in case of an AgentText but will be the path of the serialized version of the object in other instances
+Displaying it in an ipython kernel should display the object correctly
+AgentText
+class smolagents.AgentText
+<
+source
+>
+( value )
+
+Text type returned by the agent. Behaves as a string.
+
+AgentImage
+class smolagents.AgentImage
+<
+source
+>
+( value )
+
+Image type returned by the agent. Behaves as a PIL.Image.Image.
+
+save
+<
+source
+>
+( output_bytesformat: str = None**params )
+
+Parameters
+
+output_bytes (bytes) — The output bytes to save the image to.
+format (str) — The format to use for the output image. The format is the same as in PIL.Image.save.
+**params — Additional parameters to pass to PIL.Image.save.
+Saves the image to a file.
+
+to_raw
+<
+source
+>
+( )
+
+Returns the “raw” version of that object. In the case of an AgentImage, it is a PIL.Image.Image.
+
+to_string
+<
+source
+>
+( )
+
+Returns the stringified version of that object. In the case of an AgentImage, it is a path to the serialized version of the image.
+
+AgentAudio
+class smolagents.AgentAudio
+<
+source
+>
+( valuesamplerate = 16000 )
+
+Audio type returned by the agent.
+
+to_raw
+<
+source
+>
+( )
+
+Returns the “raw” version of that object. It is a torch.Tensor object.
+
+to_string
+<
+source
+>
+( )
+
+Returns the stringified version of that object. In the case of an AgentAudio, it is a path to the serialized version of the audio.

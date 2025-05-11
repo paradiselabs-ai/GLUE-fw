@@ -11,6 +11,7 @@ from .mcp import MCPServer, MCPTool
 from ..tools.tool_base import Tool, ToolConfig, ToolPermission
 from ..core.types import AdhesiveType
 from .sandbox import CodeSandbox, SandboxConfig
+from glue.tools.delegate_task_tool import DelegateTaskTool
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.mcp.factory")
@@ -135,7 +136,9 @@ class DynamicMCPFactory:
             if sandbox_enabled:
                 # Use sandbox for code execution
                 sandbox_config = sandbox_config or self.default_sandbox_config
-                sandbox = CodeSandbox(sandbox_config)
+                # Inject delegate_task into sandbox globals
+                extra_globals = {"delegate_task": DelegateTaskTool()}
+                sandbox = CodeSandbox(sandbox_config, extra_globals=extra_globals)
 
                 # Execute code in sandbox
                 module = await sandbox.execute_code(code, f"mcp_module_{name}")
@@ -232,7 +235,9 @@ class DynamicMCPFactory:
             if sandbox_enabled:
                 # Use sandbox for code execution
                 sandbox_config = sandbox_config or self.default_sandbox_config
-                sandbox = CodeSandbox(sandbox_config)
+                # Inject delegate_task into sandbox globals
+                extra_globals = {"delegate_task": DelegateTaskTool()}
+                sandbox = CodeSandbox(sandbox_config, extra_globals=extra_globals)
 
                 # Execute code in sandbox
                 module = await sandbox.execute_code(code, f"tool_module_{tool_name}")

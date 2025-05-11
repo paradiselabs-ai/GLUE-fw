@@ -92,8 +92,10 @@ class ToolConfig:
 
 @dataclass
 class TeamConfig:
-    """Team configuration"""
+    """Team configuration
 
+    members: List of model or team names (for hierarchical teams)
+    """
     name: str
     lead: str
     members: List[str] = field(default_factory=list)

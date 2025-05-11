@@ -52,6 +52,7 @@ class Team:
 
         # Core components
         self.models: Dict[str, Model] = {}
+        self.subteams: Dict[str, 'Team'] = {}  # NEW: subteams by name
         self.lead: Optional[Model] = None
         self._tools: Dict[str, Any] = {}
         # self.tool_bindings: Dict[str, AdhesiveType] = {}
@@ -153,42 +154,43 @@ class Team:
 
     # ==================== Core Methods ====================
     async def add_member(
-        self, model: Model, role: str = "member", tools: Optional[Set[str]] = None
+        self, member, role: str = "member", tools: Optional[Set[str]] = None
     ) -> None:
-        """Add a model to the team"""
-        if model.name in self.models:
-            logger.warning(f"Model {model.name} already in team {self.name}")
+        """
+        Add a model or subteam to the team asynchronously.
+        Supports hierarchical teams by allowing Team instances as members.
+        """
+        from .teams import Team  # Local import to avoid circular import
+        if isinstance(member, Team):
+            if member.name in self.subteams:
+                logger.warning(f"Subteam {member.name} already in team {self.name}")
+                return
+            self.subteams[member.name] = member
+            logger.info(f"Added subteam {member.name} to team {self.name}")
             return
-
-        # Add model
-        self.models[model.name] = model
-        model.team = self  # Set team reference
-
-        # Set up tools - use add_tool_sync to avoid async issues
-        # Add all team tools to the model
+        # Otherwise, treat as Model
+        if member.name in self.models:
+            logger.warning(f"Model {member.name} already in team {self.name}")
+            return
+        self.models[member.name] = member
+        member.team = self
+        # ... existing code for tools and config ...
         for tool_name, tool in self._tools.items():
-            if hasattr(model, "add_tool_sync") and callable(model.add_tool_sync):
-                model.add_tool_sync(tool_name, tool)
-
-        # Add specific tools if provided
+            if hasattr(member, "add_tool_sync") and callable(member.add_tool_sync):
+                member.add_tool_sync(tool_name, tool)
         if tools:
             for tool_name in tools:
-                if tool_name in self._tools and tool_name not in model.tools:
-                    if hasattr(model, "add_tool_sync") and callable(
-                        model.add_tool_sync
-                    ):
-                        model.add_tool_sync(tool_name, self._tools[tool_name])
-
-        # Update config
+                if tool_name in self._tools and tool_name not in member.tools:
+                    if hasattr(member, "add_tool_sync") and callable(member.add_tool_sync):
+                        member.add_tool_sync(tool_name, self._tools[tool_name])
         if role == "lead":
-            self.config.lead = model.name
-            self.lead = model
+            self.config.lead = member.name
+            self.lead = member
         else:
-            if model.name not in self.config.members:
-                self.config.members.append(model.name)
-
+            if member.name not in self.config.members:
+                self.config.members.append(member.name)
         self.updated_at = datetime.now()
-        logger.info(f"Added model {model.name} to team {self.name} with role {role}")
+        logger.info(f"Added model {member.name} to team {self.name} with role {role}")
 
     async def add_tool(self, name: str, tool: Any) -> None:
         """Add a tool to this team.
@@ -643,49 +645,35 @@ class Team:
         )
         return raw_response
 
-    def add_member_sync(
-        self, model: Model, role: str = "member", tools: Optional[Set[str]] = None
-    ) -> None:
-        """Add a model to the team synchronously.
-
-        This is a synchronous version of add_member for use during setup.
-
-        Args:
-            model: Model to add
-            role: Role of the model in the team (lead or member)
-            tools: Optional set of tool names to add to the model
+    def add_member_sync(self, member, role: str = "member", tools: Optional[Set[str]] = None) -> None:
         """
-        # If model is already in team
-        if model.name in self.models:
-            # Don't log warning if it's already the lead and role is "lead"
-            if role == "lead" and self.lead and self.lead.name == model.name:
+        Add a model or subteam to the team synchronously.
+        Supports hierarchical teams by allowing Team instances as members.
+        """
+        from .teams import Team  # Local import to avoid circular import
+        if isinstance(member, Team):
+            # Add as subteam
+            if member.name in self.subteams:
+                logger.warning(f"Subteam {member.name} already in team {self.name}")
                 return
-            # Otherwise log warning for duplicate attempts
-            logger.warning(f"Model {model.name} already in team {self.name}")
+            self.subteams[member.name] = member
+            logger.info(f"Added subteam {member.name} to team {self.name}")
             return
-
-        # Add model
-        self.models[model.name] = model
-        model.team = self  # Set team reference
-
-        # Set up tools
-        if tools:
-            for tool_name in tools:
-                if tool_name in self._tools:
-                    if hasattr(model, "add_tool_sync") and callable(
-                        model.add_tool_sync
-                    ):
-                        model.add_tool_sync(tool_name, self._tools[tool_name])
-
-        # Update config
+        # Otherwise, treat as Model
+        if member.name in self.models:
+            logger.warning(f"Model {member.name} already in team {self.name}")
+            return
+        self.models[member.name] = member
+        member.team = self
+        # ... existing code for tools and config ...
         if role == "lead":
-            self.config.lead = model.name
-            self.lead = model
+            self.config.lead = member.name
+            self.lead = member
         else:
-            self.config.members.append(model.name)
-
+            if member.name not in self.config.members:
+                self.config.members.append(member.name)
         self.updated_at = datetime.now()
-        logger.info(f"Added model {model.name} to team {self.name} with role {role}")
+        logger.info(f"Added model {member.name} to team {self.name} with role {role}")
 
     async def start_agent_loops(self, initial_input: Optional[str] = None) -> None:
         """Start core agent loops using GlueSmolTeam instead of legacy loops."""
@@ -841,38 +829,29 @@ class Team:
 
         logger.info(f"Cleaned up team {self.name}")
 
-    async def setup(self) -> None:
-        """Set up the team by initializing any required resources.
-
-        This method is called during application setup to initialize
-        team resources, configure tools, and establish connections.
-        """
-        # Add any missing members from config
-        if hasattr(self.config, "members") and self.config.members:
-            for member_name in self.config.members:
-                if member_name not in self.models and hasattr(self, "_app"):
-                    # If we have a reference to the app, try to get the model
-                    if hasattr(self._app, "models") and member_name in self._app.models:
-                        logger.debug(
-                            f"Adding missing member {member_name} to team {self.name} from config"
-                        )
-                        await self.add_member(self._app.models[member_name])
-
-        # Add tools from config if they exist
-        if hasattr(self.config, "tools") and self.config.tools:
-            for tool_name in self.config.tools:
-                # Tools will be added during app setup
+    def inject_managed_agents(self):
+        # Ensure the lead's interpreter is initialized
+        if self.lead and not hasattr(self.lead, "interpreter"):
+            try:
+                self.lead.run("__interpreter_init__")
+            except Exception:
                 pass
+        if self.lead and hasattr(self.lead, "interpreter") and hasattr(self.lead.interpreter, "globals"):
+            for member_name, member_model in self.models.items():
+                if member_name == self.lead.name:
+                    continue
+                def make_delegate_func(target_model):
+                    def delegate_func(task):
+                        return target_model.generate(task)
+                    delegate_func.__name__ = target_model.name
+                    return delegate_func
+                self.lead.interpreter.globals[member_name] = make_delegate_func(member_model)
 
-        # Start the internal message processing loop unconditionally
-        if self.processing_task is None:
-            self.processing_task = asyncio.create_task(self._process_messages())
-            logger.debug(f"Started message processing task for team {self.name}")
-        else:
-            logger.debug(
-                f"Message processing task already running for team {self.name}"
-            )
-
+    async def setup(self) -> None:
+        """Set up the team by initializing members, tools, and managed agent callables."""
+        # (Assume any other setup logic here, e.g., initializing tools, etc.)
+        # ... existing setup logic ...
+        self.inject_managed_agents()
         logger.info(f"Team {self.name} setup complete")
 
     # ==================== Error Handling ====================

@@ -15,18 +15,11 @@ from .schemas import (
     FormatResultOutput,
 )
 from .orchestrator_schemas import (
-    Subtask,
     ReportRecord,
-    EvaluateDecision,
-    FinalResult,
-    TaskRecord,
 )
-from .teams import Team
 from ..utils.json_utils import extract_json
-import asyncio
 from .types import TaskStatus, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT
 import logging
-from datetime import datetime
 import re
 from enum import Enum
 from pydantic import BaseModel, Field, ValidationError, model_validator, ConfigDict
@@ -79,12 +72,40 @@ if TYPE_CHECKING:
     pass
 
 
-# Deprecated: Use GlueSmolTeam (src/glue/core/glue_smolteam.py) and GlueSmolAgent integration instead.
+# Orchestrator loop for team leads, handling task delegation and retry logic.
 class TeamLeadAgentLoop:
-    def __init__(self, *args, **kwargs):
-        raise NotImplementedError(
-            "TeamLeadAgentLoop is deprecated; use GlueSmolTeam instead."
-        )
+    """
+    Orchestrator loop for team leads, handling task delegation and retry logic.
+    Minimal implementation to support retry evaluation.
+    """
+    def __init__(self, team, delegate_tool, agent_llm, max_retries=DEFAULT_MAX_RETRIES):
+        self.team = team
+        self.delegate_tool = delegate_tool
+        self.agent_llm = agent_llm
+        self.max_retries = max_retries
+        self.terminated = False
+        self.task_states = {}
+
+    async def _evaluate_report(self, report: ReportRecord):
+        """
+        Evaluate a ReportRecord and update corresponding TaskRecord retry logic.
+        """
+        for record in self.task_states.values():
+            if record.task_id == report.task_id:
+                if report.status == "failure":
+                    if record.retries < self.max_retries:
+                        record.retries += 1
+                        record.state = TaskStatus.PENDING_RETRY.value
+                        self.terminated = False
+                    else:
+                        record.state = TaskStatus.FAILED.value
+                        self.terminated = True
+                elif report.status == "success":
+                    record.state = TaskStatus.COMPLETE.value
+                elif report.status == "escalation":
+                    record.state = TaskStatus.ESCALATED.value
+                    self.terminated = True
+                break
 
 
 # Deprecated: Use GlueSmolAgent logic for member task loops.
@@ -382,36 +403,71 @@ class TeamMemberAgentLoop:
             )
         # Construct prompt requesting detailed structured JSON output per schema with examples
         prompt = (
-            "Phase: Parse and Analyze Task\n"
-            "You are a reasoning agent tasked with deeply analyzing the following task description. "
-            "Produce a detailed, step-by-step `thought_process` explaining how you interpreted and decomposed the task, and a structured `analysis` object capturing core requirements, subcomponents, and any constraints. "
-            "Return ONLY a fenced JSON object matching the ParseAnalyzeOutput schema with fields:\n"
-            "- thought_process (string): detailed reasoning steps\n"
-            "- analysis (object): key-value mapping for identified elements or requirements\n"
+            "## ROLE & OBJECTIVE ##\n"
+            "You are a Meticulous Reasoning Agent. Your objective is to deeply analyze a given task description, "
+            "understand its underlying components, and structure this understanding into a precise JSON output.\n"
             "\n"
-            "Few-shot examples:\n"
-            'Input: "Filter a list to only include even numbers and then sort it."\n'
-            "Output:\n```json\n"
+            "## TASK ##\n"
+            "Carefully examine the user-provided task description. Your task is to:\n"
+            "1. Decompose the input task description into its fundamental operations, inputs, outputs, and constraints.\n"
+            "2. Produce a detailed, step-by-step `thought_process` string. This string must clearly articulate the logical steps you took to interpret the task, identify its core components, and decide on the structure for the `analysis`.\n"
+            "3. Formulate a structured `analysis` object. This object should be a key-value mapping representing the identified elements, requirements, operations, and any constraints from the task description.\n"
+            "\n"
+            "## OUTPUT SPECIFICATION ##\n"
+            "Your entire response **MUST** be a single, valid, fenced JSON code block. No other text, preamble, or explanation should precede or follow the JSON block.\n"
+            "The JSON object **MUST** adhere to the `ParseAnalyzeOutput` schema defined below.\n"
+            "\n"
+            "## SCHEMA DEFINITION: ParseAnalyzeOutput ##\n"
+            "```json\n"
             "{\n"
-            '  "thought_process": "First identify the actions (filter then sort), determine filter criterion (even numbers), apply filter, then apply sort.",\n'
+            '  "thought_process": "string",  // Detailed, human-readable explanation of the reasoning steps taken to interpret and decompose the task. This should cover how core requirements, subcomponents, and constraints were identified.\n'
+            '  "analysis": {}             // A structured key-value mapping capturing the core elements, requirements, operations, inputs, outputs, and any identified constraints of the task. The specific keys within this object will depend on the task being analyzed.\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "## EXAMPLES (Few-Shot Learning) ##\n"
+            "\n"
+            "**Example 1:**\n"
+            'Input Task: "Filter a list to only include even numbers and then sort it."\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "thought_process": "1. Identify primary actions: \'filter\' and \'sort\'. 2. Determine filter criterion: \'even numbers\'. 3. Identify input type: a list. 4. Infer intermediate output: a list of even numbers. 5. Identify final output: a sorted list of even numbers. 6. Determine operation order: filter first, then sort.",\n'
             '  "analysis": {\n'
-            '    "steps": ["filter even numbers", "sort list"],\n'
-            '    "filter_criterion": "even numbers",\n'
-            '    "operation_order": ["filter", "sort"]\n'
+            '    "task_summary": "Filter a list for even numbers, then sort the result.",\n'
+            '    "operations": [\n'
+            '      {"action": "filter", "criterion": "even numbers", "applies_to": "list"},\n'
+            '      {"action": "sort", "order": "ascending (default)", "applies_to": "list of even numbers"}\n'
+            '    ],\n'
+            '    "sequence": ["filter", "sort"],\n'
+            '    "inputs": ["a list of numbers"],\n'
+            '    "output": "a sorted list containing only even numbers from the input"\n'
             "  }\n"
-            "}\n```\n"
-            'Input: "Compute the intersection subset of two user ID sets."\n'
-            "Output:\n```json\n"
+            "}\n"
+            "```\n"
+            "\n"
+            "**Example 2:**\n"
+            'Input Task: "Compute the intersection subset of two user ID sets."\n'
+            "Output JSON:\n"
+            "```json\n"
             "{\n"
-            '  "thought_process": "Recognize the need for a set intersection, identify both input sets, and compute their common elements. The term \'subset\' indicates selecting elements shared by both.",\n'
+            '  "thought_process": "1. Identify the core operation: \'set intersection\'. 2. Identify inputs: \'two user ID sets\'. Let\'s call them Set A and Set B. 3. Understand \'subset\' in this context: it refers to the elements common to both sets. 4. Determine output: a new set containing only the user IDs present in both Set A and Set B.",\n'
             '  "analysis": {\n'
+            '    "task_summary": "Find common elements between two sets of user IDs.",\n'
             '    "operation": "intersection",\n'
-            '    "inputs": ["set A", "set B"],\n'
-            '    "subset_criteria": "common elements"\n'
+            '    "operand_type": "set",\n'
+            '    "inputs": {\n'
+            '      "set1": "first user ID set",\n'
+            '      "set2": "second user ID set"\n'
+            '    },\n'
+            '    "output": "a new set containing user IDs common to both input sets"\n'
             "  }\n"
-            "}\n```\n"
-            "Now analyze the following task description:\n"
-            f"{description}\n"
+            "}\n"
+            "```\n"
+            "\n"
+            "## YOUR TASK ##\n"
+            "Now, apply this process to the following task description:\n"
+            f'"{description}"\n'
         )
         # Debug log the constructed prompt
         logger.debug(f"parse_and_analyze prompt:\n{prompt}")
@@ -452,24 +508,60 @@ class TeamMemberAgentLoop:
             )
         # Construct an enriched planning prompt guiding the LLM to produce clear substeps, tool requirements, and confidence
         prompt = (
-            "Phase: Plan Task Execution\n"
-            "You are a planning agent. Given the following memory entries, break down the upcoming task into an ordered list of actionable substeps. "
-            "Specify any required tools for each step and provide an overall confidence rating (low, medium, high). "
-            "Return ONLY a fenced JSON object matching the PlanPhaseOutput schema with keys:\n"
-            "- substeps: array of step descriptions\n"
-            "- tool_requirements: array of tool names needed\n"
-            "- estimated_confidence: confidence level as 'low', 'medium', or 'high'\n"
+            "## ROLE & OBJECTIVE ##\n"
+            "You are a Strategic Planning Agent. Your primary objective is to meticulously analyze a set of task descriptions (provided as 'memory entries') "
+            "and decompose them into a clear, actionable, and ordered sequence of substeps. You must also identify necessary tools and provide an overall confidence assessment for the successful execution of the plan.\n"
             "\n"
-            "Few-shot examples:\n"
-            'Input memory entries: ["Convert text to lowercase and count word frequency."]\n'
-            "Output:\n```json\n"
-            '{"substeps":["lowercase text","count word frequencies"],"tool_requirements":["textProcessor"],"estimated_confidence":"high"}\n'
+            "## INPUT DESCRIPTION ##\n"
+            "You will receive 'memory entries' as a JSON array of strings. Each string in the array represents a task component or a full task description that needs to be planned.\n"
+            "\n"
+            "## TASK INSTRUCTIONS ##\n"
+            "Based on the provided 'memory entries':\n"
+            "1.  **Decompose:** Break down the overall task(s) into a logically ordered list of specific, actionable `substeps`. Each substep should represent a distinct unit of work.\n"
+            "2.  **Identify Tools:** For the entire plan, list all unique `tool_requirements` needed to complete the substeps. If a tool is used in multiple substeps, list it only once.\n"
+            "3.  **Assess Confidence:** Provide an `estimated_confidence` rating ('low', 'medium', or 'high') for the likelihood of successfully executing the entire plan as formulated. Consider task complexity, number of steps, and potential dependencies.\n"
+            "\n"
+            "## OUTPUT SPECIFICATION ##\n"
+            "Your entire response **MUST** be a single, valid, fenced JSON code block. No other text, preamble, or explanation should precede or follow the JSON block.\n"
+            "The JSON object **MUST** adhere to the `PlanPhaseOutput` schema defined below.\n"
+            "\n"
+            "## SCHEMA DEFINITION: PlanPhaseOutput ##\n"
+            "```json\n"
+            "{\n"
+            '  "substeps": [],             // Array of strings. Each string is a concise, actionable description of a single substep in the execution plan. Steps MUST be in logical execution order.\n'
+            '  "tool_requirements": [],    // Array of strings. Each string is the name of a unique tool required for executing one or more substeps in the plan. List each tool only once.\n'
+            '  "estimated_confidence": ""  // String. Must be one of: "low", "medium", "high". Reflects confidence in the plan\'s successful execution.\n'
+            "}\n"
             "```\n"
-            'Input memory entries: ["Fetch user data from API, filter active users, then export as CSV."]\n'
-            "Output:\n```json\n"
-            '{"substeps":["fetch user data via API","filter active users","export data to CSV"],"tool_requirements":["apiClient","csvExporter"],"estimated_confidence":"medium"}\n'
+            "\n"
+            "## EXAMPLES (Few-Shot Learning) ##\n"
+            "\n"
+            "**Example 1:**\n"
+            'Input Memory Entries: ["Convert input text to all lowercase and then calculate the frequency of each word."]\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "substeps": ["Convert input text to lowercase", "Tokenize the lowercased text into words", "Count the frequency of each tokenized word"],\n'
+            '  "tool_requirements": ["textProcessor"],\n'
+            '  "estimated_confidence": "high"\n'
+            "}\n"
             "```\n"
-            "Now plan execution for the following memory entries:\n"
+            "*Rationale for Example 1 Confidence: Straightforward text processing task with clearly defined steps, likely handled by a single robust tool.*\n"
+            "\n"
+            "**Example 2:**\n"
+            'Input Memory Entries: ["User wants to fetch their profile data from the main API. After that, filter for users who are currently active. Finally, export the list of active user IDs and their email addresses as a CSV file."]\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "substeps": ["Authenticate with the main API", "Fetch user profile data using the API client", "Parse the API response", "Filter the parsed data to identify active users", "Extract user IDs and email addresses for active users", "Format extracted data into CSV structure", "Save the CSV data to a file named \'active_users.csv\'"],\n'
+            '  "tool_requirements": ["apiClient", "dataFilter", "csvExporter"],\n'
+            '  "estimated_confidence": "medium"\n'
+            "}\n"
+            "```\n"
+            "*Rationale for Example 2 Confidence: Multi-step process involving external API interaction (potential for network issues or API changes), data transformation, and file I/O. Assumes tools are reliable but acknowledges more points of potential failure than Example 1.*\n"
+            "\n"
+            "## YOUR TASK ##\n"
+            "Now, devise an execution plan for the following memory entries:\n"
             f"{json.dumps(memory)}\n"
         )
         # Debug log the constructed prompt
@@ -516,27 +608,74 @@ class TeamMemberAgentLoop:
             return "performTaskStub", result
         # Construct enriched tool selection prompt with few-shot examples and schema guidance
         prompt = (
-            "Phase: Select and Invoke Tool\n"
-            "You are an intelligent agent responsible for selecting the correct tool for the following substep. "
-            "Refer to the available tools and their expected parameter schemas. "
-            "Return ONLY a JSON object matching the ToolSelectionOutput schema with keys:\n"
-            "- selected_tool_name (string): the tool name to invoke\n"
-            "- tool_parameters (object): key-value mapping of parameters for the selected tool\n"
+            "## ROLE & OBJECTIVE ##\n"
+            "You are a Precise Tool Dispatcher Agent. Your primary objective is to accurately select the most appropriate tool to execute a given 'substep' and to correctly formulate the parameters required by that tool based on the provided 'current_context' and the tool's defined schema.\n"
             "\n"
-            "Few-shot examples:\n"
-            "Example 1:\n"
-            'Substep: "Parse and analyze description"\n'
-            'Context: {"description": "..."}\n'
-            "Output:\n```json\n"
-            '{"selected_tool_name":"parse_and_analyze","tool_parameters":{"description":"..."}}\n'
+            "## INPUTS ##\n"
+            "1.  `substep_to_execute`: A string describing the specific action to be performed.\n"
+            "2.  `available_tools_with_schemas`: A JSON array where each object describes an available tool, including its name, description, and a schema for its expected parameters.\n"
+            "3.  `current_context`: A JSON object containing data relevant to the current state or task, which may be used to populate tool parameters.\n"
+            "\n"
+            "## TASK INSTRUCTIONS ##\n"
+            "Based on the provided inputs:\n"
+            "1.  **Analyze Substep:** Understand the intent and requirements of the `substep_to_execute`.\n"
+            "2.  **Review Tools:** Examine the `available_tools_with_schemas`. For each tool, understand its purpose (from its description) and what parameters it accepts (from its schema).\n"
+            "3.  **Select Tool:** Choose the single `selected_tool_name` from `available_tools_with_schemas` that is best suited to accomplish the `substep_to_execute`.\n"
+            "4.  **Formulate Parameters:** Construct the `tool_parameters` object. The keys in this object MUST match the parameter names defined in the schema of the `selected_tool_name`. The values for these parameters should be derived from the `current_context` or the `substep_to_execute` itself, if applicable.\n"
+            "\n"
+            "## OUTPUT SPECIFICATION ##\n"
+            "Your entire response **MUST** be a single, valid, fenced JSON code block. No other text, preamble, or explanation should precede or follow the JSON block.\n"
+            "The JSON object **MUST** adhere to the `ToolSelectionOutput` schema defined below.\n"
+            "\n"
+            "## SCHEMA DEFINITION: ToolSelectionOutput ##\n"
+            "```json\n"
+            "{\n"
+            '  "selected_tool_name": "string",  // The exact name of the tool chosen from available_tools_with_schemas.\n'
+            '  "tool_parameters": {}            // A JSON object. Keys are parameter names for the selected tool, values are the arguments for those parameters. This object MUST match the parameter schema of the selected tool.\n'
+            "}\n"
             "```\n"
-            "Example 2:\n"
-            'Substep: "Report task completion"\n'
-            'Context: {"status":"success","detailed_answer":"..."}\n'
-            "Output:\n```json\n"
-            '{"selected_tool_name":"report_task_completion","tool_parameters":{"status":"success","detailed_answer":"..."}}\n'
+            "\n"
+            "## EXAMPLES (Few-Shot Learning) ##\n"
+            "\n"
+            "**Example 1:**\n"
+            'Substep to Execute: "Parse and analyze the user\'s initial problem description."\n'
+            "Available Tools and Schemas:\n"
+            "```json\n"
+            "[\n"
+            '  {"name": "parse_and_analyze", "description": "Analyzes task descriptions.", "parameters_schema": {"description": "string"}},\n'
+            '  {"name": "report_task_completion", "description": "Reports task status.", "parameters_schema": {"status": "string", "detailed_answer": "string"}}\n'
+            "]\n"
             "```\n"
-            f"Substep: {task_description}\n"
+            'Current Context: {"user_query": "My computer is slow and I need help.", "session_id": "xyz123"}\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "selected_tool_name": "parse_and_analyze",\n'
+            '  "tool_parameters": {"description": "My computer is slow and I need help."}\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "**Example 2:**\n"
+            'Substep to Execute: "Report to the user that the analysis is complete and provide the summary."\n'
+            "Available Tools and Schemas:\n"
+            "```json\n"
+            "[\n"
+            '  {"name": "parse_and_analyze", "description": "Analyzes task descriptions.", "parameters_schema": {"description": "string"}},\n'
+            '  {"name": "report_task_completion", "description": "Reports task status.", "parameters_schema": {"status": "string", "detailed_answer": "string"}},\n'
+            '  {"name": "send_email", "description": "Sends an email.", "parameters_schema": {"recipient": "string", "subject": "string", "body": "string"}}\n'
+            "]\n"
+            "```\n"
+            'Current Context: {"analysis_summary": "The user needs system diagnostics.", "current_status": "analysis_complete"}\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "selected_tool_name": "report_task_completion",\n'
+            '  "tool_parameters": {"status": "analysis_complete", "detailed_answer": "The user needs system diagnostics."}\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "## YOUR TASK ##\n"
+            "Substep to Execute: " + f'"{task_description}"\n'
         )
         if context_info is not None:
             prompt += f"Context: {json.dumps(context_info)}"
@@ -611,15 +750,76 @@ class TeamMemberAgentLoop:
         if not self.agent_llm:
             return MemoryDecisionOutput(save_to_memory=False)
         prompt = (
-            "Provide ONLY a fenced JSON response matching the MemoryDecisionOutput schema,\n"
-            "with fields:\n"
-            "- save_to_memory (boolean)\n"
-            "- analysis (string)\n"
-            "Example:\n```json\n"
-            '{"save_to_memory":true,"analysis":"key details"}\n'
+            "## ROLE & OBJECTIVE ##\n"
+            "You are a Strategic Memory Curation Agent. Your objective is to analyze a given 'tool_result' and decide whether its content is valuable enough to be saved to long-term memory for future reference in subsequent tasks. Your decision should be based on the potential future utility, novelty, and significance of the information.\n"
+            "\n"
+            "## TASK INSTRUCTIONS ##\n"
+            "You will be provided with a 'tool_result'. Evaluate this result based on the following criteria to determine if it should be saved to memory:\n"
+            "1.  **Significance & Utility:** Does the result contain critical information, key findings, definitive answers, or data that is likely to be essential for understanding context or making decisions in subsequent steps or related future tasks? Avoid saving trivial, intermediate, or overly verbose data unless it has unique importance.\n"
+            "2.  **Novelty & Non-Redundancy:** Is the information new and not merely a restatement of known facts or easily derivable information? Avoid saving information that is already implicitly known or will be immediately superseded.\n"
+            "3.  **Conciseness & Clarity:** If the information is valuable, can it be (or is it already) represented concisely? While you don't reformat, consider if the essence is clear.\n"
+            "\n"
+            "Based on your evaluation:\n"
+            "-   Set `save_to_memory` to `true` if the result meets the criteria for being valuable for long-term memory. Otherwise, set it to `false`.\n"
+            "-   Provide a concise `analysis` string explaining your reasoning for the `save_to_memory` decision. This should briefly highlight why the information is (or is not) deemed important enough to save, referencing the criteria above.\n"
+            "\n"
+            "## OUTPUT SPECIFICATION ##\n"
+            "Your entire response **MUST** be a single, valid, fenced JSON code block. No other text, preamble, or explanation should precede or follow the JSON block.\n"
+            "The JSON object **MUST** adhere to the `MemoryDecisionOutput` schema defined below.\n"
+            "\n"
+            "## SCHEMA DEFINITION: MemoryDecisionOutput ##\n"
+            "```json\n"
+            "{\n"
+            '  "save_to_memory": "boolean", // true if the tool_result should be saved to memory, false otherwise.\n'
+            '  "analysis": "string"         // A concise justification for the save_to_memory decision, highlighting key factors considered (e.g., "Contains critical user preferences", "Intermediate calculation, not needed for long-term memory").\n'
+            "}\n"
             "```\n"
-            "Decide whether to save the following tool result:\n"
-            f"{result}\n"
+            "\n"
+            "## EXAMPLES (Few-Shot Learning) ##\n"
+            "\n"
+            "**Example 1: Information worth saving**\n"
+            'Tool Result: {"user_id": "123", "preferences": {"theme": "dark", "notifications": "weekly"}, "last_login": "2023-10-26"}\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "save_to_memory": true,\n'
+            '  "analysis": "Contains critical user preferences (theme, notifications) and last login timestamp, which are highly relevant for future interactions and personalization."\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "**Example 2: Information NOT worth saving (intermediate/temporary)**\n"
+            'Tool Result: {"status_code": 200, "message": "Data fetched successfully, 1024 bytes received."}\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "save_to_memory": false,\n'
+            '  "analysis": "Represents a transient operational status (successful fetch). The actual data fetched would be evaluated separately if provided; this status message itself is not useful for long-term memory."\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "**Example 3: Information NOT worth saving (too generic/derivable)**\n"
+            'Tool Result: "The current year is 2024."\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "save_to_memory": false,\n'
+            '  "analysis": "States a commonly known and easily derivable fact (current year). Not essential to store in memory."\n'
+            "}\n"
+            "\n"
+            "**Example 4: Information worth saving (critical error/finding)**\n"
+            'Tool Result: {"error_code": "API_AUTH_FAILURE", "details": "User authentication token expired or invalid for service X.", "timestamp": "2024-03-15T10:30:00Z"}\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "save_to_memory": true,\n'
+            '  "analysis": "Critical API authentication failure. Saving this error detail and timestamp is important for debugging and future reference regarding system reliability."\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "## YOUR TASK ##\n"
+            "Decide whether to save the following tool result to memory. Provide your reasoning in the analysis.\n"
+            "Tool Result:\n"
+            f"{json.dumps(result, indent=2) if isinstance(result, (dict, list)) else str(result)}\n"  # Ensure complex results are nicely formatted
         )
         response = await self.agent_llm.generate(prompt)
         parsed = extract_json(response)
@@ -645,11 +845,110 @@ class TeamMemberAgentLoop:
             return stub
         # Construct prompt for SelfEvalOutput
         prompt = (
-            "Please output ONLY valid JSON matching the SelfEvalOutput schema "
-            "(fields: evaluation_summary, consistency_check, alignment_check, confidence_level, error_detected) "
-            "for the following result and context entries:\n"
-            f"Result: {result}\n"
-            f"Context: {json.dumps(self.working_memory.get_entries())}"
+            "## ROLE & OBJECTIVE ##\n"
+            "You are a Meticulous Self-Evaluation Agent. Your objective is to critically assess a given 'Result' in the context of 'Working Memory Entries'. You must evaluate the result's quality, its consistency with prior information, its alignment with the original task goals (if inferable), and your confidence in its correctness, also noting any detected errors.\n"
+            "\n"
+            "## INPUTS ##\n"
+            "1.  `Result`: The output or data generated by a previous step or tool that needs evaluation.\n"
+            "2.  `Working_Memory_Entries`: A JSON array of strings or objects representing prior context, earlier results, or task goals that the current `Result` should be consistent and aligned with.\n"
+            "\n"
+            "## TASK INSTRUCTIONS: EVALUATION CRITERIA ##\n"
+            "Carefully analyze the `Result` against the `Working_Memory_Entries`. Populate the fields of the `SelfEvalOutput` schema based on the following criteria:\n"
+            "\n"
+            "1.  **`evaluation_summary` (string):**\n"
+            "    - Provide a concise overall summary of your assessment of the `Result`.\n"
+            "    - Mention its perceived quality, relevance, and completeness in light of the context.\n"
+            "    - *Example: \"Result appears to be a well-formed user profile, containing all expected fields based on the initial request in memory.\"*\n"
+            "\n"
+            "2.  **`consistency_check` (string - 'consistent', 'inconsistent', 'partially_consistent', 'not_applicable'):**\n"
+            "    - Compare the `Result` with information in `Working_Memory_Entries`.\n"
+            "    - 'consistent': Information in `Result` aligns with and does not contradict prior context.\n"
+            "    - 'inconsistent': `Result` directly contradicts prior information or established facts in memory.\n"
+            "    - 'partially_consistent': Some aspects align, others conflict or are new and unevaluated against memory.\n"
+            "    - 'not_applicable': No relevant prior context in memory to check consistency against.\n"
+            "    - *Briefly justify your choice if not 'consistent' or 'not_applicable'.*\n"
+            "\n"
+            "3.  **`alignment_check` (string - 'aligned', 'misaligned', 'partially_aligned', 'not_applicable'):**\n"
+            "    - Assess if the `Result` contributes to or addresses the original task goals or user requests, if such goals are present or inferable from `Working_Memory_Entries`.\n"
+            "    - 'aligned': `Result` directly helps achieve the inferred task goals.\n"
+            "    - 'misaligned': `Result` seems irrelevant or counter-productive to the inferred task goals.\n"
+            "    - 'partially_aligned': `Result` is somewhat relevant but doesn't fully address the goals, or addresses a sub-part.\n"
+            "    - 'not_applicable': Task goals are not clear from memory, or the result is too atomic to judge alignment independently.\n"
+            "    - *Briefly justify your choice if not 'aligned' or 'not_applicable'.*\n"
+            "\n"
+            "4.  **`confidence_level` (string - 'high', 'medium', 'low'):**\n"
+            "    - Your overall confidence in the correctness, quality, and appropriateness of the `Result` given the context.\n"
+            "    - 'high': Result seems accurate, complete, and well-suited.\n"
+            "    - 'medium': Minor uncertainties, potential incompleteness, or some unverified assumptions.\n"
+            "    - 'low': Significant doubts about accuracy, completeness, or appropriateness; potential errors suspected.\n"
+            "\n"
+            "5.  **`error_detected` (boolean):**\n"
+            "    - Set to `true` if you identify any clear factual errors, logical flaws, formatting issues (if critical), or significant omissions in the `Result`. Otherwise, set to `false`.\n"
+            "    - *If true, ensure your `evaluation_summary` or other check fields reflect the nature of the error.*\n"
+            "\n"
+            "## OUTPUT SPECIFICATION ##\n"
+            "Your entire response **MUST** be a single, valid, fenced JSON code block. No other text, preamble, or explanation should precede or follow the JSON block.\n"
+            "The JSON object **MUST** adhere to the `SelfEvalOutput` schema.\n"
+            "\n"
+            "## SCHEMA DEFINITION: SelfEvalOutput ##\n"
+            "```json\n"
+            "{\n"
+            '  "evaluation_summary": "string",  // Concise overall assessment of the result.\n'
+            '  "consistency_check": "string",   // One of: "consistent", "inconsistent", "partially_consistent", "not_applicable". Justify if not "consistent"/"not_applicable".\n'
+            '  "alignment_check": "string",     // One of: "aligned", "misaligned", "partially_aligned", "not_applicable". Justify if not "aligned"/"not_applicable".\n'
+            '  "confidence_level": "string",    // One of: "high", "medium", "low".\n'
+            '  "error_detected": "boolean"      // true if a clear error is found in the result, false otherwise.\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "## EXAMPLES (Few-Shot Learning) ##\n"
+            "\n"
+            "**Example 1:**\n"
+            'Result: {"user_id": "jane.doe@example.com", "status": "active", "department": "Sales"}\n'
+            'Working Memory Entries: [{"task_goal": "Retrieve active user profile for jane.doe@example.com"}, {"schema_expected": ["user_id", "status", "department", "location"]}]\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "evaluation_summary": "Result provides key user profile details for jane.doe. However, the \'location\' field, expected from memory, is missing.",\n'
+            '  "consistency_check": "consistent",\n'
+            '  "alignment_check": "partially_aligned",\n'
+            '  "confidence_level": "medium",\n'
+            '  "error_detected": true\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "**Example 2:**\n"
+            'Result: "The total order value is $150.75."\n'
+            'Working Memory Entries: [{"action": "calculate_order_total", "items": [{"item_id": "A1", "price": 50.25, "qty": 2}, {"item_id": "B2", "price": 49.25, "qty": 1}], "previous_subtotal_calculation": 150.75}]\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "evaluation_summary": "The result correctly states the order total, matching a previous subtotal calculation found in memory.",\n'
+            '  "consistency_check": "consistent",\n'
+            '  "alignment_check": "aligned",\n'
+            '  "confidence_level": "high",\n'
+            '  "error_detected": false\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "**Example 3:**\n"
+            'Result: {"data_summary": "Processed 1000 records, 5 errors found."}\n'
+            'Working Memory Entries: [{"task_goal": "Generate a detailed error report for all failed records."}]\n'
+            "Output JSON:\n"
+            "```json\n"
+            "{\n"
+            '  "evaluation_summary": "Result provides a high-level summary of processing, but does not fulfill the task goal of a detailed error report.",\n'
+            '  "consistency_check": "not_applicable",\n'
+            '  "alignment_check": "misaligned",\n'
+            '  "confidence_level": "low",\n'
+            '  "error_detected": false\n'
+            "}\n"
+            "```\n"
+            "\n"
+            "## YOUR TASK ##\n"
+            "Evaluate the following `Result` based on the `Working_Memory_Entries` and provide your assessment in the specified JSON format.\n"
+            f"Result:\n{json.dumps(result, indent=2) if isinstance(result, (dict, list)) else str(result)}\n"
+            f"Working Memory Entries:\n{json.dumps(self.working_memory.get_entries(), indent=2)}\n" # Assuming get_entries() returns a list of serializable items
         )
         # Debug log the constructed prompt
         logger.debug(f"evaluate_self prompt:\n{prompt}")

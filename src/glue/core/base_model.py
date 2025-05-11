@@ -15,11 +15,9 @@ from enum import Enum
 
 from .types import Message, ToolResult
 from ..prompts import (
-    format_team_lead_prompt,
-    format_team_member_prompt,
+    format_team_structure,
     format_team_lead_tool_usage_prompt,
     format_team_member_tool_usage_prompt,
-    format_team_structure,
 )
 
 # Set up logging
@@ -552,92 +550,8 @@ class BaseModel:
         return formatted_messages
 
     def _generate_system_prompt(self) -> str:
-        """Generate a system prompt for the model.
-
-        This method generates a complete system prompt that includes role information,
-        team context, and capabilities.
-
-        Returns:
-            Complete system prompt
-        """
-        # Get the role from config
-        role_description = self.role
-
-        # Prepare tool descriptions if tools are available
-        tools_description = ""
-        if hasattr(self, "tools") and self.tools:
-            # Convert tools dictionary to a list for _prepare_tools_description
-            tools_list = []
-            for name, tool in self.tools.items():
-                # Create a simple dict with name to pass to _prepare_tools_description
-                tools_list.append({"name": name})
-
-            # Get formatted tool descriptions
-            tools_description = self._prepare_tools_description(tools_list)
-
-            # Add information about available models and teams
-            if hasattr(self, "team") and self.team:
-                # Initialize model and team lists to avoid unbound variables
-                models_list = ""
-                teams_list = ""
-                # List models in the same team
-                models_in_team = []
-                for model_name in self.team.models.keys():
-                    if model_name != self.name:  # Don't include self
-                        models_in_team.append(f"- {model_name}")
-                if models_in_team:
-                    models_list = "\n".join(models_in_team)
-
-                # List other teams if there are outgoing flows
-                if hasattr(self.team, "outgoing_flows") and self.team.outgoing_flows:
-                    teams_to_communicate = []
-                    for flow in self.team.outgoing_flows:
-                        teams_to_communicate.append(f"- {flow.target.name}")
-                    if teams_to_communicate:
-                        teams_list = "\n".join(teams_to_communicate)
-
-            # Add team structure instructions
-            tools_description += "\n\n" + format_team_structure(
-                models_list=models_list, teams_list=teams_list
-            )
-
-        # Add team context if available
-        if hasattr(self, "team") and self.team:
-            team_name = self.team.name
-
-            # Check if this model is the team lead
-            is_team_lead = (
-                hasattr(self.team, "lead")
-                and self.team.lead
-                and self.team.lead.name == self.name
-            )
-
-            # Check if interactive mode is enabled
-            # First check if the team has an app attribute with interactive flag
-            interactive_mode = False
-            if hasattr(self.team, "app") and hasattr(self.team.app, "interactive"):
-                interactive_mode = self.team.app.interactive
-            # Fallback to config if team.app.interactive is not available
-            else:
-                interactive_mode = self.config.get("interactive_mode", False)
-
-            if is_team_lead:
-                # Use team lead prompt
-                return format_team_lead_prompt(
-                    team_name=team_name,
-                    role_description=role_description,
-                    additional_context=self.config.get("additional_context", ""),
-                    interactive_mode=interactive_mode,
-                    tools_given_prompts_for_this_lead=tools_description,
-                )
-            else:
-                # Use team member prompt
-                return format_team_member_prompt(
-                    team_name=team_name,
-                    role_description=role_description,
-                    additional_context=self.config.get("additional_context", ""),
-                    tools_given_prompts_for_this_agent=tools_description,
-                )
+        """Stub: System prompt logic is now handled by GlueSmolAgent. This is only for legacy fallback."""
+        return ""
 
     def _prepare_tools_description(
         self, tools: List[Union[Dict[str, Any], Any]]

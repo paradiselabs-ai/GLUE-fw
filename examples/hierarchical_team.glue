@@ -1,0 +1,49 @@
+// Hierarchical team GLUE example
+
+glue app {
+    name = "Hierarchical Delegation Demo"
+    version = "0.2.0"
+    config { development = true }
+}
+
+model lead_agent {
+    provider = openrouter
+    role = "Top-level manager agent."
+    adhesives = [glue, velcro]
+    config { model = "meta-llama/llama-4-maverick:free" }
+}
+
+model code_agent {
+    provider = openrouter
+    role = "Specialist in code tasks."
+    adhesives = [glue, velcro]
+    config { model = "meta-llama/llama-4-maverick:free" }
+}
+
+model web_agent {
+    provider = openrouter
+    role = "Specialist in web search tasks."
+    adhesives = [glue, velcro]
+    config { model = "meta-llama/llama-4-maverick:free" }
+}
+
+model summarizer_agent {
+    provider = openrouter
+    role = "Specialist in summarization."
+    adhesives = [glue, velcro]
+    config { model = "meta-llama/llama-4-maverick:free" }
+}
+
+magnetize {
+    research_team {
+        lead = web_agent
+        members = [summarizer_agent]
+    }
+
+    executive_team {
+        lead = lead_agent
+        members = [research_team, code_agent]
+    }
+}
+
+apply glue 

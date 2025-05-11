@@ -47,6 +47,7 @@ class CodeInterpreterTool(Tool):
         name: str = "code_interpreter",
         description: str = "Execute code in various programming languages with state persistence",
         config: Optional[ToolConfig] = None,
+        extra_globals: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize the code interpreter tool.
@@ -55,6 +56,7 @@ class CodeInterpreterTool(Tool):
             name: Name of the tool
             description: Description of the tool
             config: Tool configuration
+            extra_globals: Additional globals (functions, etc.) to inject into the code execution environment
         """
         # Create default tool config if not provided
         if config is None:
@@ -64,6 +66,7 @@ class CodeInterpreterTool(Tool):
 
         # Runtime state
         self._namespace = {}
+        self._extra_globals = extra_globals or {}
 
     async def initialize(self, instance_data: Optional[Dict[str, Any]] = None) -> None:
         """
@@ -170,6 +173,11 @@ class CodeInterpreterTool(Tool):
             with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
                 # Execute the code in the namespace
                 exec_globals = {"__builtins__": __builtins__, **self._namespace}
+                # Inject extra globals (e.g., delegate_task)
+                if self._extra_globals:
+                    exec_globals.update(self._extra_globals)
+                # Debug: print available globals before execution
+                print("DEBUG: Available globals before exec:", list(exec_globals.keys()))
 
                 # Execute the code and get the last expression value
                 code_obj = compile(code, "<string>", "exec")

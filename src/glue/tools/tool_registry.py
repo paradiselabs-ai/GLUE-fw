@@ -77,8 +77,6 @@ class FileHandlerTool(Tool):
 # Register additional tools
 register_tool_class("code_interpreter", CodeInterpreterTool)
 register_tool_class("file_handler", FileHandlerTool)
-register_tool_class("delegate_task", DelegateTaskTool)
-register_tool_class("report_task_completion", ReportTaskCompletionTool)
 
 
 def get_tool_class(name: str) -> Any:

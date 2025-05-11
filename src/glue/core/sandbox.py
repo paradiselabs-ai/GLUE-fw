@@ -82,16 +82,17 @@ class CodeSandbox:
     enforces execution timeouts, and prevents unauthorized operations.
     """
 
-    def __init__(self, config: SandboxConfig):
+    def __init__(self, config: SandboxConfig, extra_globals: Dict[str, Any] = None):
         """
         Initialize the code sandbox with the specified configuration.
 
         Args:
             config: Configuration settings for the sandbox
+            extra_globals: Additional globals (functions, etc.) to inject
         """
         self.config = config
         self._modules_cache = {}
-
+        self.extra_globals = extra_globals or {}
         # Pre-import allowed modules to avoid import issues
         self._preloaded_modules = {}
         for module_name in self.config.allowed_modules:
@@ -301,6 +302,10 @@ class CodeSandbox:
         # Add preloaded modules to globals
         for module_name, module in self._preloaded_modules.items():
             safe_globals[module_name] = module
+
+        # Inject extra globals (e.g., delegate_task)
+        if self.extra_globals:
+            safe_globals.update(self.extra_globals)
 
         return safe_globals
 

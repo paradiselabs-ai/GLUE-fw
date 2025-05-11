@@ -254,12 +254,6 @@ class GlueApp:
                         self.tools[tool_name] = tool_instance
                     except Exception:
                         self.tools[tool_name] = WebSearchTool()
-                elif tool_name == "delegate_task":
-                    try:
-                        tool_instance = DelegateTaskTool(app=self)
-                        self.tools[tool_name] = tool_instance
-                    except Exception:
-                        self.tools[tool_name] = DelegateTaskTool(app=self)
                 elif tool_name == "file_handler":
                     try:
                         tool_instance = (
@@ -272,11 +266,12 @@ class GlueApp:
                         self.tools[tool_name] = FileHandlerTool()
                 elif tool_name == "code_interpreter":
                     try:
-                        tool_instance = (
-                            CodeInterpreterTool(**tool_config)
-                            if isinstance(tool_config, dict)
-                            else CodeInterpreterTool()
-                        )
+                        # Pass all tools as extra_globals, so delegate_task and others are available
+                        extra_globals = {k: v for k, v in self.tools.items() if callable(v)}
+                        if isinstance(tool_config, dict):
+                            tool_instance = CodeInterpreterTool(**tool_config, extra_globals=extra_globals)
+                        else:
+                            tool_instance = CodeInterpreterTool(extra_globals=extra_globals)
                         self.tools[tool_name] = tool_instance
                     except Exception:
                         self.tools[tool_name] = CodeInterpreterTool()
@@ -285,135 +280,62 @@ class GlueApp:
                     logger.debug(f"Storing config for unknown/custom tool: {tool_name}")
                     self.tools[tool_name] = tool_config
 
-        # Ensure delegate_task is registered even if not in config
-        if "delegate_task" not in self.tools:
-            try:
-                delegate_tool = DelegateTaskTool(app=self)
-                self.tools["delegate_task"] = delegate_tool
-                logger.info("Registered delegate_task tool globally")
-            except Exception as e:
-                logger.warning(f"Failed to register delegate_task tool globally: {e}")
-
-        # Ensure report_task_completion is registered even if not in config
-        if "report_task_completion" not in self.tools:
-            try:
-                report_tool = ReportTaskCompletionTool(app=self)
-                self.tools["report_task_completion"] = report_tool
-                logger.info("Registered report_task_completion tool globally")
-            except Exception as e:
-                logger.warning(
-                    f"Failed to register report_task_completion tool globally: {e}"
-                )
-
-        # Set up teams
+        # Set up teams (with hierarchical support)
         magnetize_dict = config.get("magnetize", {})
-        if isinstance(magnetize_dict, dict):
-            for team_name, team_config in magnetize_dict.items():
-                # Get the lead model name
-                lead_model_name = team_config.get("lead", "")
-
-                # Get the lead model
-                lead_model = self.models.get(lead_model_name)
-                if lead_model:
-                    # Get member model names, excluding the lead
-                    all_member_names = team_config.get("members", [])
-                    # Filter out the lead from members to avoid duplication
-                    member_names = [
-                        name for name in all_member_names if name != lead_model_name
-                    ]
-
-                    # Create the team with the lead model
-                    team_config_obj = TeamConfig(
-                        name=team_name,
-                        lead=lead_model_name,
-                        members=member_names,
-                        tools=[],
-                    )
-                    logger.debug(
-                        f"Creating team {team_name} with config: lead={lead_model_name}, members={member_names}"
-                    )
-                    team = Team(name=team_name, config=team_config_obj, lead=lead_model)
-
-                    # Set a reference to this app on the team
-                    if not hasattr(team, "_app"):
-                        team._app = self
-
-                    # Add member models to the team
-                    for member_name in member_names:
-                        member_model = self.models.get(member_name)
-                        if (
-                            member_model and member_model != lead_model
-                        ):  # Skip if it's the lead model
-                            # Check if member is already in team before adding
-                            if member_name not in team.models:
-                                team.add_member_sync(member_model)
-
-                    # Add tools to the team
-                    tools_list = team_config.get("tools", [])
-                    # Automatically include report_task_completion for all members
-                    tools_list = list(set(tools_list + ["report_task_completion"]))
-                    # Automatically include delegate_task for all team leads
-                    if team_config.get("lead"):
-                        tools_list = list(set(tools_list + ["delegate_task"]))
-                    for tool_name in tools_list:
-                        if tool_name in self.tools:
-                            tool_instance = self.tools[tool_name]
-
-                            # Add the tool to the team's tool list
-                            team._tools[tool_name] = tool_instance
-
-                            # Special handling for delegate_task and report_task_completion
-                            if tool_name == "delegate_task":
-                                # Add delegate_task only to the lead
-                                if lead_model:
-                                    if hasattr(lead_model, "add_tool_sync"):
-                                        lead_model.add_tool_sync(
-                                            tool_name, tool_instance
-                                        )
-                                    elif hasattr(lead_model, "add_tool"):
-                                        import asyncio
-
-                                        try:
-                                            loop = asyncio.new_event_loop()
-                                            asyncio.set_event_loop(loop)
-                                            loop.run_until_complete(
-                                                lead_model.add_tool(
-                                                    tool_name, tool_instance
-                                                )
-                                            )
-                                            loop.close()
-                                        except Exception as e:
-                                            logger.warning(
-                                                f"Failed to add tool {tool_name} to lead model {lead_model_name}: {e}"
-                                            )
-
-                            elif tool_name == "report_task_completion":
-                                # Add report_task_completion only to the members (not to the lead)
-                                for member_name in member_names:
-                                    member_model = self.models.get(member_name)
-                                    if member_model:
-                                        if hasattr(member_model, "add_tool_sync"):
-                                            member_model.add_tool_sync(
-                                                tool_name, tool_instance
-                                            )
-
-                            else:
-                                # If it's any other tool, you can apply it both to lead and members if needed
-                                if lead_model:
-                                    if hasattr(lead_model, "add_tool_sync"):
-                                        lead_model.add_tool_sync(
-                                            tool_name, tool_instance
-                                        )
-                                for member_name in member_names:
-                                    member_model = self.models.get(member_name)
-                                    if member_model:
-                                        if hasattr(member_model, "add_tool_sync"):
-                                            member_model.add_tool_sync(
-                                                tool_name, tool_instance
-                                            )
-
-                    self.teams[team_name] = team
-                    logger.info(f"Finished setting up team {team_name}")
+        constructed_teams = {}  # Track constructed teams to avoid cycles
+        def construct_team(team_name, constructing_stack=None):
+            if team_name in constructed_teams:
+                return constructed_teams[team_name]
+            if team_name not in magnetize_dict:
+                raise ValueError(f"Team '{team_name}' not found in magnetize block.")
+            if constructing_stack is None:
+                constructing_stack = set()
+            if team_name in constructing_stack:
+                raise ValueError(f"Cycle detected in team hierarchy: {' -> '.join(list(constructing_stack) + [team_name])}")
+            constructing_stack.add(team_name)
+            team_config = magnetize_dict[team_name]
+            lead_model_name = team_config.get("lead", "")
+            lead_model = self.models.get(lead_model_name)
+            if not lead_model:
+                raise ValueError(f"Lead model '{lead_model_name}' for team '{team_name}' not found.")
+            all_member_names = team_config.get("members", [])
+            member_objs = []
+            for member_name in all_member_names:
+                if member_name == lead_model_name:
+                    continue  # skip lead as member
+                if member_name in self.models:
+                    member_objs.append(self.models[member_name])
+                elif member_name in magnetize_dict:
+                    # Recursively construct subteam
+                    subteam = construct_team(member_name, constructing_stack.copy())
+                    member_objs.append(subteam)
+                else:
+                    raise ValueError(f"Member '{member_name}' in team '{team_name}' is neither a model nor a team.")
+            # Create TeamConfig
+            from .types import TeamConfig
+            team_config_obj = TeamConfig(
+                name=team_name,
+                lead=lead_model_name,
+                members=[m.name if hasattr(m, 'name') else m for m in member_objs],
+                tools=team_config.get("tools", []),
+            )
+            from .teams import Team
+            team = Team(name=team_name, config=team_config_obj, lead=lead_model)
+            # Add members (models or subteams)
+            for member in member_objs:
+                team.add_member_sync(member)
+            # Add tools
+            tools_list = team_config.get("tools", [])
+            for tool_name in tools_list:
+                if tool_name in self.tools:
+                    team._tools[tool_name] = self.tools[tool_name]
+            constructed_teams[team_name] = team
+            return team
+        # Actually construct all teams
+        for team_name in magnetize_dict:
+            team = construct_team(team_name)
+            self.teams[team_name] = team
+            logger.info(f"Finished setting up team {team_name}")
 
         # Set up flows
         for flow_config in config.get("flows", []):
