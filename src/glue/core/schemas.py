@@ -7,9 +7,10 @@ data validation, and schema generation capabilities.
 """
 
 from enum import Enum
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Union
 from datetime import datetime
-from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict
+from pydantic import BaseModel, Field, field_validator, model_validator, ConfigDict, ValidationInfo
+import logging
 
 
 # ==================== Enumerations ====================
@@ -419,6 +420,49 @@ class MagnetConfig(BaseModel):
         return self
 
 
+class FlowDefinitionConfig(BaseModel):
+    """Configuration for a specific flow definition between two teams."""
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "research_to_analysis",
+                "source": "research_team",
+                "target": "analysis_team",
+                "type": "PUSH",
+                "config": {"priority": 1, "conditions": {"status": "approved"}}
+            },
+            "example_pull_any": { # Example for team <- pull
+                "name": "docs_pull_fallback",
+                "source": None, # Source is None for 'team <- pull'
+                "target": "docs_team", # docs_team is the one that can pull
+                "type": "pull",
+                "config": {}
+            }
+        }
+    )
+
+    name: str = Field(..., description="Unique name of the flow definition")
+    source: Optional[str] = Field(None, description="Name of the source team for this flow. None if type is PULL and it's a 'pull from any' flow.")
+    target: str = Field(..., description="Name of the target team for this flow")
+    type: FlowType = Field(..., description="Type of flow (PUSH, PULL, or BIDIRECTIONAL)")
+    config: Dict[str, Any] = Field(
+        default_factory=dict, description="Additional flow-specific configurations (e.g., conditions, transformations)"
+    )
+
+    @field_validator('type', mode='before')
+    @classmethod
+    def normalize_flow_type(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return v.lower()
+        return v
+
+    @model_validator(mode="after")
+    def validate_teams_different(self):
+        if self.source == self.target:
+            raise ValueError(f"Flow definition '{self.name}': Source and target teams must be different.")
+        return self
+
+
 class AppConfig(BaseModel):
     """Configuration for a GLUE application"""
 
@@ -434,6 +478,7 @@ class AppConfig(BaseModel):
                 "tools": [],
                 "teams": [],
                 "magnets": [],
+                "flows": [], 
             }
         }
     )
@@ -455,25 +500,163 @@ class AppConfig(BaseModel):
         default_factory=list, description="Team configurations"
     )
     magnets: List[MagnetConfig] = Field(
-        default_factory=list, description="Magnetic connections"
+        default_factory=list, description="Magnetic connections for dynamic field interactions"
+    )
+    flows: List[FlowDefinitionConfig] = Field(
+        default_factory=list, description="Specific, persistent flow definitions between teams"
     )
 
+    @model_validator(mode="before")
+    @classmethod
+    def prepare_app_config_data(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        # 1. Normalize 'name' from 'app': {'name': ...} to top-level 'name'
+        if "app" in data and isinstance(data["app"], dict) and "name" in data["app"]:
+            if "name" not in data:
+                data["name"] = data["app"].pop("name")
+            if not data["app"]:
+                data.pop("app")
+        
+        if "name" not in data:
+            data["name"] = "Unnamed GLUE App (defaulted in validator)"
+
+        # 2. Transform 'models' (as before)
+        if "models" in data and isinstance(data["models"], dict):
+            models_list = []
+            for model_name, model_body_dict in data["models"].items():
+                if isinstance(model_body_dict, dict):
+                    final_model_config = model_body_dict.copy()
+                    nested_config_params = final_model_config.pop("config", None)
+                    if isinstance(nested_config_params, dict):
+                        for key, value in nested_config_params.items():
+                            final_model_config[key] = value
+                    final_model_config["name"] = model_name
+                    models_list.append(final_model_config)
+                else:
+                    logging.warning(f"Model configuration for '{model_name}' is not a dictionary. Skipping.")
+            data["models"] = models_list
+
+        # 3. Transform 'tools' (as before)
+        if "tools" in data and isinstance(data["tools"], dict):
+            tools_list = []
+            for tool_name, tool_config_dict in data["tools"].items():
+                if isinstance(tool_config_dict, dict):
+                    if "name" not in tool_config_dict:
+                        tool_config_dict["name"] = tool_name
+                    tools_list.append(tool_config_dict)
+                else:
+                    logging.warning(f"Tool configuration for '{tool_name}' is not a dictionary. Skipping.")
+            data["tools"] = tools_list
+
+        # 4. Transform 'magnetize' block into 'teams' List[TeamConfig-like dicts]
+        # The DSL parser might provide team definitions under a 'magnetize' key.
+        # If 'teams' is present and already a list (e.g. from direct JSON), it might be used as is,
+        # but DSL's 'magnetize' should populate 'data["teams"]' for AppConfig validation.
+        if "magnetize" in data and isinstance(data["magnetize"], dict):
+            if not data.get("teams"): # If 'teams' is empty or not present, populate from 'magnetize'
+                teams_list = []
+                for team_name, team_config_dict in data["magnetize"].items():
+                    if isinstance(team_config_dict, dict):
+                        if "name" not in team_config_dict:
+                            team_config_dict["name"] = team_name
+                        teams_list.append(team_config_dict)
+                    else:
+                        logging.warning(f"Team configuration (from magnetize) for '{team_name}' is not a dictionary. Skipping.")
+                data["teams"] = teams_list
+            # If 'teams' was already populated (e.g. from a direct list input), decide on merge strategy or overwrite.
+            # For now, if 'teams' already exists and is a list, we assume it's authoritative.
+            # If 'teams' was a dict, the old logic would handle it; this new logic prioritizes 'magnetize' if 'teams' is empty.
+        
+        # Fallback: if 'teams' itself was a dict (old logic, less likely with 'magnetize' present)
+        elif "teams" in data and isinstance(data["teams"], dict):
+            teams_list = []
+            for team_name, team_config_dict in data["teams"].items():
+                if isinstance(team_config_dict, dict):
+                    if "name" not in team_config_dict:
+                        team_config_dict["name"] = team_name
+                    teams_list.append(team_config_dict)
+                else:
+                    logging.warning(f"Team configuration for '{team_name}' is not a dictionary. Skipping.")
+            data["teams"] = teams_list
+
+
+        # 5. Transform 'flows' if it's a dict {name: config} to List[FlowDefinitionConfig-like dicts]
+        if "flows" in data and isinstance(data["flows"], dict):
+            flows_list = []
+            for flow_name, flow_details_dict in data["flows"].items():
+                if isinstance(flow_details_dict, dict):
+                    transformed_flow_dict = {"name": flow_name} # Correctly add name here
+                    # Pop known fields to ensure they are not duplicated in 'config'
+                    if "source" in flow_details_dict:
+                        transformed_flow_dict["source"] = flow_details_dict.pop("source")
+                    if "target" in flow_details_dict:
+                        transformed_flow_dict["target"] = flow_details_dict.pop("target")
+                    if "type" in flow_details_dict:
+                        transformed_flow_dict["type"] = flow_details_dict.pop("type")
+                    # Any remaining items in flow_details_dict go into the 'config' field
+                    transformed_flow_dict["config"] = flow_details_dict 
+                    flows_list.append(transformed_flow_dict)
+                else:
+                    logging.warning(f"Flow definition for '{flow_name}' is not a dictionary. Skipping.")
+            data["flows"] = flows_list
+        
+        # Note: 'magnets' might also need similar dict-to-list transformation if DSL allows dict form.
+        # For now, assuming magnets are parsed as a list of dicts or handled by Pydantic directly if it's List[MagnetConfig].
+
+        return data
+
     @field_validator("log_level")
-    def validate_log_level(cls, v):
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
         valid_levels = {"debug", "info", "warning", "error", "critical"}
         if v.lower() not in valid_levels:
             raise ValueError(f"Log level must be one of {valid_levels}")
         return v.lower()
 
     @field_validator("magnets")
-    def validate_magnets(cls, v, values):
-        if "teams" not in values.data:
-            return v
+    @classmethod
+    def validate_magnets_teams_exist(cls, v: List[MagnetConfig], info: ValidationInfo) -> List[MagnetConfig]:
+        if "teams" not in info.data or not info.data["teams"]:
+            # If teams list is not yet available or empty in the (partially) validated data.
+            # This might happen if 'teams' itself fails validation or is processed later.
+            # Depending on strictness, could raise error or just return v.
+            # For now, assume if 'teams' is empty/missing, it's an issue caught elsewhere or config is invalid.
+            return v 
 
-        team_names = {team.name for team in values.data["teams"]}
+        team_names = {team.name for team in info.data["teams"]}
         for magnet in v:
             if magnet.source not in team_names:
-                raise ValueError(f"Magnet source team '{magnet.source}' does not exist")
+                raise ValueError(f"Magnet source team '{magnet.source}' does not exist in defined teams.")
             if magnet.target not in team_names:
-                raise ValueError(f"Magnet target team '{magnet.target}' does not exist")
+                raise ValueError(f"Magnet target team '{magnet.target}' does not exist in defined teams.")
+        return v
+
+    @field_validator("flows")
+    @classmethod
+    def validate_flow_teams_exist(cls, v: List[FlowDefinitionConfig], info: ValidationInfo) -> List[FlowDefinitionConfig]:
+        if "teams" not in info.data or not info.data["teams"]:
+            return v # Similar to magnets, if teams aren't there, can't validate against them.
+
+        team_names = {team.name for team in info.data["teams"]}
+        for flow_def in v:
+            # Validate Target: Target must always be a defined team.
+            if flow_def.target not in team_names:
+                raise ValueError(
+                    f"Flow '{flow_def.name}': Target team '{flow_def.target}' is not defined in the application's teams."
+                )
+
+            # Validate Source: Source must be a defined team UNLESS it's None (for 'team <- pull' case).
+            if flow_def.source is not None and flow_def.source not in team_names:
+                raise ValueError(
+                    f"Flow '{flow_def.name}': Source team '{flow_def.source}' is not defined in the application's teams."
+                )
+            
+            # Additional check: If type is PULL and source is None, target must be specified.
+            if flow_def.type == FlowType.PULL and flow_def.source is None and not flow_def.target:
+                 raise ValueError(
+                    f"Flow '{flow_def.name}' is a generic PULL flow but has no target team specified to initiate the pull."
+                ) # This case should ideally be caught by target being required anyway.
+
         return v
