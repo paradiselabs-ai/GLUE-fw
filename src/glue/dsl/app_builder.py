@@ -12,7 +12,7 @@ from typing import Dict, Any, List
 import asyncio
 
 from ..core.app import GlueApp, AppConfig
-from ..core.model import Model
+from smolagents import InferenceClientModel
 from ..core.teams import Team
 from ..core.types import AdhesiveType, FlowType
 from ..tools.tool_registry import get_tool_class
@@ -105,7 +105,7 @@ class GlueAppBuilder:
         self.logger.info(f"Successfully built GLUE application: {app_name}")
         return app
 
-    def _create_model(self, config: Dict[str, Any]) -> Model:
+    def _create_model(self, config: Dict[str, Any]) -> Any:
         """Create a model from configuration.
 
         Args:
@@ -160,18 +160,18 @@ class GlueAppBuilder:
         )
 
         self.logger.info(f"Creating model: {name}")
-        # Instantiate the GLUE model
-        model = Model(config=model_pydantic_config, adhesives=adhesives)
-        # Extract Smolagents-specific options from the nested 'config' block
-        smol_opts = {}
-        nested_cfg = config.get("config", {}) if isinstance(config, dict) else {}
-        if isinstance(nested_cfg, dict):
-            if "planning_interval" in nested_cfg:
-                smol_opts["planning_interval"] = nested_cfg["planning_interval"]
-            if "system_prompt" in nested_cfg:
-                smol_opts["system_prompt"] = nested_cfg["system_prompt"]
-        # Attach to the model for later use
-        setattr(model, "smol_config", smol_opts)
+        # Instantiate a SmolAgents InferenceClientModel
+        model = InferenceClientModel(
+            model_id=model_pydantic_config.model,
+            provider=model_pydantic_config.provider,
+            api_key=model_pydantic_config.api_key,
+            **{k: v for k, v in config.get("config", {}).items() if v is not None}
+        )
+        # Assign the model name for compatibility
+        model.name = name
+        # Attach adhesives and SmolAgents-specific config
+        setattr(model, "adhesives", adhesives)
+        setattr(model, "smol_config", {k:v for k,v in config.get("config",{}).items() if v is not None})
         self._models[model.name] = model
         return model
 

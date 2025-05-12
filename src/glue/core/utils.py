@@ -7,14 +7,13 @@ components used throughout the framework.
 
 from typing import Dict, Any
 import logging
-
-from .model import Model
+from smolagents import InferenceClientModel
 from ..tools.tool_base import Tool
 
 logger = logging.getLogger("glue.utils")
 
 
-def create_model(config: Dict[str, Any]) -> Model:
+def create_model(config: Dict[str, Any]) -> Any:
     """Create a model from a configuration dictionary.
 
     Args:
@@ -29,7 +28,7 @@ def create_model(config: Dict[str, Any]) -> Model:
     role = config.get("role", "")
 
     # Create the model
-    model = Model(model_config)
+    model = InferenceClientModel(model_config)
 
     # Set model properties
     model.name = model_name

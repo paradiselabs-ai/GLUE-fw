@@ -11,7 +11,6 @@ import json
 from typing import Dict, List, Any, Optional, Callable, AsyncIterable, Union
 import uuid
 
-from ..base_model import BaseModel
 from ..types import Message, ToolResult
 
 # Set up logging
@@ -24,7 +23,7 @@ class GeminiProvider:
     # Class-level cache to prevent multiple initializations
     _instances = {}
 
-    def __new__(cls, model: BaseModel):
+    def __new__(cls, model):
         """Singleton pattern to ensure only one instance per model."""
         # Use model name as the key for the cache
         model_name = getattr(model, "name", str(id(model)))
@@ -41,7 +40,7 @@ class GeminiProvider:
         cls._instances[model_name] = instance
         return instance
 
-    def __init__(self, model: BaseModel):
+    def __init__(self, model):
         """Initialize a new Gemini provider.
 
         Args:

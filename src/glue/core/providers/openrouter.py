@@ -15,7 +15,7 @@ import httpx
 import openai
 
 from rich.console import Console
-from glue.core.schemas import Message, ToolCall, ToolResult
+from ..schemas import Message, ToolCall, ToolResult
 from glue.utils.ui_utils import display_warning
 
 # Set up logging

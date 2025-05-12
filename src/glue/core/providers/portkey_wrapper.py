@@ -9,7 +9,7 @@ import os
 import logging
 from typing import Dict, List, Any, Optional, AsyncIterable
 
-from glue.core.schemas import Message
+from ..schemas import Message
 from glue.utils.portkey_client import get_portkey_client
 
 # Set up logging

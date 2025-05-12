@@ -2,11 +2,10 @@ from typing import Dict, Any, Optional
 from smolagents import InferenceClientModel
 from .glue_smolagent import GlueSmolAgent, make_glue_smol_agent
 from .glue_smoltool import GlueSmolTool
-from glue.core.model import Model as GlueModel
-from glue.core.providers.openrouter import OpenrouterProvider
+from .providers.openrouter import OpenrouterProvider
+from ..tools.delegate_task_tool import DelegateTaskTool
 import inspect
 import asyncio
-from glue.tools.delegate_task_tool import DelegateTaskTool
 
 class SimpleMessage:
     def __init__(self, content):
@@ -47,27 +46,11 @@ class GlueSmolTeam:
         if lead_name not in self.model_clients:
             raise ValueError(f"No model client for lead {lead_name}")
         raw_client = self.model_clients[lead_name]
-        # If it's a GLUE Model, create a new InferenceClientModel with smol_config
-        if isinstance(raw_client, GlueModel):
-            model_id = raw_client.config.get("model") or raw_client.config.get("provider")
-            provider_name = raw_client.config.get("provider")
-            api_key = raw_client.config.get("api_key")
-            opts = getattr(raw_client, "smol_config", {}) or {}
-            if provider_name == "openrouter":
-                lead_client = self._make_openrouter_callable(raw_client)
-            else:
-                lead_client = InferenceClientModel(
-                    model_id=model_id,
-                    provider=provider_name,
-                    api_key=api_key,
-                    **{k: v for k, v in opts.items() if v is not None}
-                )
-            lead_description = raw_client.config.get("description", f"Lead agent for team {lead_name}")
-        elif isinstance(raw_client, InferenceClientModel):
-            lead_client = raw_client
-            lead_description = getattr(raw_client, "description", f"Lead agent for team {lead_name}")
-        else:
+        # Ensure model client is an InferenceClientModel
+        if not isinstance(raw_client, InferenceClientModel):
             raise ValueError(f"Unsupported model client type for lead {lead_name}: {type(raw_client)}")
+        lead_client = raw_client
+        lead_description = getattr(raw_client, "description", f"Lead agent for team {lead_name}")
         self.lead_agent = make_glue_smol_agent(
             model=lead_client,
             tools=[GlueSmolTool(t) for t in self.team.tools],
@@ -102,27 +85,11 @@ class GlueSmolTeam:
                     continue
                 else:
                     raise ValueError(f"No model client or subteam for member {member_name}")
-            # Resolve member client similarly
-            if isinstance(raw_member, GlueModel):
-                model_id = raw_member.config.get("model") or raw_member.config.get("provider")
-                provider_name = raw_member.config.get("provider")
-                api_key = raw_member.config.get("api_key")
-                opts = getattr(raw_member, "smol_config", {}) or {}
-                if provider_name == "openrouter":
-                    member_client = self._make_openrouter_callable(raw_member)
-                else:
-                    member_client = InferenceClientModel(
-                        model_id=model_id,
-                        provider=provider_name,
-                        api_key=api_key,
-                        **{k: v for k, v in opts.items() if v is not None}
-                    )
-                member_description = raw_member.config.get("description", f"Team member agent {member_name}")
-            elif isinstance(raw_member, InferenceClientModel):
-                member_client = raw_member
-                member_description = getattr(raw_member, "description", f"Team member agent {member_name}")
-            else:
+            # Ensure member client is an InferenceClientModel
+            if not isinstance(raw_member, InferenceClientModel):
                 raise ValueError(f"Unsupported model client type for member {member_name}: {type(raw_member)}")
+            member_client = raw_member
+            member_description = getattr(raw_member, "description", f"Team member agent {member_name}")
             agent = make_glue_smol_agent(
                 model=member_client,
                 tools=[GlueSmolTool(t) for t in self.team.tools],
@@ -142,8 +109,6 @@ class GlueSmolTeam:
             for agent in managed_agents if hasattr(agent, '_subteam_description')
         }
 
-        # Debug: print the rendered system prompt for the lead agent
-        self.debug_print_lead_prompt()
         # Override system prompt template with fully rendered prompt to bypass Jinja template on run
         try:
             prompt_template = self.lead_agent.prompt_templates.get("system_prompt", "")
@@ -162,6 +127,9 @@ class GlueSmolTeam:
             # Fallback to raw prompt template if rendering fails
             rendered_prompt = prompt_template
         self.lead_agent.prompt_templates["system_prompt"] = rendered_prompt
+
+        # Debug: print the rendered system prompt for the lead agent
+        self.debug_print_lead_prompt()
 
     def _make_openrouter_callable(self, glue_model):
         provider = OpenrouterProvider(glue_model)

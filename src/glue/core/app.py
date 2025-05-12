@@ -9,7 +9,6 @@ import logging
 from typing import Dict, Any, List, Optional, Union
 
 from .adhesive import AdhesiveSystem
-from .model import Model
 from .teams import Team
 from .types import FlowType, TeamConfig
 from .flow import Flow
@@ -20,8 +19,9 @@ from ..magnetic.field import MagneticField
 from glue.tools.web_search_tool import WebSearchTool
 from glue.tools.file_handler_tool import FileHandlerTool
 from glue.tools.code_interpreter_tool import CodeInterpreterTool
-from glue.tools.delegate_task_tool import DelegateTaskTool
-from glue.tools.report_task_completion_tool import ReportTaskCompletionTool
+from smolagents import InferenceClientModel
+import asyncio
+from .providers.openrouter import OpenrouterProvider
 
 
 # Set up logging
@@ -40,9 +40,16 @@ def create_model(config: Dict[str, Any]) -> Any:
     Returns:
         Model instance
     """
-    from .model import Model
-
-    return Model(config=config)
+    from smolagents import InferenceClientModel
+    # Create a SmolAgents InferenceClientModel instance
+    model = InferenceClientModel(
+        model_id=config.get("model"),
+        provider=config.get("provider"),
+        api_key=config.get("api_key"),
+    )
+    # Assign name for compatibility
+    model.name = config.get("name", config.get("model"))
+    return model
 
 
 def create_tool(config: Dict[str, Any]) -> Any:
@@ -97,13 +104,50 @@ class AppConfig:
         """
         self.name = name
         self.description = description
-        self.models: Dict[str, Model] = {}
+        self.models: Dict[str, Any] = {}
         self.tools: Dict[str, Any] = {}
         self.teams: Dict[str, Team] = {}
         self.flows: List[Flow] = []
         self.magnets: Dict[str, Dict[str, Any]] = {}
         self.version: str = "0.1.0"
         self.development: bool = True
+
+
+# Custom subclass to support OpenRouter within InferenceClientModel type
+class OpenrouterInferenceClientModel(InferenceClientModel):
+    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
+        # Extract parameters needed by OpenrouterProvider
+        # Copy other kwargs to api_params before popping temperature/max_tokens
+        api_params = kwargs.copy()
+        temperature = api_params.pop('temperature', None)
+        max_tokens = api_params.pop('max_tokens', None)
+        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+        # Expose attributes for OpenrouterProvider
+        self.api_key = api_key
+        self.temperature = temperature
+        self.max_tokens = max_tokens
+        self.api_params = api_params
+        # Initialize Openrouter provider wrapper
+        self._or_provider = OpenrouterProvider(self)
+
+    def generate(self, messages, *args, **kwargs):
+        """Override generate to call OpenrouterProvider synchronously."""
+        coro = self._or_provider.generate_response(messages)
+        try:
+            loop = asyncio.get_running_loop()
+            import concurrent.futures
+            from threading import current_thread, main_thread
+            # If we're in the main thread and loop is running, run in separate thread
+            if loop.is_running() and current_thread() is main_thread():
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    result = executor.submit(lambda: asyncio.run(coro)).result()
+            else:
+                result = loop.run_until_complete(coro)
+        except RuntimeError:
+            # If no running loop, use asyncio.run
+            result = asyncio.run(coro)
+        # Return object with content attribute
+        return type("Resp", (), {"content": result})()
 
 
 class GlueApp:
@@ -123,7 +167,7 @@ class GlueApp:
         self.adhesive_system = AdhesiveSystem()
 
         # Initialize empty collections
-        self.models: Dict[str, Model] = {}
+        self.models: Dict[str, Any] = {}
         self.tools: Dict[str, Any] = {}
         self.teams: Dict[str, Team] = {}
         self.flows: List[Flow] = []
@@ -218,22 +262,27 @@ class GlueApp:
                 if isinstance(model_config, dict) and "name" not in model_config:
                     model_config["name"] = model_name
 
-                # Instantiate the GLUE model
-                model = Model(config=model_config, name=model_name)
-                # Extract any Smolagents-specific config from nested 'config' block
-                smol_opts = {}
-                nested = model_config.get("config", {})
-                # Planning interval for extra planning
-                if isinstance(nested, dict) and "planning_interval" in nested:
-                    smol_opts["planning_interval"] = nested.get("planning_interval")
-                # Custom system prompt template
-                if isinstance(nested, dict) and "system_prompt" in nested:
-                    smol_opts["system_prompt"] = nested.get("system_prompt")
-                # Attach to model for later use in Smolagents integration
-                setattr(model, "smol_config", smol_opts)
-
-                # Store the model
-                self.models[model.name] = model
+                # Gather provider-specific options
+                opts = model_config.get("config", {}) or {}
+                # Use custom subclass for Openrouter provider
+                if model_config.get("provider") == "openrouter":
+                    model_client = OpenrouterInferenceClientModel(
+                        model_id=model_config.get("model") or model_config.get("provider"),
+                        provider=model_config.get("provider"),
+                        api_key=model_config.get("api_key"),
+                        **opts
+                    )
+                else:
+                    model_client = InferenceClientModel(
+                        model_id=model_config.get("model") or model_config.get("provider"),
+                        provider=model_config.get("provider"),
+                        api_key=model_config.get("api_key"),
+                        **opts
+                    )
+                # Assign name and store config
+                model_client.name = model_name
+                setattr(model_client, "smol_config", opts)
+                self.models[model_name] = model_client
 
         # Set up tools
         tools_dict = config.get("tools", {})

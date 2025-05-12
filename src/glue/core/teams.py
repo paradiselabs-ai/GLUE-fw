@@ -9,9 +9,6 @@ import json
 
 from .types import AdhesiveType, TeamConfig, ToolResult, FlowType
 from .schemas import Message
-from ..utils.json_utils import extract_json
-
-from .model import Model
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
@@ -44,16 +41,16 @@ class Team:
         name: str,
         config: Optional[TeamConfig] = None,
         # For backward compatibility with tests
-        lead: Optional[Model] = None,
-        members: Optional[List[Model]] = None,
+        lead: Any = None,
+        members: Optional[List[Any]] = None,
     ):
         self.name = name
         self.config = config or TeamConfig(name=name, lead="", members=[], tools=[])
 
         # Core components
-        self.models: Dict[str, Model] = {}
+        self.models: Dict[str, Any] = {}
         self.subteams: Dict[str, 'Team'] = {}  # NEW: subteams by name
-        self.lead: Optional[Model] = None
+        self.lead: Optional[Any] = None
         self._tools: Dict[str, Any] = {}
         # self.tool_bindings: Dict[str, AdhesiveType] = {}
 
@@ -201,6 +198,14 @@ class Team:
         """
         # Add tool to team
         self._tools[name] = tool
+        # Skip model registration for smolagents UserInputTool to avoid missing add_tool method on models
+        try:
+            from smolagents import UserInputTool as SmolInputTool
+            if isinstance(tool, SmolInputTool):
+                logger.info(f"Registered smolagents UserInputTool '{name}' to team '{self.name}' without model registration")
+                return
+        except ImportError:
+            pass
 
         # Initialize the tool if it's not already initialized
         if (
@@ -299,18 +304,22 @@ class Team:
         if not source:
             raise ValueError("No source model available")
 
-        # Generate response
-        # --- Add history for the incoming message ---
-        # This assumes process_message is typically called with user input or a simple string
-        # We might need more context if it's called differently
+        # Record the incoming user message in the team history
         self.conversation_history.append(
-            Message(
-                role="user",  # Assuming incoming message is like user input
-                content=message_content,
-            )
+            Message(role="user", content=message_content)
         )
 
-        response_content = await source.generate(message_content)
+        # Generate response from model, handling sync (Resp) and async coroutines
+        gen_result = source.generate(message_content)
+        if asyncio.iscoroutine(gen_result):
+            raw_response = await gen_result
+        else:
+            raw_response = gen_result
+        # Extract string content if response has .content attribute (e.g., Openrouter Resp)
+        if hasattr(raw_response, 'content'):
+            response_content = raw_response.content
+        else:
+            response_content = raw_response
 
         # Store the model's raw response in history first
         self.conversation_history.append(
@@ -323,12 +332,11 @@ class Team:
         # --- TOOL CALL HANDLING ---
         final_response = response_content  # Default to original response
         tool_call_data = None
-
         if isinstance(response_content, str):
-            tool_call_data = extract_json(response_content)
-            logger.debug(
-                f"Attempted JSON extraction from response. Found: {tool_call_data is not None}"
-            )
+            tool_call_data = None
+        logger.debug(
+            f"Attempted JSON extraction from response. Found: {tool_call_data is not None}"
+        )
 
         if tool_call_data and isinstance(tool_call_data, dict):
             # Check for standard format: {"tool_name": "...", "arguments": {...}}
@@ -358,19 +366,24 @@ class Team:
                 # Not a valid tool call format, treat as regular response
                 return response_content
 
-            # Fallback: if the model hasn't had this tool added, wrap the team-level tool
-            if tool_name not in source.tools and tool_name in self._tools:
-                try:
-                    source.add_tool_sync(tool_name, self._tools[tool_name])
-                    logger.debug(
-                        f"Added fallback wrapper for '{tool_name}' to model {source.name}"
-                    )
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to add fallback wrapper for '{tool_name}' to model {source.name}: {e}"
-                    )
-
-            # Check if the tool exists in the source model's context
+            # Special handling for user input tool in interactive mode
+            if tool_name == "user_input":
+                # Validate question
+                question = arguments.get("question", "")
+                if not isinstance(question, str) or not question.strip():
+                    error_msg = "Error: Invalid question provided to user_input tool."
+                    logger.error(error_msg)
+                    return error_msg
+                # Prompt the user until non-empty answer
+                answer = input(f"{question} => Type your answer here:").strip()
+                while not answer:
+                    print("Please provide a non-empty answer.")
+                    answer = input(f"{question} => Type your answer here:").strip()
+                logger.info(f"Received user input: {answer}")
+                # Append user answer to history
+                self.conversation_history.append(Message(role="user", content=answer))
+                return answer
+            # Default tool lookup
             tool_instance = source.tools.get(tool_name)
             if tool_instance and (
                 hasattr(tool_instance, "execute") or callable(tool_instance)
@@ -458,7 +471,12 @@ class Team:
                     # Generate a final response *after* the tool execution
                     # The history now contains the original call and the result
                     logger.info("Generating final response after tool execution...")
-                    final_response = await source.generate(content=None)
+                    gen = source.generate(content=None)
+                    if asyncio.iscoroutine(gen):
+                        resp = await gen
+                    else:
+                        resp = gen
+                    final_response = resp.content if hasattr(resp, 'content') else resp
 
                     # Append this final assistant response to history
                     self.conversation_history.append(
@@ -587,7 +605,7 @@ class Team:
         # 2. Check for an embedded tool call in the response
         tool_call_data = None
         if isinstance(raw_response, str):
-            tool_call_data = extract_json(raw_response)
+            tool_call_data = None
 
         if tool_call_data and isinstance(tool_call_data, dict):
             # Parse tool name and arguments

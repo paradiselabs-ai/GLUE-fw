@@ -1,16 +1,12 @@
-import os
-import tempfile
-import pytest
-from smolagents import InferenceClientModel, PythonInterpreterTool
+from smolagents import InferenceClientModel
 
 from glue.core.glue_smoltool import GlueSmolTool
 from glue.core.glue_memory_adapters import \
     GLUEPersistentAdapter, VELCROSessionAdapter, TAPEEphemeralAdapter
-from glue.core.glue_smolagent import GlueSmolAgent, GlueSmolToolCallingAgent
+from glue.core.glue_smolagent import GlueSmolAgent
 from glue.core.glue_smolteam import GlueSmolTeam
 from glue.dsl.app_builder import GlueAppBuilder
 from glue.core.types import AdhesiveType
-from glue.tools.delegate_task_tool import DelegateTaskTool
 
 
 class DummyTool:
@@ -296,47 +292,3 @@ class EchoTool:
     output_type = "string"
     def __call__(self, text):
         return text
-
-def test_toolcallingagent_metadata_required():
-    with pytest.raises(ValueError):
-        GlueSmolToolCallingAgent(model=DummyModel(), tools=[], name=None, description="desc")
-    with pytest.raises(ValueError):
-        GlueSmolToolCallingAgent(model=DummyModel(), tools=[], name="agent", description=None)
-
-def test_toolcallingagent_tool_schema_validation():
-    class BadTool:
-        name = "bad"
-        description = ""
-        inputs = {}
-        output_type = None
-        def __call__(self):
-            return "bad"
-    with pytest.raises(ValueError):
-        GlueSmolToolCallingAgent(model=DummyModel(), tools=[BadTool()], name="agent", description="desc")
-
-def test_toolcallingagent_simple_run():
-    agent = GlueSmolToolCallingAgent(
-        model=DummyModel(),
-        tools=[EchoTool()],
-        name="agent",
-        description="desc"
-    )
-    result = agent.run("Echo this")
-    assert result == "hello"
-
-def test_toolcallingagent_managed_agents():
-    # Managed agent is just another GlueSmolToolCallingAgent
-    managed = GlueSmolToolCallingAgent(
-        model=DummyModel(),
-        tools=[EchoTool()],
-        name="subagent",
-        description="desc"
-    )
-    agent = GlueSmolToolCallingAgent(
-        model=DummyModel(),
-        tools=[EchoTool()],
-        name="agent",
-        description="desc",
-        managed_agents=[managed]
-    )
-    assert "subagent" in agent.managed_agents

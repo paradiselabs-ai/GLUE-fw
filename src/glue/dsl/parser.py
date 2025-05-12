@@ -8,9 +8,6 @@ import logging
 from .tokens import TokenType, Token
 from .lexer import GlueLexer
 
-# Temporarily comment out imports that might not exist yet
-# from ..core.types import ModelConfig, TeamConfig, ToolConfig
-# from ..magnetic.field import FlowType
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.dsl")

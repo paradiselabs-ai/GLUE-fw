@@ -48,11 +48,11 @@ class GlueSmolTool:
             else:
                 self.output_type = 'any'
 
-    def __call__(self, **kwargs: Any) -> Any:
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
         """
         Invoke the wrapped GLUE tool with potential adhesive logic.
         """
-        # Alias mapping for LLM-friendly argument names
+        # Alias mapping for LLM-friendly argument names (preserve kwargs; positional args passed through)
         if "target_name" in kwargs:
             kwargs["target_agent_id"] = kwargs.pop("target_name")
         if "task" in kwargs:
@@ -60,7 +60,9 @@ class GlueSmolTool:
         # Pre-execution: apply any GLUE adhesive or permission checks
         # TODO: insert pre-tool execution glue hooks
 
-        result = self._glue_tool.execute(**kwargs)
+        # Invoke the underlying tool: prefer execute() if present, fallback to calling tool object
+        tool_fn = getattr(self._glue_tool, "execute", self._glue_tool)
+        result = tool_fn(*args, **kwargs)
 
         # Post-execution: handle adhesive persistence if configured
         # TODO: insert post-tool execution glue hooks

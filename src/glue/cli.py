@@ -46,7 +46,6 @@ from glue.core import GlueApp
 from glue.dsl import GlueDSLParser, GlueLexer
 
 # Import new utilities
-from .utils.json_utils import extract_json
 from .cliHelpers import parse_interactive_command, get_interactive_help_text
 from .utils.ui_utils import display_warning, set_cli_config
 
@@ -487,14 +486,30 @@ async def run_app(
             logger.info("Starting interactive session")
             print(f"\nStarting interactive session with {app.name}")
             logger.debug("Entering interactive session")
-            await run_interactive_session(app)
+            # Integrate UserInputTool for interactive sessions on entry-point team
+            from smolagents import UserInputTool
+            ui_tool = UserInputTool()
+            first_team_name = next(iter(app.teams))
+            entry_team = app.teams[first_team_name]
+            app.tools['user_input'] = ui_tool
+            await entry_team.add_tool('user_input', ui_tool)
+            # Instantiate and configure SmolAgents orchestrator
+            from .core.glue_smolteam import GlueSmolTeam
+            smol_team = GlueSmolTeam(
+                team=entry_team,
+                model_clients=entry_team.models,
+                glue_config=None,
+            )
+            smol_team.setup()
+            # Launch interactive session with the orchestrator
+            await run_interactive_session(app, smol_team)
             logger.debug("Interactive session complete")
             return True
 
         # Non-interactive mode
         elif input_text:
             logger.info("Running non-interactive agentic workflow with GlueSmolTeam orchestrator")
-            from glue.core.glue_smolteam import GlueSmolTeam
+            from .core.glue_smolteam import GlueSmolTeam
 
             first_team_name = next(iter(app.teams))
             team = app.teams[first_team_name]
@@ -539,7 +554,7 @@ async def run_app(
         return False
 
 
-async def run_interactive_session(app: GlueApp) -> None:
+async def run_interactive_session(app: GlueApp, smol_team) -> None:
     """Run an enhanced interactive session with the GLUE application.
 
     This function provides a command-line interface for interacting with GLUE applications,
@@ -1115,19 +1130,15 @@ async def run_interactive_session(app: GlueApp) -> None:
             try:
                 # Run with or without status indicator based on verbosity level
                 if state["verbose_mode"] or logger.level <= logging.INFO:
-                    # In verbose mode, don't show spinner to avoid interfering with log output
-                    logger.debug(
-                        "Processing input without status indicator (verbose mode)"
-                    )
-                    response = await process_message(app, user_input, state)
+                    logger.debug("Processing input with smol_team.run (verbose mode)")
+                    response = await asyncio.to_thread(smol_team.run, user_input)
                 else:
-                    # In normal mode, show spinner status indicator with improved messaging
                     with Status(
                         "[info]Processing message...[/info]",
                         spinner=spinner,
                         console=console,
                     ):
-                        response = await process_message(app, user_input, state)
+                        response = await asyncio.to_thread(smol_team.run, user_input)
 
                 # Determine the source (current team, model or app name)
                 source = (
@@ -1296,9 +1307,23 @@ async def process_message(app: GlueApp, user_input: str, state: dict) -> str:
         model = find_model_in_teams(app, state["current_model"])
 
         if model:
-            return await model.generate_response(
-                messages=[{"role": "user", "content": user_input}]
-            )
+            # Legacy GLUE models with generate_response
+            if hasattr(model, "generate_response") and callable(model.generate_response):
+                return await model.generate_response(
+                    messages=[{"role": "user", "content": user_input}]
+                )
+            # SmolAgents InferenceClientModel: wrap in CodeAgent
+            try:
+                from smolagents import CodeAgent
+
+                agent = CodeAgent(tools=[], model=model)
+                return agent.run(user_input)
+            except (ImportError, AttributeError):
+                pass
+            # Fallback to run() if available
+            if hasattr(model, "run") and callable(model.run):
+                return model.run(user_input)
+            return f"Error: Model {state['current_model']} cannot be invoked directly."
         else:
             return f"Error: Model {state['current_model']} not found or not accessible."
     else:
@@ -1372,7 +1397,7 @@ def display_response(
     # Format the response based on its type
     if isinstance(response, str):
         # Check for JSON tool call using the utility function
-        tool_call_data = extract_json(response)
+        tool_call_data = None
 
         if tool_call_data:
             # Format JSON for tool calls

@@ -1,10 +1,9 @@
-from smolagents import CodeAgent, InferenceClientModel, Tool, ToolCallingAgent
+from smolagents import CodeAgent, InferenceClientModel, Tool
 from typing import Optional, Dict, Any
 from glue.core.glue_memory_adapters import GLUEPersistentAdapter, VELCROSessionAdapter, TAPEEphemeralAdapter
 from glue.core.types import AdhesiveType
 import logging
 import types
-import json
 
 class FunctionTool(Tool):
     """
@@ -51,7 +50,6 @@ Your primary objective is to successfully complete the user's task by effectivel
 
 **3. Managed Agents & Team Hierarchy:**
 *This defines your direct and indirect reports. You can delegate tasks to any agent listed here.*
-{{managed_agents_description}}
 
 {% macro render_hierarchy(agent, level=0) -%}
   {%- set indent = '  ' * level %}
@@ -434,154 +432,3 @@ def make_glue_smol_agent(*, model, tools, glue_config, name, description, **kwar
     except Exception as e:
         logger.error(f"Error creating GlueSmolAgent '{name}': {e}")
         raise
-
-class GlueSmolToolCallingAgent(ToolCallingAgent):
-    """
-    A wrapper around smolagents ToolCallingAgent that integrates GLUE-specific features
-    such as schema validation, system prompt, and managed agent support.
-    """
-    prompt_templates = {
-        "system_prompt": DEFAULT_SYSTEM_PROMPT_TEMPLATE,
-        # ... other templates can be added here ...
-    }
-
-    def __init__(
-        self,
-        model: InferenceClientModel,
-        tools: list,
-        planning_interval: int = 1,
-        system_prompt: str = "",
-        glue_config: Optional[Dict[str, Any]] = None,
-        managed_agents: Optional[list] = None,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        **kwargs
-    ):
-        self.glue_config = glue_config or {}
-        logger = logging.getLogger("glue.smolagent")
-
-        # Validate agent metadata
-        if not name or not isinstance(name, str):
-            logger.error("All agents must have a non-empty string 'name' attribute.")
-            raise ValueError("All agents must have a non-empty string 'name' attribute.")
-        if not description or not isinstance(description, str):
-            logger.error(f"Agent '{name}' must have a non-empty string 'description' attribute.")
-            raise ValueError(f"Agent '{name}' must have a non-empty string 'description' attribute.")
-        self.name = name
-        self.description = description
-
-        # Prepare tools for smolagents
-        smolagents_tools = []
-        for t in tools:
-            try:
-                if isinstance(t, Tool):
-                    # Already a Smolagents Tool
-                    if t.name in ("delegate_task", "report_task_completion"):
-                        orig_call = t.__call__
-                        def logged_call(*args, **kwargs):
-                            logger.info(f"[GLUE] Tool '{t.name}' called with args={args}, kwargs={kwargs}")
-                            try:
-                                return orig_call(*args, **kwargs)
-                            except Exception as e:
-                                logger.error(f"Error in tool '{t.name}': {e}")
-                                raise
-                        t.__call__ = logged_call
-                    smolagents_tools.append(t)
-                elif hasattr(t, 'name') and callable(getattr(t, '__call__', None)) and hasattr(t, 'inputs') and hasattr(t, 'output_type'):
-                    # GLUE tool object: wrap its __call__ method
-                    smolagents_tools.append(FunctionTool(
-                        t.__call__,
-                        name=t.name,
-                        description=getattr(t, 'description', None),
-                        inputs=t.inputs,
-                        output_type=t.output_type,
-                    ))
-                elif hasattr(t, 'forward') and hasattr(t, '_glue_tool_schema'):
-                    # Function-based GLUE tool with a forward method and explicit schema
-                    schema = t._glue_tool_schema
-                    smolagents_tools.append(FunctionTool(
-                        t.forward,
-                        name=getattr(t, '__name__', None) or getattr(t, 'name', None),
-                        description=None,
-                        inputs=schema.get('inputs'),
-                        output_type=schema.get('output_type'),
-                    ))
-                elif callable(t) and hasattr(t, '_glue_tool_schema'):
-                    # Plain function with explicit schema
-                    schema = t._glue_tool_schema
-                    smolagents_tools.append(FunctionTool(
-                        t,
-                        name=getattr(t, '__name__', None),
-                        description=None,
-                        inputs=schema.get('inputs'),
-                        output_type=schema.get('output_type'),
-                    ))
-                else:
-                    logger.error(f"Tool '{repr(t)}' is not a valid SmolAgents Tool or function.")
-                    raise ValueError(f"Tool '{repr(t)}' is not a valid SmolAgents Tool or function.")
-            except Exception as e:
-                logger.error(f"Error wrapping tool '{repr(t)}': {e}")
-                raise
-
-        # Call the base constructor with the tools
-        super().__init__(
-            tools=smolagents_tools,
-            model=model,
-            planning_interval=planning_interval,
-            **kwargs,
-        )
-        # Restore user-provided name and description as super().__init__ may override them
-        self.name = name
-        self.description = description
-
-        # Handle system prompt override if provided
-        if system_prompt:
-            self.prompt_templates["system_prompt"] = system_prompt
-            logger.info(f"[GLUE] ToolCallingAgent '{getattr(self, 'name', 'unnamed')}' using custom system prompt (override).")
-        else:
-            # Override CodeAgent default with our custom template
-            self.prompt_templates["system_prompt"] = DEFAULT_SYSTEM_PROMPT_TEMPLATE
-            logger.info(f"[GLUE] ToolCallingAgent '{getattr(self, 'name', 'unnamed')}' using DEFAULT_SYSTEM_PROMPT_TEMPLATE.")
-
-        # Managed agents support
-        self.managed_agents = {agent.name: agent for agent in managed_agents} if managed_agents else {}
-
-    def debug_print_tool_schemas(self):
-        print(f"[DEBUG] Tool schemas for ToolCallingAgent '{getattr(self, 'name', 'unnamed')}':")
-        for tool in getattr(self, 'tools', {}).values():
-            name = getattr(tool, 'name', None)
-            description = getattr(tool, 'description', None)
-            inputs = getattr(tool, 'inputs', None)
-            output_type = getattr(tool, 'output_type', None)
-            print(f"  - Name: {name}")
-            print(f"    Description: {description}")
-            print(f"    Inputs: {inputs}")
-            print(f"    Output type: {output_type}")
-        print("")
-
-    def run(self, query: str, **kwargs):
-        # Ensure managed agent callables are injected before every run
-        if hasattr(self, 'team') and hasattr(self.team, 'inject_managed_agents'):
-            self.team.inject_managed_agents()
-        # For standalone tool-calling agents (no managed_agents), bypass the full agent loop
-        if not self.managed_agents:
-            resp = self.model(query)
-            raw = getattr(resp, 'content', None)
-            if raw:
-                try:
-                    data = json.loads(raw)
-                    tool_name = data.get('selected_tool_name')
-                    params = data.get('tool_parameters', {})
-                    tool = self.tools.get(tool_name)
-                    if tool:
-                        return tool(**params)
-                except Exception:
-                    pass
-        # Otherwise, run the full agent loop
-        return super().run(query, **kwargs)
-
-    def generate(self, *args, **kwargs):
-        # Ensure managed agent callables are injected before every generate
-        if hasattr(self, 'team') and hasattr(self.team, 'inject_managed_agents'):
-            self.team.inject_managed_agents()
-        return super().generate(*args, **kwargs)
