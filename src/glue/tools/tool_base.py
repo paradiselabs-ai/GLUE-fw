@@ -8,7 +8,7 @@ import asyncio
 import logging
 from pydantic import BaseModel, Field, ConfigDict
 
-from ..core.types import AdhesiveType
+from ..enums import AdhesiveType, ToolPermission
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.tools")
@@ -18,15 +18,6 @@ MAX_RETRIES = 3
 
 
 # ==================== Class Definitions ====================
-class ToolPermission(Enum):
-    """Tool permission levels"""
-
-    READ = "read"  # Read-only operations
-    WRITE = "write"  # File/state modifications
-    NETWORK = "network"  # Network access
-    EXECUTE = "execute"  # Code execution
-
-
 class ToolConfig(BaseModel):
     """Tool configuration with Pydantic validation"""
 

@@ -1,10 +1,11 @@
 import logging
 import asyncio
-from typing import Dict, List, Any, Optional, Union
+from typing import Dict, List, Any, Optional, Union, Callable
 from pydantic import ValidationError
 
 from glue.core.adhesive import AdhesiveSystem
 from glue.core.schemas import AdhesiveType, ToolResult, AppConfig
+# Changed import of AppConfig to glue.core.schemas
 
 from glue.core.app import GlueApp
 from glue.tools.tool_registry import ToolRegistry 
@@ -18,7 +19,8 @@ from glue.core.gemini_handler import GeminiModelHandler
 from glue.core.openrouter_handler import OpenRouterModelHandler 
 from glue.core.team import Team
 from glue.magnetic.field import MagneticField
-from glue.tools.tool_base import Tool
+from glue.tools.tool_base import Tool # Import GLUE Tool base
+from glue.core.types import Message as GlueMessage # Import GLUE Message
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,35 @@ class GlueModelAdapter:
         Call the underlying GLUE model's generate() and return its result.
         """
         return await self.glue_model.generate(task)
+
+def create_agno_tool_from_glue_tool(glue_tool: Tool, name: str) -> Callable:
+    """
+    Wraps a GLUE Tool instance into an Agno-compatible async callable function.
+
+    Args:
+        glue_tool: The instance of the GLUE Tool to wrap.
+        name: The desired name for the wrapped Agno tool function.
+
+    Returns:
+        An async function compatible with Agno's tool system.
+    """
+    async def tool_wrapper(**kwargs):
+        """Dynamically generated wrapper for a GLUE tool."""
+        # Call the underlying GLUE tool's execute method
+        # Note: GLUE tools expect keyword arguments matching their _execute signature
+        # We might need a more robust way to handle args/kwargs translation later,
+        # but for now, pass them directly.
+        # Assume the GLUE tool's execute handles filtering relevant args.
+        result = await glue_tool.execute(**kwargs)
+        return result
+
+    # Set metadata on the wrapper function
+    tool_wrapper.__name__ = name
+    # Use the GLUE tool's description for the docstring
+    tool_wrapper.__doc__ = glue_tool.description or f"GLUE Tool Wrapper: {name}"
+
+    return tool_wrapper
+
 
 class GlueAgnoAdapter:
     """
@@ -1048,3 +1079,30 @@ class GlueAgnoAdapter:
             
         logger.debug(f"Parsed flow string '{flow_def_str}' into: {flow_dict}")
         return flow_dict
+
+# Define the AgnoMessage class for type hinting (or import if it's a real class)
+# For now, mirroring the test file's placeholder.
+class AgnoMessage:
+    def __init__(self, sender: str, content: str, metadata: dict = None):
+        self.sender = sender
+        self.content = content
+        self.metadata = metadata or {}
+
+def adapt_glue_message_to_agno(glue_message: GlueMessage) -> AgnoMessage:
+    """
+    Adapts a GLUE Message object to an Agno-compatible Message object.
+
+    Args:
+        glue_message: The GLUE Message instance.
+
+    Returns:
+        An AgnoMessage instance.
+    """
+    # GLUE 'role' maps to Agno 'sender'
+    # GLUE 'content' maps to Agno 'content'
+    # GLUE 'metadata' maps to Agno 'metadata'
+    return AgnoMessage(
+        sender=glue_message.role,
+        content=glue_message.content,
+        metadata=glue_message.metadata.copy() # Use a copy to avoid shared mutable state
+    )

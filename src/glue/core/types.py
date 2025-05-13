@@ -4,42 +4,11 @@ from enum import Enum
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
+from ..enums import AdhesiveType, FlowType, TaskStatus
 
 # ==================== Constants ====================
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_MAX_RETRIES = 3
-
-
-# ==================== Type Definitions ====================
-class AdhesiveType(str, Enum):
-    """Types of adhesive bindings that control tool result persistence"""
-
-    GLUE = "glue"  # Team-wide persistent results
-    VELCRO = "velcro"  # Session-based persistence
-    TAPE = "tape"  # One-time use, no persistence
-
-
-class FlowType(str, Enum):
-    """Types of magnetic flows between teams"""
-
-    BIDIRECTIONAL = "><"  # Free flowing both ways
-    PUSH = "->"  # Source pushes to target
-    PULL = "<-"  # Target pulls from source
-    REPEL = "<>"  # No interaction allowed
-
-
-# Add TaskStatus enum for orchestrator subtask states
-class TaskStatus(str, Enum):
-    """States of a subtask in the orchestrator lifecycle."""
-
-    PENDING = "pending"
-    ASSIGNED = "assigned"
-    REPORTED = "reported"
-    COMPLETE = "complete"
-    FAILED = "failed"
-    PENDING_RETRY = "pending_retry"
-    NO_MEMBER = "no_member"
-    ESCALATED = "escalated"
 
 
 # ==================== Class Definitions ====================
