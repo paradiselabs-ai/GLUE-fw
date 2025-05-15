@@ -8,7 +8,6 @@ including application management, model connectors, and adhesive types.
 from .app import GlueApp
 from .types import AdhesiveType
 from .glue_smolagent import GlueSmolAgent
-from .glue_smoltool import GlueSmolTool
-
+from .glue_smolteam import GlueSmolTeam
 # Export public API
-__all__ = ["GlueApp", "AdhesiveType", "GlueSmolAgent", "GlueSmolTool"]
+__all__ = ["GlueApp", "AdhesiveType", "GlueSmolAgent", "GlueSmolTeam"]

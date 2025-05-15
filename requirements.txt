@@ -37,8 +37,6 @@ proto-plus==1.26.1
 protobuf==5.29.4
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
-pydantic==2.11.1
-pydantic_core==2.33.0
 pyparsing==3.2.3
 pytest==8.3.5
 pytest-asyncio==0.25.3

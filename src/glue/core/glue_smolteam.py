@@ -1,11 +1,10 @@
 from typing import Dict, Any, Optional
 from smolagents import InferenceClientModel
 from .glue_smolagent import GlueSmolAgent, make_glue_smol_agent
-from .glue_smoltool import GlueSmolTool
 from .providers.openrouter import OpenrouterProvider
-from ..tools.delegate_task_tool import DelegateTaskTool
-import inspect
 import asyncio
+import logging
+from ..core.types import FlowType
 
 class SimpleMessage:
     def __init__(self, content):
@@ -53,7 +52,7 @@ class GlueSmolTeam:
         lead_description = getattr(raw_client, "description", f"Lead agent for team {lead_name}")
         self.lead_agent = make_glue_smol_agent(
             model=lead_client,
-            tools=[GlueSmolTool(t) for t in self.team.tools],
+            tools=list(self.team.tools),
             glue_config=self.glue_config,
             managed_agents=[],  # Will be filled below
             name=lead_name,
@@ -92,7 +91,7 @@ class GlueSmolTeam:
             member_description = getattr(raw_member, "description", f"Team member agent {member_name}")
             agent = make_glue_smol_agent(
                 model=member_client,
-                tools=[GlueSmolTool(t) for t in self.team.tools],
+                tools=list(self.team.tools),
                 glue_config=self.glue_config,
                 name=member_name,
                 description=member_description,
@@ -130,6 +129,33 @@ class GlueSmolTeam:
 
         # Debug: print the rendered system prompt for the lead agent
         self.debug_print_lead_prompt()
+        # Initialize magnetic flow functions for lead agent
+        try:
+            # Ensure interpreter and globals exist
+            self.lead_agent.force_interpreter()
+            flow_logger = logging.getLogger("glue.smolteam")
+            # Iterate relationships if any; skip if not present
+            for other_team, rel in getattr(self.team, 'relationships', {}).items():
+                # PUSH or BIDIRECTIONAL: push_to_<team>
+                if rel in {FlowType.PUSH.value, FlowType.BIDIRECTIONAL.value}:
+                    def make_push(t):
+                        def push(content):
+                            """Push content to target team"""
+                            asyncio.create_task(self.team.send_information(t, content))
+                        return push
+                    self.lead_agent.interpreter_globals[f"push_to_{other_team}"] = make_push(other_team)
+                # PULL or BIDIRECTIONAL: pull_from_<team>
+                if rel in {FlowType.PULL.value, FlowType.BIDIRECTIONAL.value}:
+                    def make_pull(t):
+                        def pull(content):
+                            """Pull content from source team"""
+                            return asyncio.get_event_loop().run_until_complete(self.team.receive_information(t, content))
+                        return pull
+                    self.lead_agent.interpreter_globals[f"pull_from_{other_team}"] = make_pull(other_team)
+                # REPEL: do not register any flow
+            flow_logger.debug(f"[GLUE] Registered flow functions for lead agent: {list(self.lead_agent.interpreter_globals.keys())}")
+        except Exception as e:
+            logging.getLogger("glue.smolteam").error(f"Error initializing flow functions: {e}")
 
     def _make_openrouter_callable(self, glue_model):
         provider = OpenrouterProvider(glue_model)

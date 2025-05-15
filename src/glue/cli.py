@@ -43,7 +43,8 @@ from rich.status import Status
 # Import framework modules
 # Use direct imports to avoid circular imports
 from glue.core import GlueApp
-from glue.dsl import GlueDSLParser, GlueLexer
+from glue.dsl.parser import GlueParser
+from glue.dsl.lexer import GlueLexer
 
 # Import new utilities
 from .cliHelpers import parse_interactive_command, get_interactive_help_text
@@ -416,7 +417,7 @@ async def run_app(
 
         # Create lexer and parser
         lexer = GlueLexer()
-        parser = GlueDSLParser()
+        parser = GlueParser()
 
         # Parse the GLUE file
         tokens = lexer.tokenize(glue_content)
@@ -488,7 +489,47 @@ async def run_app(
             logger.debug("Entering interactive session")
             # Integrate UserInputTool for interactive sessions on entry-point team
             from smolagents import UserInputTool
+            # Instantiate and decorate user_input tool for CLI prompting
             ui_tool = UserInputTool()
+            # Decorate user_input: intercept CLI commands vs. actual answers in interactive mode
+            def _decorated_execute(question: str, _console=console, _parse=parse_interactive_command, _help=show_interactive_help, **kwargs):
+                """Prompt the user with a styled panel, handling help and exit commands."""
+                from rich.panel import Panel
+                from rich.align import Align
+                from rich.text import Text
+                from rich.prompt import Prompt
+                from rich.box import ROUNDED
+                import sys
+
+                while True:
+                    # Display the question in a decorative panel
+                    panel = Panel(
+                        Align.center(Text(question, style="bold cyan"), vertical="middle"),
+                        title="[bold magenta]🤔 Question[/bold magenta]",
+                        border_style="bright_blue",
+                        box=ROUNDED,
+                        padding=(1, 2),
+                    )
+                    _console.print(panel)
+                    # Prompt for response or command
+                    response = Prompt.ask("[bold cyan]glue>[/bold cyan] ", console=_console, show_default=False)
+                    # Handle slash-prefixed commands
+                    if isinstance(response, str) and response.startswith("/"):
+                        cmd, args = _parse(response)
+                        cmd_lower = cmd.lower()
+                        if cmd_lower in ["help", "h"]:
+                            _help(_console)
+                        elif cmd_lower in ["exit", "quit", "q", "cancel"]:
+                            # Exit interactive session
+                            _console.print("[bold red]Exiting interactive question prompt...[/bold red]")
+                            sys.exit(0)
+                        else:
+                            _console.print(f"[red]Unknown command: {cmd}[/red]")
+                        # Re-prompt the question
+                        continue
+                    # Return any non-command answer
+                    return response
+            ui_tool.execute = _decorated_execute
             first_team_name = next(iter(app.teams))
             entry_team = app.teams[first_team_name]
             app.tools['user_input'] = ui_tool
@@ -602,7 +643,6 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
 
     # Launch the background printer task
     import asyncio
-
     bg_task = asyncio.create_task(background_printer())
 
     # Display welcome banner with improved styling
@@ -1241,9 +1281,14 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
                     console.print("")
 
             except Exception as e:
-                logger.error(f"Error processing message: {e}")
+                # Enhance forbidden function evaluation errors with a corrective suggestion
+                msg = str(e)
+                if "Forbidden function evaluation" in msg and "assistant_user_input" in msg:
+                    # Suggest the proper tool name
+                    msg = f"{msg}\nDid you mean to use \"user_input\"?"
+                print(f"Error processing message: {msg}")
                 console.print(
-                    f"[{CLI_CONFIG['theme']['error']}]Error processing message: {str(e)}[/{CLI_CONFIG['theme']['error']}]"
+                    f"[{CLI_CONFIG['theme']['error']}]Error processing message: {msg}[/{CLI_CONFIG['theme']['error']}]"
                 )
 
         except KeyboardInterrupt:
@@ -1781,520 +1826,6 @@ def create_new_project(
 
 
 # ==================== Forge Functions ====================
-def forge_tool(name: str, description: str, template: str = "basic"):
-    """Create a new custom tool.
-
-    Args:
-        name: Name of the tool
-        description: Description of what the tool does
-        template: Template type to use (basic, api, or data)
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    logger = logging.getLogger("glue.forge_tool")
-
-    # Validate name
-    if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", name):
-        logger.error(
-            f"Invalid tool name: {name}. Must start with a letter and contain only letters, numbers, and underscores."
-        )
-        print(
-            "Error: Invalid tool name. Must start with a letter and contain only letters, numbers, and underscores."
-        )
-        return False
-
-    # Create tools directory if it doesn't exist
-    tools_dir = Path("tools")
-    tools_dir.mkdir(exist_ok=True)
-
-    # Create tool file
-    tool_file = tools_dir / f"{name}.py"
-    if tool_file.exists():
-        logger.error(f"Tool file '{tool_file}' already exists")
-        print(f"Error: Tool file '{tool_file}' already exists")
-        return False
-
-    # Generate tool code based on template
-    if template == "basic":
-        tool_code = f"""from glue.tools import SimpleBaseTool
-
-class {name.capitalize()}Tool(SimpleBaseTool):
-    \"\"\"
-    {description}
-    \"\"\"
-    
-    def __init__(self):
-        super().__init__(
-            name="{name}",
-            description="{description}",
-            parameters={{
-                "type": "object",
-                "properties": {{
-                    "query": {{
-                        "type": "string",
-                        "description": "The input for the tool"
-                    }}
-                }},
-                "required": ["query"]
-            }}
-        )
-    
-    async def _execute(self, query: str, **kwargs):
-        \"\"\"
-        Execute the tool with the given query.
-        
-        Args:
-            query: The input for the tool
-            **kwargs: Additional arguments
-            
-        Returns:
-            The result of the tool execution
-        \"\"\"
-        # Implement your tool logic here
-        return f"Executed {{self.name}} with query: {{query}}"
-
-# Register the tool with the framework
-def get_tool():
-    return {name.capitalize()}Tool()
-"""
-    elif template == "api":
-        tool_code = f"""import aiohttp
-from glue.tools import SimpleBaseTool
-
-class {name.capitalize()}Tool(SimpleBaseTool):
-    \"\"\"
-    {description}
-    \"\"\"
-    
-    def __init__(self):
-        super().__init__(
-            name="{name}",
-            description="{description}",
-            parameters={{
-                "type": "object",
-                "properties": {{
-                    "query": {{
-                        "type": "string",
-                        "description": "The query to send to the API"
-                    }}
-                }},
-                "required": ["query"]
-            }}
-        )
-        self.api_key = None
-        self.base_url = "https://api.example.com"  # Replace with actual API URL
-    
-    async def setup(self):
-        \"\"\"Set up the tool with API key from environment variables if not provided.\"\"\"
-        import os
-        self.api_key = os.environ.get("{name.upper()}_API_KEY")
-        if not self.api_key:
-            print(f"Warning: {name.upper()}_API_KEY not found in environment variables")
-    
-    async def _execute(self, query: str, **kwargs):
-        \"\"\"
-        Execute the tool by making an API request.
-        
-        Args:
-            query: The query to send to the API
-            **kwargs: Additional arguments
-            
-        Returns:
-            The API response
-        \"\"\"
-        if not self.api_key:
-            return "Error: API key not configured"
-        
-        headers = {{"Authorization": f"Bearer {{self.api_key}}"}}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{{self.base_url}}/search",
-                params={{"q": query}},
-                headers=headers
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data
-                else:
-                    return f"Error: API returned status {{response.status}}"
-
-# Register the tool with the framework
-def get_tool():
-    return {name.capitalize()}Tool()
-"""
-    elif template == "data":
-        tool_code = f"""import pandas as pd
-from glue.tools import SimpleBaseTool
-
-class {name.capitalize()}Tool(SimpleBaseTool):
-    \"\"\"
-    {description}
-    \"\"\"
-    
-    def __init__(self):
-        super().__init__(
-            name="{name}",
-            description="{description}",
-            parameters={{
-                "type": "object",
-                "properties": {{
-                    "data_path": {{
-                        "type": "string",
-                        "description": "Path to the data file"
-                    }},
-                    "query": {{
-                        "type": "string",
-                        "description": "Query to filter or analyze the data"
-                    }}
-                }},
-                "required": ["data_path", "query"]
-            }}
-        )
-    
-    async def _execute(self, data_path: str, query: str, **kwargs):
-        \"\"\"
-        Execute the tool by analyzing data.
-        
-        Args:
-            data_path: Path to the data file
-            query: Query to filter or analyze the data
-            **kwargs: Additional arguments
-            
-        Returns:
-            Analysis results
-        \"\"\"
-        try:
-            # Load data based on file extension
-            if data_path.endswith('.csv'):
-                df = pd.read_csv(data_path)
-            elif data_path.endswith('.xlsx') or data_path.endswith('.xls'):
-                df = pd.read_excel(data_path)
-            elif data_path.endswith('.json'):
-                df = pd.read_json(data_path)
-            else:
-                return f"Unsupported file format: {{data_path}}"
-            
-            # Basic query processing - in a real tool, you'd implement more sophisticated analysis
-            if "count" in query.lower():
-                return f"Row count: {{len(df)}}"
-            elif "columns" in query.lower():
-                return f"Columns: {{', '.join(df.columns.tolist())}}"
-            elif "summary" in query.lower() or "describe" in query.lower():
-                return df.describe().to_string()
-            else:
-                # Default to returning the first few rows
-                return df.head().to_string()
-                
-        except Exception as e:
-            return f"Error processing data: {{str(e)}}"
-
-# Register the tool with the framework
-def get_tool():
-    return {name.capitalize()}Tool()
-"""
-    else:
-        logger.error(f"Unknown tool template: {template}")
-        print(f"Error: Unknown tool template: {template}")
-        return False
-
-    # Write tool file
-    tool_file.write_text(tool_code)
-
-    # Create __init__.py if it doesn't exist
-    init_file = tools_dir / "__init__.py"
-    if not init_file.exists():
-        init_file.write_text("# Custom tools package\n")
-
-    logger.info(f"Tool '{name}' created successfully")
-    print(f"Tool '{name}' created successfully in '{tool_file}'")
-    print("To use this tool, add the following to your app.glue file:")
-    print(
-        f"""
-tool {name} {{
-    custom = true
-}}
-"""
-    )
-    return True
-
-
-def forge_mcp(name: str, description: str):
-    """Create a new MCP (Model Control Protocol) integration.
-
-    Args:
-        name: Name of the MCP integration
-        description: Description of the MCP integration
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    logger = logging.getLogger("glue.forge_mcp")
-
-    # Validate name
-    if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", name):
-        logger.error(
-            f"Invalid MCP name: {name}. Must start with a letter and contain only letters, numbers, and underscores."
-        )
-        print(
-            "Error: Invalid MCP name. Must start with a letter and contain only letters, numbers, and underscores."
-        )
-        return False
-
-    # Create mcps directory if it doesn't exist
-    mcps_dir = Path("mcps")
-    mcps_dir.mkdir(exist_ok=True)
-
-    # Create MCP file
-    mcp_file = mcps_dir / f"{name}_mcp.py"
-    if mcp_file.exists():
-        logger.error(f"MCP file '{mcp_file}' already exists")
-        print(f"Error: MCP file '{mcp_file}' already exists")
-        return False
-
-    # Generate MCP code
-    mcp_code = f"""from typing import Dict, List, Any, Optional
-from glue.core.mcp import BaseMCP
-
-class {name.capitalize()}MCP(BaseMCP):
-    \"\"\"
-    {description}
-    \"\"\"
-    
-    def __init__(self, config: Optional[Dict[str, Any]] = None):
-        super().__init__(name="{name}", config=config or {{}})
-        self.base_url = self.config.get("base_url", "https://api.example.com")
-        self.api_key = self.config.get("api_key")
-    
-    async def setup(self):
-        \"\"\"Set up the MCP with API key from environment variables if not provided.\"\"\"
-        if not self.api_key:
-            import os
-            self.api_key = os.environ.get("{name.upper()}_API_KEY")
-            if not self.api_key:
-                print(f"Warning: {name.upper()}_API_KEY not found in environment variables")
-    
-    async def execute_function(self, function_name: str, arguments: Dict[str, Any]) -> Any:
-        \"\"\"
-        Execute a function through this MCP.
-        
-        Args:
-            function_name: Name of the function to execute
-            arguments: Arguments to pass to the function
-            
-        Returns:
-            The result of the function execution
-        \"\"\"
-        # Implement your MCP function execution logic here
-        # This is a placeholder implementation
-        return {{
-            "result": f"Executed {{function_name}} with arguments: {{arguments}}",
-            "status": "success"
-        }}
-    
-    async def get_available_functions(self) -> List[Dict[str, Any]]:
-        \"\"\"
-        Get a list of functions available through this MCP.
-        
-        Returns:
-            List of function definitions
-        \"\"\"
-        # Return a list of function definitions
-        # This is a placeholder implementation
-        return [
-            {{
-                "name": "example_function",
-                "description": "An example function",
-                "parameters": {{
-                    "type": "object",
-                    "properties": {{
-                        "param1": {{
-                            "type": "string",
-                            "description": "First parameter"
-                        }},
-                        "param2": {{
-                            "type": "integer",
-                            "description": "Second parameter"
-                        }}
-                    }},
-                    "required": ["param1"]
-                }}
-            }}
-        ]
-
-# Register the MCP with the framework
-def get_mcp():
-    return {name.capitalize()}MCP()
-"""
-
-    # Write MCP file
-    mcp_file.write_text(mcp_code)
-
-    # Create __init__.py if it doesn't exist
-    init_file = mcps_dir / "__init__.py"
-    if not init_file.exists():
-        init_file.write_text("# Custom MCPs package\n")
-
-    logger.info(f"MCP '{name}' created successfully")
-    print(f"MCP '{name}' created successfully in '{mcp_file}'")
-    print("To use this MCP, add the following to your app.glue file:")
-    print(
-        f"""
-mcp {name} {{
-    custom = true
-}}
-"""
-    )
-    return True
-
-
-def forge_api(name: str, description: str):
-    """Create a new API integration.
-
-    Args:
-        name: Name of the API integration
-        description: Description of the API integration
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
-    logger = logging.getLogger("glue.forge_api")
-
-    # Validate name
-    if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", name):
-        logger.error(
-            f"Invalid API name: {name}. Must start with a letter and contain only letters, numbers, and underscores."
-        )
-        print(
-            "Error: Invalid API name. Must start with a letter and contain only letters, numbers, and underscores."
-        )
-        return False
-
-    # Create apis directory if it doesn't exist
-    apis_dir = Path("apis")
-    apis_dir.mkdir(exist_ok=True)
-
-    # Create API file
-    api_file = apis_dir / f"{name}_api.py"
-    if api_file.exists():
-        logger.error(f"API file '{api_file}' already exists")
-        print(f"Error: API file '{api_file}' already exists")
-        return False
-
-    # Generate API code
-    api_code = f"""import aiohttp
-from typing import Dict, Any, Optional
-
-class {name.capitalize()}API:
-    \"\"\"
-    {description}
-    \"\"\"
-    
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
-        self.api_key = api_key
-        self.base_url = base_url or "https://api.example.com"  # Replace with actual API URL
-    
-    async def setup(self):
-        \"\"\"Set up the API client with API key from environment variables if not provided.\"\"\"
-        if not self.api_key:
-            import os
-            self.api_key = os.environ.get("{name.upper()}_API_KEY")
-            if not self.api_key:
-                print(f"Warning: {name.upper()}_API_KEY not found in environment variables")
-    
-    async def get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        \"\"\"
-        Make a GET request to the API.
-        
-        Args:
-            endpoint: API endpoint
-            params: Query parameters
-            
-        Returns:
-            API response
-        \"\"\"
-        if not self.api_key:
-            return {{"error": "API key not configured"}}
-        
-        headers = {{"Authorization": f"Bearer {{self.api_key}}"}}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{{self.base_url}}/{{endpoint}}",
-                params=params,
-                headers=headers
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-                else:
-                    return {{
-                        "error": f"API returned status {{response.status}}",
-                        "status": response.status
-                    }}
-    
-    async def post(self, endpoint: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        \"\"\"
-        Make a POST request to the API.
-        
-        Args:
-            endpoint: API endpoint
-            data: Request data
-            
-        Returns:
-            API response
-        \"\"\"
-        if not self.api_key:
-            return {{"error": "API key not configured"}}
-        
-        headers = {{
-            "Authorization": f"Bearer {{self.api_key}}",
-            "Content-Type": "application/json"
-        }}
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{{self.base_url}}/{{endpoint}}",
-                json=data,
-                headers=headers
-            ) as response:
-                if response.status in (200, 201):
-                    return await response.json()
-                else:
-                    return {{
-                        "error": f"API returned status {{response.status}}",
-                        "status": response.status
-                    }}
-
-# Create an instance of the API client
-def get_api_client(api_key: Optional[str] = None, base_url: Optional[str] = None):
-    return {name.capitalize()}API(api_key, base_url)
-"""
-
-    # Write API file
-    api_file.write_text(api_code)
-
-    # Create __init__.py if it doesn't exist
-    init_file = apis_dir / "__init__.py"
-    if not init_file.exists():
-        init_file.write_text("# Custom APIs package\n")
-
-    logger.info(f"API '{name}' created successfully")
-    print(f"API '{name}' created successfully in '{api_file}'")
-    print("To use this API in your application:")
-    print(
-        f"""
-from apis.{name}_api import get_api_client
-
-# In an async function:
-api_client = get_api_client()
-await api_client.setup()
-result = await api_client.get("endpoint", {{"param": "value"}})
-"""
-    )
-    return True
-
-
 def run_forge_command():
     """Run the GLUE Forge interactive CLI to create custom components using Google Gemini.
 
@@ -2304,7 +1835,6 @@ def run_forge_command():
     import os
     import json
     import getpass
-    from pathlib import Path
 
     logger = logging.getLogger("glue.forge")
 
@@ -2588,7 +2118,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
 
         # Parse the file with lexer
         lexer = GlueLexer()
-        parser = GlueDSLParser()
+        parser = GlueParser()
 
         with Progress(
             SpinnerColumn(),
@@ -3171,22 +2701,6 @@ def main():
             dest="forge_type", help="Type of component to forge"
         )
 
-        # Forge tool
-        forge_tool_parser = forge_subparsers.add_parser(
-            "tool", help="Create a custom tool"
-        )
-        forge_tool_parser.add_argument("name", help="Tool name")
-        forge_tool_parser.add_argument(
-            "--description", "-d", required=True, help="Tool description"
-        )
-        forge_tool_parser.add_argument(
-            "--template",
-            "-t",
-            choices=["basic", "api", "data"],
-            default="basic",
-            help="Tool template to use",
-        )
-
         # Forge MCP
         forge_mcp_parser = forge_subparsers.add_parser(
             "mcp", help="Create a custom MCP integration"
@@ -3253,17 +2767,9 @@ def main():
                 create_new_project(args.project)
 
             elif args.command == "forge":
-                if not args.forge_type:
-                    # Run interactive forge command if no subcommand is specified
-                    run_forge_command()
-                elif args.forge_type == "tool":
-                    forge_tool(args.name, args.description, args.template)
-                elif args.forge_type == "mcp":
-                    forge_mcp(args.name, args.description)
-                elif args.forge_type == "api":
-                    forge_api(args.name, args.description)
-                else:
-                    forge_parser.print_help()
+                print("Error: 'forge' command is no longer supported.")
+                parser.print_help()
+                sys.exit(1)
 
             elif args.command == "list-tools":
                 display_tools(args)
@@ -3728,7 +3234,7 @@ def get_template_content(template: str, project_name: str) -> str:
         # Ask if user wants to add another model
         if len(models) >= 1:
             add_another = Confirm.ask(
-                "\n[bold cyan]Add another model?[/bold cyan]", default=True
+                "\n[bold cyan]Add another model?[/bold cyan]", default=False
             )
             add_model = add_another
 

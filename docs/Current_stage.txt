@@ -1,0 +1,43 @@
+Top priority(llm chaching):
+Removal of pydantic, get_tool_class
+understanding the flow of agents well and adjusting their prompts so they do as the flow expects them to do
+https://python.langchain.com/docs/integrations/llm_caching/
+
+
+
+Pdf reader:
+https://python.langchain.com/docs/integrations/document_loaders/pymupdf4llm/
+
+GitHub tools:
+https://python.langchain.com/docs/integrations/tools/github/
+https://python.langchain.com/docs/integrations/document_loaders/github/
+
+Directory reader:
+https://python.langchain.com/docs/how_to/document_loader_directory/
+https://python.langchain.com/docs/integrations/document_loaders/docling/  # Document reader including pdf formats (https://docling-project.github.io/docling/)
+
+Vector search:
+https://python.langchain.com/docs/integrations/vectorstores/weaviate/ (Can be used online)
+https://python.langchain.com/docs/integrations/vectorstores/chroma/ (store without any credentials)
+
+
+Productivity toolset: 
+	1 Slack:
+        https://python.langchain.com/docs/integrations/tools/slack/
+	https://python.langchain.com/docs/integrations/document_loaders/slack/
+
+	2.  Payments:
+	https://python.langchain.com/docs/integrations/tools/goat/
+
+	3. Google:
+	https://python.langchain.com/docs/integrations/document_loaders/google_drive/
+	https://python.langchain.com/docs/integrations/document_loaders/google_cloud_storage_directory/
+
+
+ Web:
+Web search:
+https://python.langchain.com/docs/integrations/tools/serpapi/
+https://python.langchain.com/docs/integrations/document_loaders/wikipedia/
+
+Web Usage:
+https://python.langchain.com/docs/integrations/tools/playwright/

@@ -10,6 +10,20 @@ import json
 from .types import AdhesiveType, TeamConfig, ToolResult, FlowType
 from .schemas import Message
 
+# Monkey-patch InferenceClientModel to provide no-op add_tool and add_tool_sync for uniform model interface
+try:
+    from smolagents import InferenceClientModel
+    if not hasattr(InferenceClientModel, 'add_tool'):
+        async def _noop_add_tool(self, name: str, tool: Any):
+            return None
+        InferenceClientModel.add_tool = _noop_add_tool
+    if not hasattr(InferenceClientModel, 'add_tool_sync'):
+        def _noop_add_tool_sync(self, name: str, tool: Any):
+            return None
+        InferenceClientModel.add_tool_sync = _noop_add_tool_sync
+except ImportError:
+    pass
+
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
 
@@ -189,23 +203,16 @@ class Team:
         self.updated_at = datetime.now()
         logger.info(f"Added model {member.name} to team {self.name} with role {role}")
 
-    async def add_tool(self, name: str, tool: Any) -> None:
-        """Add a tool to this team.
+    async def add_tool(self, name: str, tool: Any, *args, **kwargs) -> None:
+        """Add a SmolAgents Tool instance to this team, ignoring any adhesive/binding parameters.
 
         Args:
             name: Tool name
             tool: Tool instance
+            *args, **kwargs: Ignored (for DSL binding compatibility)
         """
         # Add tool to team
         self._tools[name] = tool
-        # Skip model registration for smolagents UserInputTool to avoid missing add_tool method on models
-        try:
-            from smolagents import UserInputTool as SmolInputTool
-            if isinstance(tool, SmolInputTool):
-                logger.info(f"Registered smolagents UserInputTool '{name}' to team '{self.name}' without model registration")
-                return
-        except ImportError:
-            pass
 
         # Initialize the tool if it's not already initialized
         if (
@@ -220,11 +227,9 @@ class Team:
                 except Exception as e:
                     logger.warning(f"Failed to initialize tool {name}: {e}")
 
-        # Add tool to all models in the team
+        # Add tool to all models using the patched add_tool interface
         for model in self.models.values():
-            # Use await here since model.add_tool is async
             await model.add_tool(name, tool)
-
         logger.info(f"Added tool {name} to team {self.name}")
 
     async def share_result(
@@ -366,23 +371,6 @@ class Team:
                 # Not a valid tool call format, treat as regular response
                 return response_content
 
-            # Special handling for user input tool in interactive mode
-            if tool_name == "user_input":
-                # Validate question
-                question = arguments.get("question", "")
-                if not isinstance(question, str) or not question.strip():
-                    error_msg = "Error: Invalid question provided to user_input tool."
-                    logger.error(error_msg)
-                    return error_msg
-                # Prompt the user until non-empty answer
-                answer = input(f"{question} => Type your answer here:").strip()
-                while not answer:
-                    print("Please provide a non-empty answer.")
-                    answer = input(f"{question} => Type your answer here:").strip()
-                logger.info(f"Received user input: {answer}")
-                # Append user answer to history
-                self.conversation_history.append(Message(role="user", content=answer))
-                return answer
             # Default tool lookup
             tool_instance = source.tools.get(tool_name)
             if tool_instance and (
@@ -1434,72 +1422,4 @@ class Team:
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
 
-    async def _invoke_tool_and_refine_response(
-        self, model: Any, raw_response: str
-    ) -> str:
-        """
-        Check a model's raw_response for JSON tool calls, execute if found,
-        share result, and let the model process the tool result to produce final response.
-        Otherwise return raw_response.
-        """
-        from ..utils.json_utils import extract_json
-
-        # Only parse string responses
-        if not isinstance(raw_response, str):
-            return raw_response
-        tool_call_data = extract_json(raw_response)
-        if isinstance(tool_call_data, dict):
-            # Parse tool name and arguments
-            if "tool_name" in tool_call_data and "arguments" in tool_call_data:
-                tool_name = tool_call_data["tool_name"]
-                arguments = tool_call_data["arguments"]
-            elif len(tool_call_data) == 1:
-                tool_name, arguments = next(iter(tool_call_data.items()))
-            else:
-                return raw_response
-            # Ensure tool on model
-            if tool_name not in model.tools and tool_name in self._tools:
-                try:
-                    model.add_tool_sync(tool_name, self._tools[tool_name])
-                except Exception:
-                    pass
-            tool_inst = model.tools.get(tool_name)
-            # Prepare context for call
-            ctx = dict(arguments)
-            ctx.update({"calling_model": model.name, "calling_team": self.name})
-            # Select callable
-            if callable(tool_inst) and not hasattr(tool_inst, "execute"):
-                tool_func = tool_inst
-            else:
-                tool_func = tool_inst.execute
-            # Execute tool
-            tool_result = await tool_func(**ctx)
-            # Log and share result
-            self.conversation_history.append(
-                Message(role="tool", name=tool_name, content=str(tool_result))
-            )
-            tr = ToolResult(tool_name=tool_name, result=tool_result)
-            await self.share_result(tool_name, tr, model_name=model.name)
-            # Let model process tool result
-            final = await model.process_tool_result(tr)
-            self.conversation_history.append(
-                Message(role="assistant", name=model.name, content=final)
-            )
-            logger.info(
-                f"Tool {tool_name} applied for {model.name}, refined response generated."
-            )
-            return final
-        return raw_response
-
-    async def fetch_task_for_member(self, agent_id: str) -> dict:
-        """Fetch next uncompleted task for the given team member."""
-        while True:
-            # Look for tasks assigned to this member without completion
-            for task in list(self.shared_results.values()):
-                if (
-                    isinstance(task, dict)
-                    and task.get("assigned_to") == agent_id
-                    and not task.get("completion")
-                ):
-                    return task
-            await asyncio.sleep(0.5)
+    

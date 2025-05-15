@@ -3,6 +3,3 @@
 This module provides the parser and lexer for the GLUE DSL, which is used to
 define GLUE applications, teams, tools, and models.
 """
-
-from .parser import GlueParser as GlueDSLParser
-from .lexer import GlueLexer

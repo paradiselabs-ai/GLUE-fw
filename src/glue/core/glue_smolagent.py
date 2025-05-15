@@ -5,25 +5,6 @@ from glue.core.types import AdhesiveType
 import logging
 import types
 
-class FunctionTool(Tool):
-    """
-    Smolagents-compliant wrapper for function-based tools.
-    Requires explicit 'inputs' and 'output_type' to match Smolagents schema requirements.
-    """
-    def __init__(self, func, *, name=None, description=None, inputs=None, output_type=None):
-        if inputs is None or output_type is None:
-            raise ValueError("FunctionTool requires explicit 'inputs' and 'output_type' arguments.")
-        self.func = func
-        # Skip forward signature validation for function-based tools
-        self.skip_forward_signature_validation = True
-        self.name = name or func.__name__
-        self.description = description or func.__doc__ or f"Tool: {self.name}"
-        self.inputs = inputs
-        self.output_type = output_type
-        super().__init__(self.name, self.description, self.inputs, self.output_type)
-    def __call__(self, *args, **kwargs):
-        return self.func(*args, **kwargs)
-
 # Add or update the default system prompt template for GlueSmolAgent
 DEFAULT_SYSTEM_PROMPT_TEMPLATE = '''
 # **ROLE AND OBJECTIVE**
@@ -47,6 +28,9 @@ Your primary objective is to successfully complete the user's task by effectivel
 
 **2. Authorized Imports (for code execution if applicable):**
 {{authorized_imports}}
+
+**3. Managed Agents Description:**
+{{managed_agents_description}}
 
 **3. Managed Agents & Team Hierarchy:**
 *This defines your direct and indirect reports. You can delegate tasks to any agent listed here.*
@@ -88,14 +72,14 @@ Your primary objective is to successfully complete the user's task by effectivel
 
 **3. Tool Usage:**
    - If a task or sub-task can be accomplished directly by you using one of the "Tools Available," you may use it.
-   - Prefer delegation if an agent has specialized skills or tools better suited for the task.
-   - For sub-agents (agents without managed agents), do not delegate further. Instead, produce your result by calling the `final_answer` tool with a single string argument.
-     After your reasoning, format your output as follows:
+   - When using a tool, after your reasoning, output your tool call in a Python code block as follows:
      Thoughts: <brief reasoning>
      Code:
      ```python
-     final_answer("<your answer>")
+     tool_name(argument1, argument2, ...)
      ```
+   - Prefer delegation if an agent has specialized skills or tools better suited for the task.
+   - For sub-agents (agents without managed agents), do not delegate further. Instead, produce your result by calling the `final_answer` tool with a single string argument.
 
 **4. Synthesizing Information & Final Answer:**
    - Monitor the progress of delegated tasks.
@@ -157,60 +141,58 @@ class GlueSmolAgent(CodeAgent):
         self.glue_config = glue_config or {}
         logger = logging.getLogger("glue.smolagent")
 
-        # Prepare tools for smolagents
+        # Validate and prepare SmolAgents Tool instances, wrapping function-based tools into Tool
         smolagents_tools = []
         for t in tools:
-            try:
-                if isinstance(t, Tool):
-                    # Already a Smolagents Tool
-                    if t.name in ("delegate_task", "report_task_completion"):
-                        orig_call = t.__call__
-                        def logged_call(*args, **kwargs):
-                            logger.info(f"[GLUE] Tool '{t.name}' called with args={args}, kwargs={kwargs}")
-                            try:
-                                return orig_call(*args, **kwargs)
-                            except Exception as e:
-                                logger.error(f"Error in tool '{t.name}': {e}")
-                                raise
-                        t.__call__ = logged_call
-                    smolagents_tools.append(t)
-                elif hasattr(t, 'name') and callable(getattr(t, '__call__', None)) and hasattr(t, 'inputs') and hasattr(t, 'output_type'):
-                    # GLUE tool object: wrap its __call__ method
-                    smolagents_tools.append(FunctionTool(
-                        t.__call__,
-                        name=t.name,
-                        description=getattr(t, 'description', None),
-                        inputs=t.inputs,
-                        output_type=t.output_type,
-                    ))
-                elif hasattr(t, 'forward') and hasattr(t, '_glue_tool_schema'):
-                    # Function-based GLUE tool with a forward method and explicit schema
-                    schema = t._glue_tool_schema
-                    smolagents_tools.append(FunctionTool(
-                        t.forward,
-                        name=getattr(t, '__name__', None) or getattr(t, 'name', None),
-                        description=None,
-                        inputs=schema.get('inputs'),
-                        output_type=schema.get('output_type'),
-                    ))
-                elif callable(t) and hasattr(t, '_glue_tool_schema'):
-                    # Plain function with explicit schema
-                    schema = t._glue_tool_schema
-                    smolagents_tools.append(FunctionTool(
-                        t,
-                        name=getattr(t, '__name__', None),
-                        description=None,
-                        inputs=schema.get('inputs'),
-                        output_type=schema.get('output_type'),
-                    ))
-                else:
-                    logger.error(f"Tool '{repr(t)}' is not a valid SmolAgents Tool or function.")
-                    raise ValueError(f"Tool '{repr(t)}' is not a valid SmolAgents Tool or function.")
-            except Exception as e:
-                logger.error(f"Error wrapping tool '{repr(t)}': {e}")
-                raise
+            # Accept native Tool instances as-is
+            if isinstance(t, Tool):
+                valid_tool = t
+            # Wrap function-based tools that define a _glue_tool_schema
+            elif hasattr(t, '_glue_tool_schema'):
+                # Wrap function-based tool by creating a dynamic Tool subclass with correct forward signature
+                schema = t._glue_tool_schema
+                tool_name = getattr(t, '__name__', None)
+                description = schema.get('description') or getattr(t, '__doc__', '') or ''
+                inputs = schema.get('inputs', {})
+                output_type = schema.get('output_type', 'Any')
+                # Dynamically define a forward method matching the input keys
+                input_keys = list(inputs.keys())
+                args_str = ', '.join(input_keys)
+                ns: Dict[str, Any] = {}
+                exec(
+                    f"def forward(self, {args_str}):\n    return t({args_str})",
+                    {'t': t}, ns
+                )
+                forward_method = ns['forward']
+                # Build class attributes
+                attrs = {
+                    'name': tool_name,
+                    'description': description,
+                    'inputs': inputs,
+                    'output_type': output_type,
+                    'forward': forward_method,
+                }
+                # Create the Tool subclass
+                ToolClass = type(f"{tool_name}_GlueFunctionTool", (Tool,), attrs)
+                valid_tool = ToolClass()
+            else:
+                raise TypeError(f"Expected SmolAgents Tool or function with _glue_tool_schema, got {type(t)}: {t}")
+            # Preserve logging for delegate/report tools
+            # Determine tool name attribute
+            tool_name = getattr(valid_tool, 'name', getattr(valid_tool, '__name__', None))
+            if tool_name in ("delegate_task", "report_task_completion"):
+                orig_call = valid_tool.__call__
+                def logged_call(*args, t=valid_tool, orig_call=orig_call, **kwargs):
+                    logger.info(f"[GLUE] Tool '{t.name}' called with args={args}, kwargs={kwargs}")
+                    try:
+                        return orig_call(*args, **kwargs)
+                    except Exception as e:
+                        logger.error(f"Error in tool '{t.name}': {e}")
+                        raise
+                valid_tool.__call__ = logged_call
+            smolagents_tools.append(valid_tool)
 
-        # Call the base constructor with the tools
+        # Call the base constructor with validated tools
         super().__init__(
             tools=smolagents_tools,
             model=model,

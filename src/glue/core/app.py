@@ -12,13 +12,9 @@ from .adhesive import AdhesiveSystem
 from .teams import Team
 from .types import FlowType, TeamConfig
 from .flow import Flow
-from .schemas import MagnetConfig
 from ..magnetic.field import MagneticField
 
 # Import built-in tool classes
-from glue.tools.web_search_tool import WebSearchTool
-from glue.tools.file_handler_tool import FileHandlerTool
-from glue.tools.code_interpreter_tool import CodeInterpreterTool
 from smolagents import InferenceClientModel
 import asyncio
 from .providers.openrouter import OpenrouterProvider
@@ -51,45 +47,6 @@ def create_model(config: Dict[str, Any]) -> Any:
     model.name = config.get("name", config.get("model"))
     return model
 
-
-def create_tool(config: Dict[str, Any]) -> Any:
-    """Create a tool from configuration.
-
-    This function exists for test patching compatibility.
-
-    Args:
-        config: Tool configuration
-
-    Returns:
-        Tool instance
-    """
-    # Get the tool class from the registry
-    from ..tools.tool_registry import get_tool_class
-
-    tool_name = config.get("name", "unknown_tool")
-    tool_provider = config.get("provider", "")
-
-    try:
-        # Try to get the tool class based on the provider
-        tool_class = get_tool_class(tool_provider)
-
-        # Create an instance of the tool
-        tool_instance = tool_class(
-            name=tool_name,
-            description=config.get("description", ""),
-            provider_type=tool_provider,
-            provider_config=config.get("config", {}),
-            config=config,
-        )
-
-        logger.info(
-            f"Created tool instance: {tool_name} using provider {tool_provider}"
-        )
-        return tool_instance
-    except (ValueError, ImportError) as e:
-        logger.warning(f"Failed to create tool instance for {tool_name}: {e}")
-        # For backward compatibility, return the config if we can't create a tool instance
-        return config
 
 
 class AppConfig:
@@ -171,7 +128,7 @@ class GlueApp:
         self.tools: Dict[str, Any] = {}
         self.teams: Dict[str, Team] = {}
         self.flows: List[Flow] = []
-        self.magnets: Dict[str, MagnetConfig] = {}
+        self.magnets: Dict[str, Dict[str, Any]] = {}
 
         # Default properties
         self.name = "Unnamed GLUE App"
@@ -292,42 +249,9 @@ class GlueApp:
                 if isinstance(tool_config, dict) and "name" not in tool_config:
                     tool_config["name"] = tool_name
 
-                # Instantiate built-in tool classes
-                if tool_name == "web_search":
-                    try:
-                        tool_instance = (
-                            WebSearchTool(**tool_config)
-                            if isinstance(tool_config, dict)
-                            else WebSearchTool()
-                        )
-                        self.tools[tool_name] = tool_instance
-                    except Exception:
-                        self.tools[tool_name] = WebSearchTool()
-                elif tool_name == "file_handler":
-                    try:
-                        tool_instance = (
-                            FileHandlerTool(**tool_config)
-                            if isinstance(tool_config, dict)
-                            else FileHandlerTool()
-                        )
-                        self.tools[tool_name] = tool_instance
-                    except Exception:
-                        self.tools[tool_name] = FileHandlerTool()
-                elif tool_name == "code_interpreter":
-                    try:
-                        # Pass all tools as extra_globals, so delegate_task and others are available
-                        extra_globals = {k: v for k, v in self.tools.items() if callable(v)}
-                        if isinstance(tool_config, dict):
-                            tool_instance = CodeInterpreterTool(**tool_config, extra_globals=extra_globals)
-                        else:
-                            tool_instance = CodeInterpreterTool(extra_globals=extra_globals)
-                        self.tools[tool_name] = tool_instance
-                    except Exception:
-                        self.tools[tool_name] = CodeInterpreterTool()
-                else:
-                    # For other custom or unknown tools, store the config
-                    logger.debug(f"Storing config for unknown/custom tool: {tool_name}")
-                    self.tools[tool_name] = tool_config
+                # Store all tools as configs (built-in tool classes removed)
+                logger.debug(f"Storing config for tool: {tool_name}")
+                self.tools[tool_name] = tool_config
 
         # Set up teams (with hierarchical support)
         magnetize_dict = config.get("magnetize", {})
@@ -361,7 +285,6 @@ class GlueApp:
                 else:
                     raise ValueError(f"Member '{member_name}' in team '{team_name}' is neither a model nor a team.")
             # Create TeamConfig
-            from .types import TeamConfig
             team_config_obj = TeamConfig(
                 name=team_name,
                 lead=lead_model_name,

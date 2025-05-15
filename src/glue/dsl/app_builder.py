@@ -12,11 +12,9 @@ from typing import Dict, Any, List
 import asyncio
 
 from ..core.app import GlueApp, AppConfig
-from smolagents import InferenceClientModel
+from smolagents import InferenceClientModel, load_tool
 from ..core.teams import Team
 from ..core.types import AdhesiveType, FlowType
-from ..tools.tool_registry import get_tool_class
-from ..tools.tool_base import Tool
 from ..core.flow import Flow
 
 
@@ -175,57 +173,31 @@ class GlueAppBuilder:
         self._models[model.name] = model
         return model
 
-    def _create_tool(self, config: Dict[str, Any]) -> Tool:
-        """Create a tool from configuration.
-
-        Args:
-            config: Tool configuration
-
-        Returns:
-            Instantiated Tool
-
-        Raises:
-            ValueError: If the tool type is unknown
-        """
+    def _create_tool(self, config: Dict[str, Any]):
+        """Create a SmolAgents native tool from DSL config."""
         name = config.get("name")
-        tool_type = config.get("type")
-        tool_description = config.get("description", f"{name} tool")
-        tool_config = config.get("config", {})
-
-        # Process adhesive types if present
-        if "adhesive_types" in tool_config:
-            adhesive_types = set()
-            for adhesive_str in tool_config.get("adhesive_types", []):
-                try:
-                    # Convert to uppercase for enum matching but preserve the original value
-                    # for direct string comparison with enum values
-                    adhesive_upper = adhesive_str.upper()
-                    if adhesive_upper == "GLUE":
-                        adhesive_types.add(AdhesiveType.GLUE)
-                    elif adhesive_upper == "VELCRO":
-                        adhesive_types.add(AdhesiveType.VELCRO)
-                    elif adhesive_upper == "TAPE":
-                        adhesive_types.add(AdhesiveType.TAPE)
-                    else:
-                        self.logger.warning(f"Unknown adhesive type: {adhesive_str}")
-                except ValueError:
-                    self.logger.warning(f"Unknown adhesive type: {adhesive_str}")
-
-            # Add adhesive_types to the tool configuration
-            tool_config["adhesive_types"] = list(adhesive_types)
-
-        # Substitute environment variables in config
-        processed_config = self._substitute_env_vars(tool_config)
-
-        # Get the tool class from the registry
-        tool_class = get_tool_class(tool_type)
-        if not tool_class:
-            raise ValueError(f"Unknown tool type: {tool_type}")
-
-        self.logger.info(f"Creating tool: {name} (type: {tool_type})")
-        return tool_class(
-            name=name, description=tool_description, config=processed_config
+        provider = config.get("provider")
+        description = config.get("description", "")
+        tool_config = config.get("config", {}) or {}
+        if not provider:
+            raise ValueError(f"No provider specified for tool '{name}'")
+        # Extract SmolAgents load_tool parameters
+        model_repo_id = tool_config.pop("model_repo_id", None)
+        token = tool_config.pop("token", None)
+        # Load the tool
+        self.logger.info(f"Loading SmolAgents tool '{name}' from provider '{provider}'")
+        tool = load_tool(
+            repo_id=provider,
+            model_repo_id=model_repo_id,
+            token=token,
+            trust_remote_code=True,
+            **tool_config,
         )
+        # Override name and description
+        tool.name = name
+        if description:
+            tool.description = description
+        return tool
 
     def _create_team(self, config: Dict[str, Any]) -> Team:
         """Create a team from configuration.
