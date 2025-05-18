@@ -1,4 +1,4 @@
-from smolagents import InferenceClientModel
+from smolagents import InferenceClientModel, Tool
 
 from glue.core.glue_memory_adapters import \
     GLUEPersistentAdapter, VELCROSessionAdapter, TAPEEphemeralAdapter
@@ -122,20 +122,20 @@ def test_glue_smolagent_adhesive_memory(tmp_path):
 
 def test_gluesmolagent_tool_injection_to_interpreter_globals():
     """
-    Test that GlueSmolAgent injects tools as plain functions into the interpreter's globals.
+    Test that standard tools are not injected into interpreter.globals, but remain available in agent.tools.
     """
     from glue.core.glue_smolagent import GlueSmolAgent
     from smolagents import InferenceClientModel
 
-    class DummyToolForInjection:
+    class DummyToolForInjection(Tool):
+        name = "dummy_tool"
+        description = "Increments an integer by 1."
+        inputs = {"x": {"type": "integer", "description": "An integer to increment"}}
+        output_type = "integer"
         def forward(self, x: int) -> int:
             return x + 1
+
     dummy_tool = DummyToolForInjection()
-    dummy_tool.__name__ = "dummy_tool"
-    dummy_tool._glue_tool_schema = {
-        "inputs": {"x": {"type": "integer", "description": "An integer to increment"}},
-        "output_type": "integer"
-    }
 
     agent = GlueSmolAgent(
         model=InferenceClientModel(model_id="test-model"),
@@ -148,13 +148,15 @@ def test_gluesmolagent_tool_injection_to_interpreter_globals():
     except Exception:
         # Ignore errors from the model, we only care about injection
         pass
-    # Check interpreter globals
-    injected = getattr(agent, 'interpreter', None)
-    if injected is not None:
-        injected_func = agent.interpreter.globals.get("dummy_tool")
-        assert injected_func is not None, "dummy_tool not injected into interpreter globals"
-        assert callable(injected_func), "Injected dummy_tool is not callable"
-        assert getattr(injected_func, "__name__", None) == "dummy_tool", f"Injected dummy_tool has wrong __name__: {getattr(injected_func, '__name__', None)}"
+    # Standard tools should not be injected into interpreter.globals
+    interp = getattr(agent, 'interpreter', None)
+    if interp is not None:
+        assert "dummy_tool" not in interp.globals, \
+            "Standard tools should not be injected into interpreter.globals"
+    # But the tool should still be registered in agent.tools
+    assert "dummy_tool" in agent.tools, "dummy_tool not present in agent.tools"
+    tool_entry = agent.tools.get("dummy_tool")
+    assert callable(tool_entry), "dummy_tool in agent.tools is not callable"
 
 
 class DummyModel:

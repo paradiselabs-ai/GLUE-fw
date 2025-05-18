@@ -10,7 +10,7 @@ from ..core.teams import Team
 from ..core.types import FlowType
 
 # ==================== Constants ====================
-logger = logging.getLogger("glue.magnetic")
+logger = logging.getLogger(__name__)
 
 
 class FlowMetrics(BaseModel):

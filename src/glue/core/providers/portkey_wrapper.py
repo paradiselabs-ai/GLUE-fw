@@ -13,7 +13,7 @@ from ..schemas import Message
 from glue.utils.portkey_client import get_portkey_client
 
 # Set up logging
-logger = logging.getLogger("glue.model.portkey")
+logger = logging.getLogger(__name__)
 
 
 class PortkeyProviderWrapper:

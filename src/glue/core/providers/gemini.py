@@ -14,7 +14,7 @@ import uuid
 from ..types import Message, ToolResult
 
 # Set up logging
-logger = logging.getLogger("glue.providers.gemini")
+logger = logging.getLogger(__name__)
 
 
 class GeminiProvider:

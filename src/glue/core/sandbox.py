@@ -303,7 +303,7 @@ class CodeSandbox:
         for module_name, module in self._preloaded_modules.items():
             safe_globals[module_name] = module
 
-        # Inject extra globals (e.g., delegate_task)
+        # Inject extra globals 
         if self.extra_globals:
             safe_globals.update(self.extra_globals)
 

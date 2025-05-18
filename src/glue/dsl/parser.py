@@ -10,7 +10,7 @@ from .lexer import GlueLexer
 
 
 # ==================== Constants ====================
-logger = logging.getLogger("glue.dsl")
+logger = logging.getLogger(__name__)
 
 
 class GlueParser:
@@ -33,7 +33,7 @@ class GlueParser:
             "apply": None,
         }
         self.schema_version = schema_version
-        self.logger = logging.getLogger("glue.dsl.parser")
+        self.logger = logging.getLogger(__name__)
 
     def parse(self, tokens: List[Token] = None) -> Dict[str, Any]:
         """Parse tokens into AST"""

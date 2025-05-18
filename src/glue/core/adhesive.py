@@ -17,7 +17,7 @@ from typing import Dict, Any, List, Optional
 from glue.core.schemas import AdhesiveType, ToolResult
 
 # Set up logging
-logger = logging.getLogger("glue.core.adhesive")
+logger = logging.getLogger(__name__)
 
 
 class AdhesiveSystem:

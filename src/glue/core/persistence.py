@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
 
-logger = logging.getLogger("glue.persistence")
+logger = logging.getLogger(__name__)
 
 
 class ComponentType(str, Enum):

@@ -42,13 +42,22 @@ from rich.status import Status
 
 # Import framework modules
 # Use direct imports to avoid circular imports
-from glue.core import GlueApp
-from glue.dsl.parser import GlueParser
-from glue.dsl.lexer import GlueLexer
+from .core import GlueApp
+from .dsl.parser import GlueParser
+from .dsl.lexer import GlueLexer
 
 # Import new utilities
 from .cliHelpers import parse_interactive_command, get_interactive_help_text
 from .utils.ui_utils import display_warning, set_cli_config
+
+# Import system modules
+import sys
+# Configure stdout/stderr for UTF-8 to avoid UnicodeEncodeError on Windows consoles
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 # Constants for tools
@@ -397,11 +406,13 @@ async def run_app(
     Returns:
         True if successful, False otherwise
     """
-    logger = logging.getLogger("glue.run_app")
+    logger = logging.getLogger(__name__)
     console = (
         get_console()
     )  # Use get_console() instead of Console() to ensure theme is applied
 
+    smol_team = None
+    app = None
     try:
         # Check if file exists
         if not os.path.exists(config_file):
@@ -529,7 +540,7 @@ async def run_app(
                         continue
                     # Return any non-command answer
                     return response
-            ui_tool.execute = _decorated_execute
+            ui_tool.forward = _decorated_execute
             first_team_name = next(iter(app.teams))
             entry_team = app.teams[first_team_name]
             app.tools['user_input'] = ui_tool
@@ -593,6 +604,19 @@ async def run_app(
         logger.error(f"Error running application: {e}", exc_info=True)
         console.print(f"[bold red]Error running application:[/bold red] {e}")
         return False
+    finally:
+        # Close smol_team orchestrator if created
+        try:
+            if smol_team and hasattr(smol_team, 'close'):
+                await smol_team.close()
+        except Exception as close_e:
+            logger.error(f"Error closing GlueSmolTeam: {close_e}", exc_info=True)
+        # Close application resources
+        try:
+            if app and hasattr(app, 'close'):
+                await app.close()
+        except Exception as close_app_e:
+            logger.error(f"Error closing GlueApp: {close_app_e}", exc_info=True)
 
 
 async def run_interactive_session(app: GlueApp, smol_team) -> None:
@@ -605,7 +629,7 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
     Args:
         app: The GLUE application to run
     """
-    logger = logging.getLogger("glue.interactive")
+    logger = logging.getLogger(__name__)
     console = get_console()
 
     # State management for interactive session with better comments
@@ -688,7 +712,12 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
         box=CLI_CONFIG["display"]["panel_box"],
         padding=(1, 3),
     )
-    console.print(welcome_panel)
+    try:
+        console.print(welcome_panel)
+    except UnicodeEncodeError:
+        # Fallback: plain text welcome
+        console.file.write("\n".join(welcome_lines) + "\n")
+        console.file.write("-" * getattr(console, "width", console.size.width) + "\n")
 
     # Display comprehensive session information
     emoji_enabled = CLI_CONFIG["display"]["show_emoji"]
@@ -711,7 +740,17 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
         filtered_tools = {
             name: tool for name, tool in app.tools.items() if name not in ["_internal"]
         }
-        console.print(create_tool_table(filtered_tools))
+        try:
+            console.print(create_tool_table(filtered_tools))
+        except UnicodeEncodeError:
+            # Fallback to plain-text tools list
+            console.file.write("Available Tools:\n")
+            for t_name, t_obj in filtered_tools.items():
+                if isinstance(t_obj, dict):
+                    desc = t_obj.get("description", "No description")
+                else:
+                    desc = getattr(t_obj, "description", "No description")
+                console.file.write(f" - {t_name}: {desc}\n")
 
     # Enhanced initial instructions
     console.print(
@@ -801,7 +840,17 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
                         for name, tool in app.tools.items()
                         if name not in ["_internal"]
                     }
-                    console.print(create_tool_table(filtered_tools))
+                    try:
+                        console.print(create_tool_table(filtered_tools))
+                    except UnicodeEncodeError:
+                        # Fallback to plain-text tools list
+                        console.file.write("Available Tools:\n")
+                        for t_name, t_obj in filtered_tools.items():
+                            if isinstance(t_obj, dict):
+                                desc = t_obj.get("description", "No description")
+                            else:
+                                desc = getattr(t_obj, "description", "No description")
+                            console.file.write(f" - {t_name}: {desc}\n")
                     continue
 
                 elif command == "teams":
@@ -1541,7 +1590,7 @@ def display_response(
 
 
 # ==================== Logging Setup ====================
-def setup_logging(level=logging.INFO):
+def setup_logging(level=logging.DEBUG):
     """Set up logging configuration"""
     # Ensure log directory exists
     os.makedirs(LOGS_DIR, exist_ok=True)
@@ -1550,7 +1599,10 @@ def setup_logging(level=logging.INFO):
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode="a")],
+        handlers=[
+            logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode="w"),
+            logging.FileHandler("myapp.log", mode="w"),
+        ],
     )
 
     # Create console handler with a higher log level
@@ -1675,7 +1727,7 @@ def setup_logging(level=logging.INFO):
     glue_logger = logging.getLogger("glue")
     glue_logger.setLevel(level)
     glue_logger.addHandler(console_handler)
-    glue_logger.propagate = False  # Prevent double logging
+    glue_logger.propagate = True   # Allow propagation to root for file logging
 
     # Configure third-party loggers - always set to WARNING unless in DEBUG mode
     third_party_level = logging.DEBUG if level == logging.DEBUG else logging.WARNING
@@ -1686,7 +1738,7 @@ def setup_logging(level=logging.INFO):
         for handler in third_party_logger.handlers:
             third_party_logger.removeHandler(handler)
         third_party_logger.addHandler(
-            logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode="a")
+            logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode="w")
         )
         third_party_logger.propagate = False  # Prevent double logging
 
@@ -1822,9 +1874,6 @@ def create_new_project(
         return
 
 
-# ... (rest of the code remains the same)
-
-
 # ==================== Forge Functions ====================
 def run_forge_command():
     """Run the GLUE Forge interactive CLI to create custom components using Google Gemini.
@@ -1835,8 +1884,7 @@ def run_forge_command():
     import os
     import json
     import getpass
-
-    logger = logging.getLogger("glue.forge")
+    logger = logging.getLogger(__name__)
 
     # ASCII art banner
     banner = """
@@ -2025,7 +2073,7 @@ def run_forge_command():
 def list_models():
     """List available models."""
     # Import provider modules dynamically to get available models
-    from glue.core.providers import get_available_providers, get_provider_models
+    from .core.providers import get_available_providers, get_provider_models
 
     print("Available models:")
 
@@ -2043,16 +2091,7 @@ def list_models():
     except Exception as e:
         print(f"Error retrieving models: {str(e)}")
         # Fallback to basic info if dynamic retrieval fails
-        FALLBACK_MODELS = {
-            "openai": ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-            "anthropic": ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
-            "google": ["gemini-pro", "gemini-ultra"],
-        }
-        print("\nFallback model information:")
-        for provider, models in FALLBACK_MODELS.items():
-            print(f"\n{provider.capitalize()} Models:")
-            for model in models:
-                print(f"  - {model}")
+        breakpoint()
 
 
 def display_tools(args: argparse.Namespace) -> int:
@@ -2087,7 +2126,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
         config_file: Path to the GLUE configuration file
         strict: Whether to enable strict validation
     """
-    logger = logging.getLogger("glue.validate")
+    logger = logging.getLogger(__name__)
     console = Console()
 
     try:
@@ -2312,8 +2351,24 @@ def display_logo(console: Console, show_version: bool = True) -> None:
     """
     logo = GLUE_LOGO.format(__version__=__version__ if show_version else "")
     align = Align.center(logo)
-    console.print(align)
-    console.print(Rule(style="dim cyan"))
+    # Prepare rule
+    rule = Rule(style="dim cyan")
+    # Try printing logo and rule with unicode support
+    try:
+        console.print(align)
+        console.print(rule)
+    except UnicodeEncodeError:
+        # Fallback to ASCII-only logo
+        ascii_logo = ''.join(c for c in logo if ord(c) < 128)
+        ascii_align = Align.center(ascii_logo)
+        try:
+            console.print(ascii_align)
+            console.print(rule)
+        except UnicodeEncodeError:
+            # Final fallback: raw write to console without styling
+            console.file.write(ascii_logo + "\n")
+            # Draw a simple ASCII line
+            console.file.write("-" * getattr(console, "width", console.size.width) + "\n")
 
 
 def create_app_layout() -> Layout:
@@ -2735,14 +2790,12 @@ def main():
         # Parse arguments
         args = parser.parse_args()
 
-        # Set up logging
-        if getattr(args, "verbose", 0) > 1:
+        # Set up logging: any verbosity enables DEBUG, otherwise INFO
+        if getattr(args, "verbose", 0) >= 1:
             log_level = logging.DEBUG
-        elif getattr(args, "verbose", 0) == 1:
-            log_level = logging.INFO
         else:
-            log_level = logging.WARNING
-
+            log_level = logging.INFO
+         
         logger = setup_logging(log_level)
 
         # Process commands

@@ -12,7 +12,7 @@ from typing import Dict, List, Any, Optional, Callable, AsyncIterable
 from glue.core.schemas import Message, ToolCall, ToolResult
 
 # Set up logging
-logger = logging.getLogger("glue.model.anthropic")
+logger = logging.getLogger(__name__)
 
 # Environment variable name for the API key
 ANTHROPIC_API_KEY_ENV = "ANTHROPIC_API_KEY"

@@ -6,6 +6,7 @@ which orchestrates models, teams, and tools.
 """
 
 import logging
+import os
 from typing import Dict, Any, List, Optional, Union
 
 from .adhesive import AdhesiveSystem
@@ -18,10 +19,15 @@ from ..magnetic.field import MagneticField
 from smolagents import InferenceClientModel
 import asyncio
 from .providers.openrouter import OpenrouterProvider
+from .providers.together import TogetherProvider
+from .providers.sambanova import SambanovaProvider
+from .providers.novita import NovitaProvider
+from .providers.nebius import NebiusProvider
+from .providers.cohere import CohereProvider
 
 
 # Set up logging
-logger = logging.getLogger("glue.app")
+logger = logging.getLogger(__name__)
 
 
 # Module-level functions for test patching
@@ -104,6 +110,121 @@ class OpenrouterInferenceClientModel(InferenceClientModel):
             # If no running loop, use asyncio.run
             result = asyncio.run(coro)
         # Return object with content attribute
+        return type("Resp", (), {"content": result})()
+
+
+# Add a model client subclass for native Together.ai
+class TogetherInferenceClientModel(InferenceClientModel):
+    """InferenceClientModel subclass that routes requests directly to Together.ai."""
+    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
+        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+        # Initialize our Together provider wrapper
+        self._tg_provider = TogetherProvider({"model": model_id, "api_key": api_key})
+
+    def generate(self, messages, *args, **kwargs):
+        # Call TogetherProvider asynchronously but return synchronously
+        coro = self._tg_provider.generate_response(messages)
+        import asyncio, concurrent.futures, threading
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running() and threading.current_thread() is threading.main_thread():
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    result = executor.submit(lambda: asyncio.run(coro)).result()
+            else:
+                result = loop.run_until_complete(coro)
+        except RuntimeError:
+            result = asyncio.run(coro)
+        # Return an object with content attribute for CodeAgent
+        return type("Resp", (), {"content": result})()
+
+
+# Add a model client subclass for native Sambanova.ai
+class SambanovaInferenceClientModel(InferenceClientModel):
+    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
+        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+        self._sb_provider = SambanovaProvider({"model": model_id, "api_key": api_key})
+
+    def generate(self, messages, *args, **kwargs):
+        coro = self._sb_provider.generate_response(messages, **kwargs)
+        import asyncio, concurrent.futures, threading
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running() and threading.current_thread() is threading.main_thread():
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    result = executor.submit(lambda: asyncio.run(coro)).result()
+            else:
+                result = loop.run_until_complete(coro)
+        except RuntimeError:
+            result = asyncio.run(coro)
+        return type("Resp", (), {"content": result})()
+
+
+# Add a model client subclass for native Novita.ai
+class NovitaInferenceClientModel(InferenceClientModel):
+    """InferenceClientModel subclass that routes requests directly to Novita.ai."""
+    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
+        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+        self._nv_provider = NovitaProvider({"model": model_id, "api_key": api_key})
+
+    def generate(self, messages, *args, **kwargs):
+        # Call NovitaProvider asynchronously but return synchronously
+        coro = self._nv_provider.generate_response(messages, **kwargs)
+        import asyncio, concurrent.futures, threading
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running() and threading.current_thread() is threading.main_thread():
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    result = executor.submit(lambda: asyncio.run(coro)).result()
+            else:
+                result = loop.run_until_complete(coro)
+        except RuntimeError:
+            result = asyncio.run(coro)
+        return type("Resp", (), {"content": result})()
+
+
+# Add a model client subclass for native Nebius.ai
+class NebiusInferenceClientModel(InferenceClientModel):
+    """InferenceClientModel subclass that routes requests directly to Nebius.ai."""
+    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
+        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+        self._nb_provider = NebiusProvider({"model": model_id, "api_key": api_key})
+
+    def generate(self, messages, *args, **kwargs):
+        # Call NebiusProvider asynchronously but return synchronously
+        coro = self._nb_provider.generate_response(messages, **kwargs)
+        import asyncio, concurrent.futures, threading
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running() and threading.current_thread() is threading.main_thread():
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    result = executor.submit(lambda: asyncio.run(coro)).result()
+            else:
+                result = loop.run_until_complete(coro)
+        except RuntimeError:
+            result = asyncio.run(coro)
+        return type("Resp", (), {"content": result})()
+
+
+# Add a model client subclass for native Cohere.ai
+class CohereInferenceClientModel(InferenceClientModel):
+    """InferenceClientModel subclass that routes requests directly to Cohere.ai."""
+    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
+        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+        self._co_provider = CohereProvider({"model": model_id, "api_key": api_key})
+
+    def generate(self, messages, *args, **kwargs):
+        # Call CohereProvider asynchronously but return synchronously
+        coro = self._co_provider.generate_response(messages, **kwargs)
+        import asyncio, concurrent.futures, threading
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running() and threading.current_thread() is threading.main_thread():
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    result = executor.submit(lambda: asyncio.run(coro)).result()
+            else:
+                result = loop.run_until_complete(coro)
+        except RuntimeError:
+            result = asyncio.run(coro)
         return type("Resp", (), {"content": result})()
 
 
@@ -219,21 +340,69 @@ class GlueApp:
                 if isinstance(model_config, dict) and "name" not in model_config:
                     model_config["name"] = model_name
 
-                # Gather provider-specific options
-                opts = model_config.get("config", {}) or {}
-                # Use custom subclass for Openrouter provider
-                if model_config.get("provider") == "openrouter":
-                    model_client = OpenrouterInferenceClientModel(
-                        model_id=model_config.get("model") or model_config.get("provider"),
+                # Use model ID from config block (DSL `config { model = ... }`), fallback to top-level or provider
+                config_block = model_config.get("config", {}) or {}
+                model_id = config_block.get("model") or model_config.get("model") or model_config.get("provider")
+                # Prepare provider-specific options: copy config block, remove api_key and model entries to avoid duplicates
+                opts = config_block.copy()
+                api_key = opts.pop("api_key", None)
+                opts.pop("model", None)
+                # Substitute environment variable if api_key is of form ${VAR_NAME}
+                if isinstance(api_key, str) and api_key.startswith("${") and api_key.endswith("}"):
+                    var_name = api_key[2:-1]
+                    api_key = os.environ.get(var_name, api_key)
+                # If no api_key provided and using OpenAI provider, load from OPENAI_API_KEY env var
+                if api_key is None and model_config.get("provider") == "openai":
+                    api_key = os.environ.get("OPENAI_API_KEY")
+                # Use native Together provider if requested
+                if model_config.get("provider") == "together":
+                    model_client = TogetherInferenceClientModel(
+                        model_id=model_id,
                         provider=model_config.get("provider"),
-                        api_key=model_config.get("api_key"),
+                        api_key=api_key,
+                        **opts
+                    )
+                elif model_config.get("provider") == "sambanova":
+                    model_client = SambanovaInferenceClientModel(
+                        model_id=model_id,
+                        provider=model_config.get("provider"),
+                        api_key=api_key,
+                        **opts
+                    )
+                # Use custom subclass for Openrouter provider
+                elif model_config.get("provider") == "openrouter":
+                    model_client = OpenrouterInferenceClientModel(
+                        model_id=model_id,
+                        provider=model_config.get("provider"),
+                        api_key=api_key,
+                        **opts
+                    )
+                elif model_config.get("provider") == "novita":
+                    model_client = NovitaInferenceClientModel(
+                        model_id=model_id,
+                        provider=model_config.get("provider"),
+                        api_key=api_key,
+                        **opts
+                    )
+                elif model_config.get("provider") == "nebius":
+                    model_client = NebiusInferenceClientModel(
+                        model_id=model_id,
+                        provider=model_config.get("provider"),
+                        api_key=api_key,
+                        **opts
+                    )
+                elif model_config.get("provider") == "cohere":
+                    model_client = CohereInferenceClientModel(
+                        model_id=model_id,
+                        provider=model_config.get("provider"),
+                        api_key=api_key,
                         **opts
                     )
                 else:
                     model_client = InferenceClientModel(
-                        model_id=model_config.get("model") or model_config.get("provider"),
+                        model_id=model_id,
                         provider=model_config.get("provider"),
-                        api_key=model_config.get("api_key"),
+                        api_key=api_key,
                         **opts
                     )
                 # Assign name and store config

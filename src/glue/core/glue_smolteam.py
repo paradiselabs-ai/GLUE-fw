@@ -1,9 +1,10 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from smolagents import InferenceClientModel
 from .glue_smolagent import GlueSmolAgent, make_glue_smol_agent
 from .providers.openrouter import OpenrouterProvider
 import asyncio
 import logging
+logger = logging.getLogger(__name__)
 from ..core.types import FlowType
 
 class SimpleMessage:
@@ -31,6 +32,8 @@ class GlueSmolTeam:
         self.team = team
         self.model_clients = model_clients
         self.glue_config = glue_config or {}
+        # List of OpenrouterProvider instances to close on shutdown
+        self._openrouter_providers: List[Any] = []
         self.lead_agent: Optional[GlueSmolAgent] = None
         self.member_agents: Dict[str, GlueSmolAgent] = {}
 
@@ -54,7 +57,7 @@ class GlueSmolTeam:
             model=lead_client,
             tools=list(self.team.tools),
             glue_config=self.glue_config,
-            managed_agents=[],  # Will be filled below
+            managed_agents_dict={},  # Placeholder for later population
             name=lead_name,
             description=lead_description,
         )
@@ -108,25 +111,6 @@ class GlueSmolTeam:
             for agent in managed_agents if hasattr(agent, '_subteam_description')
         }
 
-        # Override system prompt template with fully rendered prompt to bypass Jinja template on run
-        try:
-            prompt_template = self.lead_agent.prompt_templates.get("system_prompt", "")
-            # Build context including all variables expected by DEFAULT_SYSTEM_PROMPT_TEMPLATE
-            context = {
-                "team_name": getattr(self.team.config, 'lead', getattr(self.lead_agent, 'name', '')),
-                "tool_descriptions": "\n".join(f"{t.name}: {t.description}" for t in getattr(self.lead_agent, 'tools', {}).values()),
-                "authorized_imports": getattr(self.lead_agent, 'authorized_imports', ""),
-                "managed_agents_description": "\n".join(f"{name}: {getattr(agent, '_subteam_description', '') or agent.description}" for name, agent in self.lead_agent.managed_agents.items()),
-                "managed_agents": self.lead_agent.managed_agents,
-                "subteam_descriptions": getattr(self.lead_agent, '_subteam_descriptions', {}),
-            }
-            from jinja2 import Template
-            rendered_prompt = Template(prompt_template).render(**context)
-        except Exception:
-            # Fallback to raw prompt template if rendering fails
-            rendered_prompt = prompt_template
-        self.lead_agent.prompt_templates["system_prompt"] = rendered_prompt
-
         # Debug: print the rendered system prompt for the lead agent
         self.debug_print_lead_prompt()
         # Initialize magnetic flow functions for lead agent
@@ -159,24 +143,39 @@ class GlueSmolTeam:
 
     def _make_openrouter_callable(self, glue_model):
         provider = OpenrouterProvider(glue_model)
+        # Register provider for shutdown
+        self._openrouter_providers.append(provider)
+        logger = logging.getLogger("glue.smolteam.openrouter_callable")
+
         def call(messages, stop_sequences=None, **kwargs):
-            coro = provider.generate_response(messages)
+            logger.debug(f"CALLABLE INPUT messages: {messages}")
+            raw_result = None
             try:
-                loop = asyncio.get_running_loop()
-                if loop.is_running():
-                    import concurrent.futures
-                    from threading import current_thread, main_thread
-                    if current_thread() is main_thread():
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(lambda: asyncio.run(coro))
-                            result = future.result()
-                    else:
-                        result = loop.run_until_complete(coro)
-                else:
-                    result = loop.run_until_complete(coro)
-            except RuntimeError:
-                result = asyncio.run(coro)
-            return SimpleMessage(result)
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                raw_result = loop.run_until_complete(
+                    provider.generate_response(messages, tools=kwargs.get("tools"))
+                )
+            except Exception as e:
+                logger.error(f"Error in OpenRouter callable event loop: {e}", exc_info=True)
+                raw_result = f"ERROR_IN_OPENROUTER_CALLABLE: {type(e).__name__}: {e}"
+            finally:
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+
+            logger.debug(f"CALLABLE RAW_RESULT from provider: '{str(raw_result)[:500]}...'" )
+            # If this is an error code from the provider, invoke final_answer to stop looping
+            if isinstance(raw_result, str) and raw_result.startswith("ERROR"):
+                logger.debug("OpenRouter callable saw provider error; delegating to final_answer tool")
+                return {"tool_calls": [{"id": "error_call", "name": "final_answer", "arguments": {"answer": raw_result}}]}
+            # Otherwise, wrap the provider output as a normal message
+            content_for_message = str(raw_result) if raw_result is not None else ""
+            final_message_obj = SimpleMessage(content_for_message)
+            logger.debug(f"CALLABLE RETURNING SimpleMessage with content: '{final_message_obj.content[:500]}...'" )
+            return final_message_obj
+
         return FunctionModelWrapper(call)
 
     def run(self, initial_input: str) -> Any:
@@ -193,26 +192,24 @@ class GlueSmolTeam:
         Includes subteam leads and their descriptions in the managed_agents context.
         """
         if not self.lead_agent:
-            print("[DEBUG] No lead agent to print prompt for.")
+            logger.debug("No lead agent to print prompt for.")
             return
         try:
-            # Render the system prompt template with current context
-            prompt_template = self.lead_agent.prompt_templates["system_prompt"]
-            # Prepare context for rendering
-            context = {
-                "tools": {t.name: t for t in self.lead_agent.tools.values()} if hasattr(self.lead_agent, "tools") else {},
-                "managed_agents": {name: agent for name, agent in getattr(self.lead_agent, "managed_agents", {}).items()},
-                "subteam_descriptions": getattr(self.lead_agent, "_subteam_descriptions", {}),
-                "authorized_imports": getattr(self.lead_agent, "authorized_imports", ""),
-            }
-            # Use Jinja2 for rendering if available, else fallback to str.format
-            try:
-                from jinja2 import Template
-                rendered = Template(prompt_template).render(**context)
-            except ImportError:
-                rendered = prompt_template.format(**context)
-            print("\n[DEBUG] Rendered system prompt for lead agent:\n" + "-"*60)
-            print(rendered)
-            print("-"*60 + "\n")
+            # Use the agent's initialize_system_prompt to get a fully rendered prompt
+            rendered = self.lead_agent.initialize_system_prompt()
+            logger.debug("Rendered system prompt for lead agent:\n" + "-"*60)
+            logger.debug(rendered)
+            logger.debug("-"*60)
         except Exception as e:
-            print(f"[DEBUG] Error rendering system prompt: {e}") 
+            logger.debug(f"Error rendering system prompt: {e}")
+
+    async def close(self):
+        """Close all registered OpenRouter providers to free HTTP resources."""
+        for provider in getattr(self, '_openrouter_providers', []):
+            try:
+                await provider.close()
+                logger.info(f"Closed OpenRouter provider for model {getattr(provider.model, 'model_name', getattr(provider.model, 'model', 'unknown'))}")
+            except Exception as e:
+                logger.error(f"Error closing OpenRouter provider: {e}", exc_info=True)
+        # Clear the list after closing
+        self._openrouter_providers.clear() 

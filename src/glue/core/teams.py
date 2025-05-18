@@ -25,7 +25,7 @@ except ImportError:
     pass
 
 # ==================== Constants ====================
-logger = logging.getLogger("glue.team")
+logger = logging.getLogger(__name__)
 
 # Parameter normalization mappings
 # Maps common alternative parameter names to their expected parameter names

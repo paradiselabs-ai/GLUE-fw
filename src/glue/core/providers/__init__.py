@@ -14,6 +14,10 @@ from . import openai
 from . import anthropic
 from . import openrouter
 from . import portkey_wrapper
+from . import together
+from . import sambanova
+from . import novita
+from . import nebius
 
 # Define available providers
 __all__ = [
@@ -22,5 +26,9 @@ __all__ = [
     "openai",
     "anthropic",
     "openrouter",
+    "sambanova",
+    "novita",
+    "nebius",
+    "together",
     "portkey_wrapper",
 ]

@@ -11,7 +11,7 @@ import logging
 # Import TokenType and Token from tokens module instead of parser
 from .tokens import TokenType, Token
 
-logger = logging.getLogger("glue.dsl.lexer")
+logger = logging.getLogger(__name__)
 
 
 class GlueLexer:
