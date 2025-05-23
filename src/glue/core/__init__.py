@@ -9,6 +9,8 @@ from .app import GlueApp
 from .model import Model
 from .base_model import BaseModel, ModelProvider
 from .types import AdhesiveType
+from .teams import GlueTeam
+from .agent import Agent 
 
 # Export public API
-__all__ = ["GlueApp", "Model", "BaseModel", "ModelProvider", "AdhesiveType"]
+__all__ = ["GlueApp", "Model", "BaseModel", "ModelProvider", "AdhesiveType", "GlueTeam", "Agent"]

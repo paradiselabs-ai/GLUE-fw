@@ -34,7 +34,11 @@ async def test_start_agent_loops_triggers_agno_team_arun():
     (This test will fail initially as start_agent_loops is not yet adapted).
     """
     # 1. Arrange: Create a GLUE Team and a DummyAgnoTeam
-    # We need to provide a minimal valid app and config for Team initialization
+    # We need to provide a minimal valid config for Team initialization
+    team_config = TeamConfig(name="TestGlueTeam", lead="lead_model")
+    glue_team = Team(name="TestGlueTeam", config=team_config)
+    
+    # Manually set the app attribute after initialization
     mock_app = MagicMock()
     mock_app.config = MagicMock()
     mock_app.config.app_name = "TestApp"
@@ -42,9 +46,7 @@ async def test_start_agent_loops_triggers_agno_team_arun():
     mock_app.tool_registry = MagicMock()
     mock_app.model_registry = MagicMock()
     mock_app.get_tool_config.return_value = None
-
-    team_config = TeamConfig(name="TestGlueTeam", lead="lead_model")
-    glue_team = Team(name="TestGlueTeam", config=team_config, app=mock_app)
+    glue_team.app = mock_app
     
     dummy_agno_orchestrator = DummyAgnoTeam(name="OrchestratorAgnoTeam")
     glue_team.agno_team = dummy_agno_orchestrator # Manually assign for this test

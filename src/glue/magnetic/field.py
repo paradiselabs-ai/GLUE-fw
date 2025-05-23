@@ -6,7 +6,7 @@ import logging
 import asyncio
 from pydantic import BaseModel, Field, ConfigDict
 
-from ..core.teams import Team
+from ..core.teams import GlueTeam
 from ..core.types import FlowType
 
 # ==================== Constants ====================
@@ -53,7 +53,7 @@ class MagneticField:
 
     def __init__(self, name: str, auto_start_monitoring: bool = False):
         self.name = name
-        self.teams: Dict[str, Team] = {}
+        self.teams: Dict[str, GlueTeam] = {}
         self.flows: Dict[str, FlowState] = {}
         self.repulsions: Set[str] = set()
 
@@ -76,13 +76,13 @@ class MagneticField:
             self.start_monitoring()
 
     # ==================== Core Methods ====================
-    async def add_team(self, team: Team) -> None:
+    async def add_team(self, team: GlueTeam) -> None:
         """Register a team with the field"""
         self.teams[team.name] = team
         await self._analyze_team_compatibility(team)
         logger.info(f"Added team {team.name} to field {self.name}")
 
-    async def _analyze_team_compatibility(self, team: Team) -> None:
+    async def _analyze_team_compatibility(self, team: GlueTeam) -> None:
         """Analyze team compatibility with existing teams"""
         # Check for repulsions
         for existing_team_name, existing_team in self.teams.items():
@@ -341,7 +341,7 @@ class MagneticField:
         return routes
 
     async def _establish_team_relationship(
-        self, source: Team, target: Team, flow_type: FlowType
+        self, source: GlueTeam, target: GlueTeam, flow_type: FlowType
     ) -> None:
         """Set up team relationships"""
         if flow_type == FlowType.BIDIRECTIONAL:
@@ -447,4 +447,4 @@ class MagneticField:
         # not if item in self (the MagneticField)
         # For test compatibility, rather than try to identify what's being checked, just return True
         # if the item is found in the values of the teams dictionary
-        return isinstance(item, Team) and item in self.teams.values()
+        return isinstance(item, GlueTeam) and item in self.teams.values()

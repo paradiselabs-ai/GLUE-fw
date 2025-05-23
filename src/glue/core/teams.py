@@ -13,6 +13,13 @@ from ..utils.json_utils import extract_json
 
 from .model import Model
 
+# --- AGNO IMPORTS (Assumed paths) ---
+from agno.team import Team as AgnoTeam
+from agno.agent import Agent as AgnoAgent
+from agno.workflow import Workflow as AgnoWorkflow
+from agno.run.team import TeamRunResponse # Corrected import path
+# --- END AGNO IMPORTS ---
+
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
 
@@ -33,10 +40,11 @@ TOOL_PARAM_MAPPINGS = {
 
 
 # ==================== Class Definition ====================
-class Team:
+class GlueTeam:
     """
     Team implementation for GLUE framework.
     Manages model collaboration, tool sharing, and result persistence.
+    Integrates with Agno for core team execution if available.
     """
 
     def __init__(
@@ -46,9 +54,11 @@ class Team:
         # For backward compatibility with tests
         lead: Optional[Model] = None,
         members: Optional[List[Model]] = None,
+        use_agno_team: bool = False, # Added parameter
     ):
         self.name = name
         self.config = config or TeamConfig(name=name, lead="", members=[], tools=[])
+        self.use_agno_team = use_agno_team # Store the parameter
 
         # Core components
         self.models: Dict[str, Model] = {}
@@ -77,6 +87,11 @@ class Team:
 
         # Reference to parent app
         self.app = None
+
+        # --- AGNO INTEGRATION ---
+        self.agno_team: Optional[AgnoTeam] = None
+        # self.agno_team = self._initialize_agno_team() # Call this after models/tools are set up, perhaps in self.setup() or by app
+        # --- END AGNO INTEGRATION ---
 
         # Metadata
         self.created_at = datetime.now()
@@ -535,7 +550,9 @@ class Team:
             content_str = message if isinstance(message, str) else json.dumps(message)
             # Record the incoming assignment or notification
             self.conversation_history.append(
-                Message(role="assistant", name=from_model, content=content_str)
+                Message(
+                    role="assistant", name=from_model, content=content_str
+                )
             )
             # Let the member generate a response (this triggers model initialization)
             raw_response = await target.generate(content_str)
@@ -672,9 +689,7 @@ class Team:
         if tools:
             for tool_name in tools:
                 if tool_name in self._tools:
-                    if hasattr(model, "add_tool_sync") and callable(
-                        model.add_tool_sync
-                    ):
+                    if hasattr(model, "add_tool_sync") and callable(model.add_tool_sync):
                         model.add_tool_sync(tool_name, self._tools[tool_name])
 
         # Update config
@@ -682,53 +697,203 @@ class Team:
             self.config.lead = model.name
             self.lead = model
         else:
-            self.config.members.append(model.name)
+            if model.name not in self.config.members:
+                self.config.members.append(model.name)
 
         self.updated_at = datetime.now()
-        logger.info(f"Added model {model.name} to team {self.name} with role {role}")
+        logger.info(f"Added model {model.name} to team {self.name} with role {role} (sync)")
 
-    async def start_agent_loops(self, initial_input: Optional[str] = None) -> None:
-        """Start core agent loops using simplified stubs for Team Lead and Team Member agents."""
+    async def run(self, initial_input: Any) -> Optional[TeamRunResponse]: 
+        """
+        Runs the GLUE team. If an Agno team is integrated, it delegates to Agno.
+        Otherwise, it uses the native GLUE agent loops.
+        
+        Args:
+            initial_input: The input to start the team's execution.
+
+        Returns:
+            An Agno TeamRunResponse if Agno path is taken, otherwise None or GLUE-specific output.
+        """
+        from .agent_loop import TeamMemberAgentLoop, TeamLeadAgentLoop # Keep for GLUE native path
+
+        logger.info(f"Team {self.name} run method called with input type: {type(initial_input)}")
+        
+        if self.use_agno_team and self.agno_team and initial_input is not None:
+            logger.info(f"Delegating task to Agno team for {self.name} with input: {initial_input}")
+            try:
+                # TODO: Prepare input for Agno team if necessary (e.g., convert to Message format)
+                # For now, assume initial_input can be directly used (e.g. string or dict for content).
+                
+                # TODO: Determine how to manage session_id and adhesive-based memory settings.
+                # These might be configured when agno_team is initialized or passed here.
+                # Example: enable_user_memories = self.config.adhesives.get("user_memory_enabled", True)
+                
+                response: TeamRunResponse = await self.agno_team.arun(
+                    initial_input, 
+                    # session_id=None, # Let Agno handle if not specified
+                    # enable_user_memories=enable_user_memories, 
+                    # enable_session_summaries=enable_session_summaries
+                )
+                logger.info(f"Agno team {self.name} completed run. Response content type: {type(response.content if response else None)}")
+                return response
+            except Exception as e:
+                logger.error(f"Error during Agno team run for {self.name}: {e}", exc_info=True)
+                return None # Or raise, or return an error-specific TeamRunResponse
+        else:
+            logger.info(f"Using native GLUE agent loops for team {self.name} (Agno team not available or no input for Agno path)")
+            # Fallback to existing GLUE agent loop logic (simplified for now)
+            # This path needs to be carefully considered for its return type if it's to be compatible.
+            if self.config.lead and self.models.get(self.config.lead) and initial_input:
+                logger.info(f"Processing with native GLUE lead model: {self.config.lead}")
+                # Ensure initial_input is a string for process_message if it's the GLUE native path
+                message_content = str(initial_input) if not isinstance(initial_input, str) else initial_input
+                await self.process_message(content=message_content, source_model=self.config.lead)
+                # Native GLUE path does not currently produce a TeamRunResponse.
+                # It updates self.conversation_history and shared_results.
+                logger.warning(f"Native GLUE run for {self.name} finished. No Agno TeamRunResponse produced.")
+                return None 
+            else:
+                logger.warning(f"Native GLUE run for {self.name} skipped: No lead/model or no initial_input for native path.")
+                return None
+
+    def _initialize_agno_team(self) -> Optional[AgnoTeam]:
+        """
+        Initializes and returns an Agno Team instance based on the GlueTeam's configuration.
+        This is a placeholder and will be expanded.
+        """
+        if not self.use_agno_team:
+            logger.info(f"Agno team initialization skipped for team {self.name} as use_agno_team is False.")
+            return None
+
+        if not self.models:
+            logger.warning(f"Cannot initialize Agno team for {self.name}: No models (members/lead) defined in self.models.")
+            return None
+            
+        logger.info(f"Initializing Agno team for {self.name}...")
+
+        # Create AgnoAgents from all GLUE Models in the team
+        agno_agents_list: List[AgnoAgent] = []
+        for model_name, glue_model_instance in self.models.items():
+            try:
+                # Placeholder: Create a simple Agno Agent from the GLUE Model
+                # This will need significant refinement.
+                agno_agent = AgnoAgent(name=f"{glue_model_instance.name}_agno_proxy")
+                agno_agents_list.append(agno_agent)
+                logger.info(f"Created placeholder AgnoAgent: {agno_agent.name} for GLUE model: {model_name}")
+            except Exception as e:
+                logger.error(f"Failed to create placeholder AgnoAgent for GLUE model {model_name}: {e}")
+                # Optionally, decide if failure to create one agent should prevent team creation
+                # For now, we'll continue and try to create other agents.
+
+        if not agno_agents_list:
+            logger.error(f"Failed to create any AgnoAgents for team {self.name}. Cannot initialize AgnoTeam.")
+            return None
+
+        # Placeholder: Create a simple Agno Workflow
+        try:
+            # Basic workflow, actual implementation will depend on Agno's API
+            # For now, let's assume a simple named workflow. If Agno requires more, this will fail.
+            workflow = AgnoWorkflow(name=f"{self.name}_default_workflow") 
+            logger.info(f"Created placeholder AgnoWorkflow: {workflow.name}")
+        except Exception as e:
+            logger.error(f"Failed to create placeholder AgnoWorkflow for {self.name}: {e}")
+            return None
+
+        # Placeholder: Instantiate AgnoTeam
+        try:
+            self.agno_team = AgnoTeam(
+                name=f"{self.name}_agno",
+                members=agno_agents_list, # Pass the list of all created AgnoAgents
+                # workflow=workflow, # Removed workflow argument
+                # Other AgnoTeam parameters might be needed (e.g., tools, memory)
+            )
+            logger.info(f"Successfully initialized Agno team: {self.agno_team.name}")
+            return self.agno_team
+        except Exception as e:
+            logger.error(f"Failed to instantiate AgnoTeam for {self.name}: {e}")
+            self.agno_team = None # Ensure it's None if initialization fails
+            return None
+
+    # ==================== Agent Loop Management (Original GLUE native) ====================
+    async def start_agent_loops_native(self, initial_input: Optional[str] = None) -> None:
+        """Start core agent loops using GLUE's native Team Lead and Team Member agents."""
         from .agent_loop import TeamMemberAgentLoop, TeamLeadAgentLoop
 
-        logger.info(f"Starting core agent loops for team {self.name}")
-        # Start Team Lead loop if a goal is provided
-        if self.config.lead and initial_input:
-            # Pass the execute coroutine of the delegate_task tool to the TeamLeadAgentLoop
-            delegate_tool_exec = self._tools.get("delegate_task")
-            if hasattr(delegate_tool_exec, "execute"):
-                delegate_tool_exec = delegate_tool_exec.execute
-            # Instantiate TeamLeadAgentLoop with team object and LLM
-            agent_llm = self.models.get(self.config.lead)
-            lead_loop = TeamLeadAgentLoop(
-                team=self, delegate_tool=delegate_tool_exec, agent_llm=agent_llm
+        logger.info(f"Starting NATIVE GLUE agent loops for team {self.name}")
+
+        # This is the original GLUE agent loop logic, kept for reference or fallback
+        # Ensure lead model exists
+        if not self.config.lead or self.config.lead not in self.models:
+            logger.error(
+                f"Cannot start agent loops for team {self.name}: Lead model '{self.config.lead}' not found."
             )
-            # Track and start TeamLead loop
-            self.agent_loops[self.config.lead] = lead_loop
-            asyncio.create_task(
-                lead_loop.start(
-                    parent_task_id=self.name, goal_description=initial_input
-                )
-            )
-            logger.info(f"Started Team Lead loop for {self.config.lead}")
-        # Start Team Member loops
+            return
+
+        # Start TeamLead loop
+        lead_model = self.models[self.config.lead]
+        # Ensure the delegate_tool is correctly bound or passed
+        # Assuming a 'delegate_task_tool' exists or is created for the lead
+        delegate_tool_callable = self._tools.get(
+            "delegate_task_tool" # This tool needs to exist and be executable
+        ) 
+        if not delegate_tool_callable or not callable(delegate_tool_callable):
+            logger.error(f"Delegate tool for lead in team {self.name} not found or not callable.")
+            # Fallback: create a dummy delegate tool that logs an error
+            async def dummy_delegate_tool(*args, **kwargs):
+                logger.error(f"Dummy delegate_tool called in {self.name} with {args} {kwargs}. Real tool missing.")
+                return {"error": "Delegate tool not configured"}
+            delegate_tool_callable = dummy_delegate_tool
+        else:
+            # If it's an object with an execute method, use that
+            if hasattr(delegate_tool_callable, 'execute') and callable(delegate_tool_callable.execute):
+                delegate_tool_callable = delegate_tool_callable.execute
+
+        lead_loop = TeamLeadAgentLoop(
+            team=self, delegate_tool=delegate_tool_callable, agent_llm=lead_model
+        )
+        self.agent_loops[self.config.lead] = lead_loop
+        asyncio.create_task(lead_loop.start(initial_input))
+        logger.info(f"Started Team Lead loop for {self.config.lead}")
+
+        # Start TeamMember loops
         for member_id in self.config.members:
+            if member_id == self.config.lead:  # Skip lead, already started
+                continue
+            if member_id not in self.models:
+                logger.warning(
+                    f"Member {member_id} configured for team {self.name} but not found in models."
+                )
+                continue
+            
+            report_tool_callable = self._tools.get(
+                "report_task_completion" # This tool needs to exist
+            )
+            if not report_tool_callable or not callable(report_tool_callable):
+                logger.error(f"Report tool for member {member_id} in team {self.name} not found or not callable.")
+                async def dummy_report_tool(*args, **kwargs):
+                    logger.error(f"Dummy report_tool called in {self.name} for {member_id} with {args} {kwargs}. Real tool missing.")
+                    return {"error": "Report tool not configured"}
+                report_tool_callable = dummy_report_tool
+            else:
+                if hasattr(report_tool_callable, 'execute') and callable(report_tool_callable.execute):
+                    report_tool_callable = report_tool_callable.execute
+
             member_loop = TeamMemberAgentLoop(
-                member_id,
-                self.name,
-                self._tools.get("report_task_completion").execute,
+                agent_id=member_id,
+                team_id=self.name,
+                report_tool=report_tool_callable,
                 agent_llm=self.models.get(member_id),
             )
             # Register all available tools in the member loop
-            for tool_name, tool in self._tools.items():
-                tool_callable = getattr(tool, "execute", tool)
-                member_loop.register_tool(tool_name, tool_callable)
+            # for tool_name, tool in self._tools.items():
+            #     tool_callable = getattr(tool, "execute", tool)
+            #     member_loop.register_tool(tool_name, tool_callable)
             # Track and start TeamMember loop
             self.agent_loops[member_id] = member_loop
             asyncio.create_task(member_loop.start(self.fetch_task_for_member))
             logger.info(f"Started Team Member loop for {member_id}")
 
-    def get_agent_status(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
+    async def get_agent_status(self, agent_id: Optional[str] = None) -> Dict[str, Any]:
         """Get the status of agent loops
 
         Args:
@@ -762,6 +927,28 @@ class Team:
         logger.info(f"Terminated agent loops for team {self.name}: {reason}")
         # Reset tracking
         self.agent_loops = {}
+
+    async def fetch_task_for_member(self, agent_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch next uncompleted task for the given team member.
+        
+        This method is used by the native GLUE TeamMemberAgentLoop.
+        It polls for tasks assigned to the agent_id in shared_results.
+        """
+        # This is a simplified polling mechanism. In a more robust system,
+        # a dedicated task queue or event-driven approach might be better.
+        while True: 
+            # Iterate over a copy of items in case shared_results is modified during iteration elsewhere.
+            for task_id, task_data in list(self.shared_results.items()):
+                if isinstance(task_data, dict) and \
+                   task_data.get("assigned_to") == agent_id and \
+                   not task_data.get("completion_status"): # Assuming 'completion_status' indicates completion
+                    logger.debug(f"Team {self.name} fetching task {task_id} for member {agent_id}")
+                    return task_data
+            # Wait for a short period before polling again to avoid busy-waiting.
+            await asyncio.sleep(0.5) 
+            # Add a check for team termination or loop cancellation to prevent infinite loops
+            # if self.is_terminated(): # Assuming such a flag or method exists
+            #     return None
 
     # ==================== Magnetic Field Methods ====================
     def break_relationship(self, team_name: str) -> None:
@@ -1516,16 +1703,3 @@ class Team:
             )
             return final
         return raw_response
-
-    async def fetch_task_for_member(self, agent_id: str) -> dict:
-        """Fetch next uncompleted task for the given team member."""
-        while True:
-            # Look for tasks assigned to this member without completion
-            for task in list(self.shared_results.values()):
-                if (
-                    isinstance(task, dict)
-                    and task.get("assigned_to") == agent_id
-                    and not task.get("completion")
-                ):
-                    return task
-            await asyncio.sleep(0.5)

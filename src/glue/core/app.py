@@ -10,7 +10,7 @@ from typing import Dict, Any, List, Optional, Union
 
 from .adhesive import AdhesiveSystem
 from .model import Model
-from .teams import Team
+from .teams import GlueTeam
 from .types import FlowType, TeamConfig
 from .flow import Flow
 from .schemas import MagnetConfig
@@ -99,7 +99,7 @@ class AppConfig:
         self.description = description
         self.models: Dict[str, Model] = {}
         self.tools: Dict[str, Any] = {}
-        self.teams: Dict[str, Team] = {}
+        self.teams: Dict[str, GlueTeam] = {}
         self.flows: List[Flow] = []
         self.magnets: Dict[str, Dict[str, Any]] = {}
         self.version: str = "0.1.0"
@@ -125,7 +125,7 @@ class GlueApp:
         # Initialize empty collections
         self.models: Dict[str, Model] = {}
         self.tools: Dict[str, Any] = {}
-        self.teams: Dict[str, Team] = {}
+        self.teams: Dict[str, GlueTeam] = {}
         self.flows: List[Flow] = []
         self.magnets: Dict[str, MagnetConfig] = {}
 
@@ -324,7 +324,7 @@ class GlueApp:
                     logger.debug(
                         f"Creating team {team_name} with config: lead={lead_model_name}, members={member_names}"
                     )
-                    team = Team(name=team_name, config=team_config_obj, lead=lead_model)
+                    team = GlueTeam(name=team_name, config=team_config_obj, lead=lead_model)
 
                     # Set a reference to this app on the team
                     if not hasattr(team, "_app"):

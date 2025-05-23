@@ -9,7 +9,7 @@ import asyncio
 import logging
 from typing import Any, Dict
 
-from .teams import Team
+from .teams import GlueTeam
 from .types import FlowType
 from .schemas import Message
 
@@ -23,8 +23,8 @@ class Flow:
 
     def __init__(
         self,
-        source: Team,
-        target: Team,
+        source: GlueTeam,
+        target: GlueTeam,
         flow_type: FlowType = FlowType.BIDIRECTIONAL,
         config: Dict[str, Any] = None,
     ):
@@ -184,7 +184,7 @@ class Flow:
         await self.target_to_source_queue.put(message)
 
     async def _process_messages(
-        self, queue: asyncio.Queue, sender: Team, receiver: Team
+        self, queue: asyncio.Queue, sender: GlueTeam, receiver: GlueTeam
     ) -> None:
         """Process messages from one team to another.
 

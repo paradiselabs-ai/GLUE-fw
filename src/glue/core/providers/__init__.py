@@ -14,6 +14,9 @@ from . import openai
 from . import anthropic
 from . import openrouter
 from . import portkey_wrapper
+from . import test
+from .openai import OpenAIProvider
+from .test import TestProvider
 
 # Define available providers
 __all__ = [
@@ -23,4 +26,7 @@ __all__ = [
     "anthropic",
     "openrouter",
     "portkey_wrapper",
+    "test",
+    "OpenAIProvider",
+    "TestProvider",
 ]
