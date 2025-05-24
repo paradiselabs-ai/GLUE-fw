@@ -7,11 +7,10 @@ between teams in a GLUE application.
 
 import asyncio
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Optional 
 
 from .teams import Team
-from .types import FlowType
-from .schemas import Message
+from .types import FlowType, Message 
 
 
 class Flow:
@@ -26,7 +25,7 @@ class Flow:
         source: Team,
         target: Team,
         flow_type: FlowType = FlowType.BIDIRECTIONAL,
-        config: Dict[str, Any] = None,
+        config: Optional[Dict[str, Any]] = None,  # Changed to Optional[Dict[str, Any]]
     ):
         """Initialize a new Flow.
 
@@ -199,7 +198,8 @@ class Flow:
         while running:
             try:
                 # Check for cancellation before waiting for queue
-                if asyncio.current_task().cancelled():
+                current_task = asyncio.current_task()
+                if current_task and current_task.cancelled():
                     break
 
                 # Use wait_for with a timeout to allow periodic cancellation checks

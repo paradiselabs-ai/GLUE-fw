@@ -86,9 +86,10 @@ class GlueSmolTeam:
                     # Use the subteam's lead agent as the managed agent
                     agent = subteam.glue_smolteam.lead_agent
                     # Attach subteam description for prompt rendering
-                    agent._subteam_description = getattr(subteam, 'config', {}).lead if hasattr(subteam, 'config') else agent.name
-                    managed_agents.append(agent)
-                    self.member_agents[member_name] = agent
+                    if agent is not None:
+                        setattr(agent, '_subteam_description', getattr(subteam.config, 'lead', agent.name) if hasattr(subteam, 'config') else agent.name)
+                        managed_agents.append(agent)
+                        self.member_agents[member_name] = agent # Ensure agent is not None
                     continue
                 else:
                     raise ValueError(f"No model client or subteam for member {member_name}")
@@ -113,12 +114,13 @@ class GlueSmolTeam:
             managed_agents.append(agent)
             self.member_agents[member_name] = agent
         # Assign managed_agents to the lead agent as a dict for Jinja compatibility
-        self.lead_agent.managed_agents = {agent.name: agent for agent in managed_agents}
-        # Store subteam descriptions for prompt rendering
-        self.lead_agent._subteam_descriptions = {
-            agent.name: getattr(agent, '_subteam_description', None)
-            for agent in managed_agents if hasattr(agent, '_subteam_description')
-        }
+        if self.lead_agent is not None:
+            self.lead_agent.managed_agents = {agent.name: agent for agent in managed_agents if agent is not None and hasattr(agent, 'name')}
+            # Store subteam descriptions for prompt rendering
+            setattr(self.lead_agent, '_subteam_descriptions', {
+                agent.name: getattr(agent, '_subteam_description', None)
+                for agent in managed_agents if agent is not None and hasattr(agent, 'name') and hasattr(agent, '_subteam_description')
+            })
 
         # Debug: print the rendered system prompt for the lead agent
         self.debug_print_lead_prompt()
@@ -159,18 +161,21 @@ class GlueSmolTeam:
         def call(messages, stop_sequences=None, **kwargs):
             logger.debug(f"CALLABLE INPUT messages: {messages}")
             raw_result = None
+            loop = None # Initialize loop to None
             try:
+                # Ensure loop is defined before use in finally block
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 raw_result = loop.run_until_complete(
-                    provider.generate_response(messages, tools=kwargs.get("tools"))
+                    provider.generate_response(messages) # Removed tool_kwargs
                 )
             except Exception as e:
                 logger.error(f"Error in OpenRouter callable event loop: {e}", exc_info=True)
                 raw_result = f"ERROR_IN_OPENROUTER_CALLABLE: {type(e).__name__}: {e}"
             finally:
                 try:
-                    loop.close()
+                    if loop is not None:
+                        loop.close()
                 except Exception:
                     pass
 

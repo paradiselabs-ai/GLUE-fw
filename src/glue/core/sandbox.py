@@ -9,7 +9,7 @@ import asyncio
 import importlib
 import inspect
 import types
-from typing import Any, Dict, List, Callable
+from typing import Any, Dict, List, Callable, Optional
 import builtins
 from dataclasses import dataclass, field
 
@@ -67,7 +67,7 @@ class CodeSandbox:
     enforces execution timeouts, and prevents unauthorized operations.
     """
 
-    def __init__(self, config: SandboxConfig, extra_globals: Dict[str, Any] = None):
+    def __init__(self, config: SandboxConfig, extra_globals: Optional[Dict[str, Any]] = None):
         """
         Initialize the code sandbox with the specified configuration.
 
@@ -120,7 +120,7 @@ class CodeSandbox:
                 )
 
             # Add the function to the module
-            module.run_forever = run_forever
+            setattr(module, "run_forever", run_forever)
 
             # Cache the module
             self._modules_cache[module_name] = module

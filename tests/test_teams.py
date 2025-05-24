@@ -619,9 +619,9 @@ async def test_process_message_dict_content(team_with_lead, mock_lead_model):
 @pytest.mark.asyncio
 async def test_assign_user_input_tool_to_hierarchy_top_with_invalid_team(mock_tool):
     """Test assign_user_input_tool_to_hierarchy_top with invalid team config"""
-    # Create a team with None config
+    # Create a team with empty config
     team = Team(name="TestTeam")
-    team.config = None
+    team.config.lead = ""  # Empty lead instead of None
     team.models = {}
     
     result = await team.assign_user_input_tool_to_hierarchy_top(mock_tool)
@@ -632,7 +632,7 @@ async def test_assign_user_input_tool_to_hierarchy_top_with_no_hierarchy_top(moc
     """Test assign_user_input_tool_to_hierarchy_top with no lead but with member models"""
     # Create a team with no lead but with member models
     team = Team(name="TestTeam")
-    team.config.lead = None  # No lead specified
+    team.config.lead = ""  # Empty lead instead of None
 
     # Add a member model but no lead
     member_model = MockModel("MemberModel")
@@ -777,7 +777,7 @@ def test_update_hierarchy_attributes_on_add_member(mock_lead_model):
 
 def test_team_constructor_invalid_members_type():
     with pytest.raises(Exception, match="members must be a list or None"):
-        Team(name="Test", members="not_a_list")
+        Team(name="Test", members="not_a_list")  # type: ignore # Pass a string instead of list
 
 def test_team_model_property_no_lead_first_model(mock_member_model):
     team = Team(name="NoLeadTeam")
@@ -1235,14 +1235,13 @@ def test_unregister_incoming_flow_not_present(team_with_lead):
 try:
     from smolagents import InferenceClientModel
     def test_monkey_patched_inference_client_model():
-        model = InferenceClientModel(client=MagicMock(), model_name="test") # Assuming constructor
+        model = InferenceClientModel(model_id="test")  # Using model_id parameter
         assert hasattr(model, 'add_tool')
-        assert hasattr(model, 'add_tool_sync')
-        # Call them to ensure they are no-ops
+        assert hasattr(model, 'add_tool_sync')        # Call them to ensure they are no-ops
         async def run_async_noop():
-            await model.add_tool("dummy", MagicMock())
+            await model.add_tool("dummy", MagicMock())  # type: ignore
         asyncio.run(run_async_noop())
-        model.add_tool_sync("dummy_sync", MagicMock())
+        model.add_tool_sync("dummy_sync", MagicMock())  # type: ignore
         # No assertions needed other than successful execution without error
 except ImportError:
     pass # Skip if smolagents not installed

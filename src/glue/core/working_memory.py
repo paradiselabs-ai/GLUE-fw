@@ -1,7 +1,13 @@
+"""
+Working memory for agent loops and persistent memory for team leads.
+
+This module provides two classes:
+1. WorkingMemory - In-memory storage for agent loops.
+2. PersistentMemory - File-based storage for team leads.
+"""
 import os
 import json
 from typing import Optional, List
-
 
 class WorkingMemory:
     """In-memory working memory for agent loops."""

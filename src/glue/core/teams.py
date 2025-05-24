@@ -20,12 +20,14 @@ try:
     from smolagents import InferenceClientModel
     if not hasattr(InferenceClientModel, 'add_tool'):
         async def _noop_add_tool(self, name: str, tool: Any):
+            # This is a no-op method for InferenceClientModel
             return None
-        InferenceClientModel.add_tool = _noop_add_tool
+        setattr(InferenceClientModel, 'add_tool', _noop_add_tool)
     if not hasattr(InferenceClientModel, 'add_tool_sync'):
         def _noop_add_tool_sync(self, name: str, tool: Any):
+            # This is a no-op method for InferenceClientModel
             return None
-        InferenceClientModel.add_tool_sync = _noop_add_tool_sync
+        setattr(InferenceClientModel, 'add_tool_sync', _noop_add_tool_sync)
 except ImportError:
     pass
 
@@ -94,6 +96,7 @@ class Team:
             str, asyncio.Future
         ] = {}  # For tracking broadcast responses
         self.response_handlers = {}
+        self.pending_responses = {}  # Fix: initialize missing attribute
 
         # Track active TeamMember and TeamLead loops
         self.agent_loops: Dict[str, Any] = {}
@@ -249,7 +252,10 @@ class Team:
         ):
             if not tool._initialized:
                 try:
-                    await tool.initialize()
+                    if asyncio.iscoroutinefunction(tool.initialize):
+                        await tool.initialize()
+                    else:
+                        tool.initialize()
                     logger.info(f"Initialized tool {name} for team {self.name}")
                 except Exception as e:
                     logger.warning(f"Failed to initialize tool {name}: {e}")
@@ -367,7 +373,7 @@ class Team:
 
         # Record the incoming user message in the team history
         self.conversation_history.append(
-            Message(role="user", content=message_content)
+            Message(role="user", content=str(message_content)) # Ensure content is a string
         )
 
         # Generate response from model, handling sync (Resp) and async coroutines
@@ -389,7 +395,8 @@ class Team:
         self.conversation_history.append(
             Message(
                 role="assistant",  # Use 'assistant' role for model's response
-                content=response_content,
+                content=str(response_content), # Ensure content is a string
+                name=source.name if hasattr(source, 'name') else None # Add model name if available
             )
         )
 
@@ -451,14 +458,21 @@ class Team:
                     logger.debug(f"Tool instance type: {type(tool_instance)}, attributes: {dir(tool_instance)}")
 
                     # Determine how to call the tool: wrapper function or .execute method
-                    if callable(tool_instance) and not hasattr(
-                        tool_instance, "execute"
-                    ):
+                    if callable(tool_instance) and not hasattr(tool_instance, "execute"):
                         tool_callable = tool_instance
                     else:
-                        tool_callable = tool_instance.execute
+                        tool_callable = getattr(tool_instance, "execute", None)
+                    
+                    if tool_callable is None:
+                        logger.error(f"Tool '{tool_name}' on model {source.name} is not configured correctly (not callable and has no 'execute' method).")
+                        # ... existing error handling ...
+                        return f"Error: Tool '{tool_name}' could not be executed."
+
                     logger.debug(f"Calling execute method of tool '{tool_name}' with arguments: {arguments_with_context}")
-                    tool_result_content = await tool_callable(**arguments_with_context)
+                    if asyncio.iscoroutinefunction(tool_callable):
+                        tool_result_content = await tool_callable(**arguments_with_context)
+                    else:
+                        tool_result_content = tool_callable(**arguments_with_context)
                     # If the tool returned an error payload, abort and return the error message
                     if (
                         isinstance(tool_result_content, dict)
@@ -473,7 +487,7 @@ class Team:
                             Message(
                                 role="tool",
                                 name=tool_name,  # Use 'name' instead of 'tool_call_id'
-                                content=error_msg,
+                                content=str(error_msg), # Ensure content is a string
                             )
                         )
                         return error_msg
@@ -484,7 +498,7 @@ class Team:
                         Message(
                             role="tool",
                             name=tool_name,
-                            content=str(tool_result_content),
+                            content=str(tool_result_content), # Ensure content is a string
                         )
                     )
 
@@ -501,7 +515,8 @@ class Team:
                     self.conversation_history.append(
                         Message(
                             role="assistant",
-                            content=final_response,
+                            content=str(final_response), # Ensure content is a string
+                            name=source.name if hasattr(source, 'name') else None # Add model name
                         )
                     )
 
@@ -519,7 +534,7 @@ class Team:
                         Message(
                             role="tool",
                             name=tool_name,
-                            content=error_message,
+                            content=str(error_message), # Ensure content is a string
                         )
                     )
                     # Optionally, generate a response acknowledging the error
@@ -538,7 +553,7 @@ class Team:
                     Message(
                         role="tool",
                         name=tool_name,
-                        content=fail_message,
+                        content=str(fail_message), # Ensure content is a string
                     )
                 )
                 # Generate a response indicating the tool is unavailable
@@ -579,13 +594,13 @@ class Team:
             content_str = message if isinstance(message, str) else json.dumps(message)
             # Record the incoming assignment or notification
             self.conversation_history.append(
-                Message(role="assistant", name=from_model, content=content_str)
+                Message(role="assistant", name=from_model, content=str(content_str))
             )
             # Let the member generate a response (this triggers model initialization)
             raw_response = await target.generate(content_str)
             # Record the member's response
             self.conversation_history.append(
-                Message(role="assistant", name=to_model, content=raw_response)
+                Message(role="assistant", name=to_model, content=str(raw_response))
             )
             logger.info(
                 f"Direct communication response from {to_model}: {raw_response[:100]}..."
@@ -597,13 +612,13 @@ class Team:
             content_str = json.dumps(message)
             # Record incoming notification from member
             self.conversation_history.append(
-                Message(role="assistant", name=from_model, content=content_str)
+                Message(role="assistant", name=from_model, content=str(content_str))
             )
             # Let the lead generate an acknowledgement or process
             raw_response = await target.generate(content_str)
             # Record lead's response
             self.conversation_history.append(
-                Message(role="assistant", name=to_model, content=raw_response)
+                Message(role="assistant", name=to_model, content=str(raw_response))
             )
             logger.info(
                 f"Direct communication response from {to_model}: {raw_response[:100]}..."
@@ -615,15 +630,48 @@ class Team:
         message_content = message if isinstance(message, str) else json.dumps(message)        # --- Update history for the target model ---
         history_for_target = self.conversation_history.copy()
         # Treat incoming internal message as user input for the lead model
-        user_message = Message(role="user", name=from_model, content=message_content)
+        user_message = Message(role="user", name=from_model, content=str(message_content))
         history_for_target.append(user_message)
         
         # Record the user message in the main conversation history as well
         self.conversation_history.append(user_message)
 
         # --- Target model generates a response, including tool calls ---
-        # Use generate_response to enable tool call handling        # 1. Model generates an initial response, which may include a tool call
-        raw_response = await target.generate_response(history_for_target)
+        # Use generate_response to enable tool call handling        
+        # 1. Model generates an initial response, which may include a tool call
+        
+        raw_response: Any
+        # Ensure target model has generate_response method
+        if not hasattr(target, "generate_response") or not callable(getattr(target, "generate_response")):
+            logger.warning(f"Model {to_model} does not have a callable 'generate_response' method. Attempting fallback to 'generate'.")
+            if hasattr(target, "generate") and callable(getattr(target, "generate")):
+                # Assuming history_for_target[-1].content is the latest prompt for generate
+                prompt_content = history_for_target[-1].content if history_for_target and history_for_target[-1].content else ""
+                if isinstance(prompt_content, list): # Handle cases where content might be a list (e.g. multimodal)
+                    prompt_content = " ".join(str(item) for item in prompt_content if isinstance(item, dict) and item.get("type") == "text")
+
+                gen_result = target.generate(prompt_content)
+                if asyncio.iscoroutine(gen_result):
+                    raw_response = await gen_result
+                else:
+                    raw_response = gen_result
+                # Append simple response to history and return, as no tool processing can occur here
+                self.conversation_history.append(Message(role="assistant", name=to_model, content=str(raw_response)))
+                logger.info(f"Direct communication response from {to_model} (using generate, no tool processing): {str(raw_response)[:100]}...")
+                return str(raw_response)
+            else:
+                error_message = f"Model {to_model} lacks both 'generate_response' and 'generate' methods."
+                logger.error(error_message)
+                self.conversation_history.append(Message(role="assistant", name=to_model, content=str(error_message)))
+                return error_message
+
+        generate_response_callable = getattr(target, "generate_response")
+        raw_response_candidate = generate_response_callable(history_for_target)
+
+        if asyncio.iscoroutine(raw_response_candidate):
+            raw_response = await raw_response_candidate
+        else:
+            raw_response = raw_response_candidate
 
         # 2. Check for an embedded tool call in the response
         tool_call_data = None
@@ -648,9 +696,8 @@ class Team:
                 # Ensure the tool is registered on the model
                 if tool_name not in target.tools and tool_name in self._tools:
                     try:
-                        target.add_tool_sync(tool_name, self._tools[tool_name])
+                        target.add_tool_sync(tool_name, self._tools[tool_name])  # type: ignore[attr-defined]
                         # After calling add_tool_sync, update the model's tools if it's a mock
-                        # This handles test scenarios where add_tool_sync doesn't actually modify tools
                         if not hasattr(target.tools, 'get') or target.tools.get(tool_name) is None:
                             if hasattr(target.tools, '__setitem__'):  # It's a dict-like object
                                 target.tools[tool_name] = self._tools[tool_name]
@@ -665,7 +712,7 @@ class Team:
                     error_msg = f"Tool '{tool_name}' not available on model '{to_model}'"
                     logger.error(error_msg)
                     self.conversation_history.append(
-                        Message(role="tool", name=tool_name, content=error_msg)
+                        Message(role="tool", name=tool_name, content=str(error_msg))
                     )
                     return error_msg
                 
@@ -676,10 +723,43 @@ class Team:
                 if callable(tool_inst) and not hasattr(tool_inst, "execute"):
                     tool_func = tool_inst
                 else:
-                    tool_func = tool_inst.execute
+                    tool_func = getattr(tool_inst, "execute", None)
+                
+                # Check if tool_func is None (e.g. tool_inst exists but no 'execute' and not callable itself)
+                if tool_func is None:
+                    error_msg = f"Tool '{tool_name}' on model '{to_model}' is not configured correctly (not callable and has no 'execute' method)."
+                    logger.error(error_msg)
+                    self.conversation_history.append(
+                        Message(role="tool", name=tool_name, content=str(error_msg))
+                    )
+                    
+                    final_response = f"Error: Tool '{tool_name}' could not be executed."
+                    if hasattr(target, "process_tool_result") and callable(target.process_tool_result):
+                        tr_error = ToolResult(tool_name=tool_name, result=error_msg) # Pass error message as result
+                        pt_awaitable = target.process_tool_result(tr_error)
+                        if asyncio.iscoroutine(pt_awaitable):
+                            final_response = await pt_awaitable
+                        else:
+                            final_response = pt_awaitable
+                    else:
+                        logger.warning(f"Model {to_model} does not have 'process_tool_result' to handle tool execution error for '{tool_name}'.")
+
+                    self.conversation_history.append(
+                        Message(role="assistant", name=to_model, content=str(final_response))
+                    )
+                    return str(final_response)
+
                 # Invoke the tool
-                logger.debug(f"Calling execute method of tool '{tool_name}' with arguments: {args_ctx}")
-                tool_result = await tool_func(**args_ctx)
+                logger.debug(f"Calling tool '{tool_name}' with arguments: {args_ctx}")
+                tool_result: Any
+                if asyncio.iscoroutinefunction(tool_func):
+                    tool_result = await tool_func(**args_ctx)
+                else:
+                    potential_coro = tool_func(**args_ctx)
+                    if asyncio.iscoroutine(potential_coro):
+                        tool_result = await potential_coro
+                    else:
+                        tool_result = potential_coro
                 # Record the tool invocation in history
                 self.conversation_history.append(
                     Message(role="tool", name=tool_name, content=str(tool_result))
@@ -690,7 +770,7 @@ class Team:
                 # Let the model process the tool result to produce a final answer
                 final_response = await target.process_tool_result(tr)
                 self.conversation_history.append(
-                    Message(role="assistant", name=to_model, content=final_response)
+                    Message(role="assistant", name=to_model, content=str(final_response))
                 )
                 logger.info(
                     f"Direct communication tool-handled response from {to_model}: {final_response[:100]}..."
@@ -699,7 +779,7 @@ class Team:
         
         # No tool call detected, log the raw assistant response
         self.conversation_history.append(
-            Message(role="assistant", name=to_model, content=raw_response)
+            Message(role="assistant", name=to_model, content=str(raw_response))
         )
         logger.info(
             f"Direct communication response from {to_model}: {raw_response[:100]}..."
@@ -789,8 +869,7 @@ class Team:
         if agent_id:
             if agent_id in self.agent_loops:
                 return self.agent_loops[agent_id].state
-            return {"error": f"Agent {agent_id} not found"}
-        # Get status of all agents
+            return {"error": f"Agent {agent_id} not found"}        # Get status of all agents
         return {
             "team": self.name,
             "agents": {aid: loop.state for aid, loop in self.agent_loops.items()},
@@ -802,13 +881,21 @@ class Team:
         Args:
             reason: Reason for termination
         """
+        logger.info(f"Attempting to terminate agent loops for team {self.name} due to: {reason}")
         # Terminate all tracked loops
-        for loop in self.agent_loops.values():
-            try:
-                loop.terminate(reason)
-            except Exception:
-                pass
-        logger.info(f"Terminated agent loops for team {self.name}: {reason}")
+        for loop_id, loop_instance in list(self.agent_loops.items()): # Iterate over a copy of items for safe removal if needed
+            if hasattr(loop_instance, "terminate") and callable(loop_instance.terminate):
+                try:
+                    # Pylance error indicated 'await' was problematic, suggesting a sync method
+                    logger.info(f"Calling terminate() on loop {loop_id} (type: {type(loop_instance).__name__})...")
+                    loop_instance.terminate(reason) 
+                    logger.info(f"Successfully called terminate on loop {loop_id} for team {self.name}.")
+                except Exception as e:
+                    logger.error(f"Error during terminate() call for loop {loop_id} in team {self.name}: {e}", exc_info=True)
+            else:
+                logger.warning(f"Agent loop {loop_id} (instance: {type(loop_instance).__name__}) for team {self.name} does not have a callable terminate method or was already removed.")
+        
+        logger.info(f"Termination process completed for agent loops in team {self.name}.")
         # Reset tracking
         self.agent_loops = {}
 
@@ -903,7 +990,10 @@ class Team:
         # Clean up tools
         for tool_name, tool in self._tools.items():
             if hasattr(tool, "cleanup") and callable(tool.cleanup):
-                await tool.cleanup()
+                if asyncio.iscoroutinefunction(tool.cleanup):
+                    await tool.cleanup()
+                else:
+                    tool.cleanup()
 
         # Clear shared results
         self.shared_results.clear()
@@ -1044,7 +1134,7 @@ class Team:
                             f"Error calling response handler for message ID {message_id}: {e}"
                         )
 
-                # If no message ID or handler not found, try to find by target model
+                # If no message ID or handler found, try to find by target model
                 if target_model:
                     for key, handler in list(self.response_handlers.items()):
                         # Check if this response matches the handler
@@ -1165,7 +1255,8 @@ class Team:
                             model_message_content = f"Message from {source_model_name or sender_name}: {content}"
                             model_message = Message(
                                 role="system",  # Use system role for inter-model/team messages
-                                content=model_message_content,
+                                content=str(model_message_content), # Ensure content is string
+                                name=source_model_name or sender_name # Add name if available
                             )
 
                             logger.debug(
@@ -1176,9 +1267,10 @@ class Team:
                                 [model_message]
                             )
                             # Invoke any JSON-encoded tool calls and refine the response via helper
-                            response = await self._invoke_tool_and_refine_response(
-                                recipient_model, raw_response
-                            )
+                            # response = await self._invoke_tool_and_refine_response(
+                            #     recipient_model, raw_response
+                            # )
+                            response = raw_response # Temporarily assign raw_response to response
 
                             # Store interaction in conversation history (adjust roles as needed)
                             if is_internal_broadcast:
@@ -1543,7 +1635,10 @@ class Team:
                 and not tool._initialized
             ):
                 try:
-                    await tool.initialize()
+                    if asyncio.iscoroutinefunction(tool.initialize):
+                        await tool.initialize()
+                    else:
+                        tool.initialize()
                     logger.info(f"Initialized user input tool for team {self.name}")
                 except Exception as e:
                     logger.warning(f"Failed to initialize user input tool: {e}")

@@ -251,7 +251,7 @@ class GlueSmolAgent(CodeAgent):
                 valid_tool = t_spec
                 tool_name_for_log = getattr(valid_tool, 'name', tool_name_for_log)
             elif hasattr(t_spec, '_glue_tool_schema') and callable(t_spec):
-                schema = t_spec._glue_tool_schema
+                schema = t_spec._glue_tool_schema  # type: ignore
                 func_name = getattr(t_spec, '__name__', 'dynamic_tool')
                 tool_name_for_log = func_name
                 description_str = schema.get('description') or getattr(t_spec, '__doc__', f'Executes the {func_name} tool.') or ''
@@ -458,6 +458,11 @@ class GlueSmolAgent(CodeAgent):
             adhesives = {AdhesiveType.GLUE}
         self.memories: Dict[str, Any] = {}
         team_id_for_mem = getattr(self, 'team_id', self._team_name_for_prompt) 
+        # Ensure team_id_for_mem is a string for GLUEPersistentAdapter
+        if not isinstance(team_id_for_mem, str):
+            logger.warning(f"Agent '{self.name}': team_id_for_mem was not a string (was {type(team_id_for_mem)}), defaulting to 'default_team_id_fallback'.")
+            team_id_for_mem = "default_team_id_fallback"
+        
         for adhesive in adhesives:
             if adhesive == AdhesiveType.GLUE:
                 self.memories['glue'] = GLUEPersistentAdapter(team_id=team_id_for_mem, memory_dir='memory')
@@ -472,7 +477,12 @@ class GlueSmolAgent(CodeAgent):
         elif 'tape' in self.memories:
             self.memory = self.memories['tape']
         else:
-            self.memory = GLUEPersistentAdapter(team_id=team_id_for_mem, memory_dir='memory')
+            # Ensure team_id_for_mem is a string for the fallback GLUEPersistentAdapter
+            fallback_team_id = team_id_for_mem
+            if not isinstance(team_id_for_mem, str): # This check is redundant due to the earlier check, but kept for safety here
+                 logger.warning(f"Agent '{self.name}': team_id_for_mem was not a string for fallback (was {type(team_id_for_mem)}), using 'default_team_id_fallback_else'.")
+                 fallback_team_id = "default_team_id_fallback_else"
+            self.memory = GLUEPersistentAdapter(team_id=fallback_team_id, memory_dir='memory')
             logging.warning(f"Agent '{self.name}' had no specific memory adapter; defaulted to GLUEPersistentAdapter.")
         logger.info(f"[GLUE] Agent '{self.name}' memory adapters: {list(self.memories.keys())}, default: {type(self.memory).__name__ if self.memory else None}")
 
@@ -493,18 +503,9 @@ class GlueSmolAgent(CodeAgent):
             logger.debug(f"    Inputs: {inputs}")
             logger.debug(f"    Output type: {output_type}")
 
-    def _generate_messages(self, stream: bool = False, summary_mode: bool = False) -> List[Dict[str, Any]]:
-        # Refresh system prompt with the latest rendering
-        try:
-            # PromptTemplates is a dict-like TypedDict, so update the system_prompt key
-            self.prompt_templates['system_prompt'] = self.initialize_system_prompt()
-        except Exception as e:
-            logging.getLogger("glue.smolagent").warning(
-                f"Agent '{self.name}': failed to refresh system_prompt in _generate_messages: {e}"
-            )
-        messages_to_llm = super()._generate_messages(stream=stream, summary_mode=summary_mode)
-        logger.debug(f"Messages being sent to LLM: {messages_to_llm}")
-        return messages_to_llm
+    # Removed _generate_messages method as it was causing an error with super()
+    # and its functionality for refreshing system prompt is handled by initialize_system_prompt
+    # or would be better placed in an overridden write_memory_to_messages if dynamic updates are needed.
 
     # Add method to ensure interpreter exists for flow and tool injection
     def force_interpreter(self):
@@ -516,14 +517,15 @@ class GlueSmolAgent(CodeAgent):
         if not hasattr(interp, 'globals'):
             setattr(interp, 'globals', {})
         self.interpreter = interp
-        self.interpreter_globals = interp.globals
+        self.interpreter_globals = interp.globals # type: ignore
 
     # Update run method to call force_interpreter and inject tools into interpreter.globals
-    def run(self, task: str, **kwargs):
+    def run(self, task: str, stream: bool = False, reset: bool = True, images: Optional[List[Any]] = None, additional_args: Optional[Dict[str, Any]] = None, max_steps: Optional[int] = None, **kwargs):
         self.user_task = task
         logger.info(f"Agent '{self.name}' starting run for task: {task}")
         self.force_interpreter()
-        return super().run(task=task, **kwargs)
+        # Pass along all parameters to the super().run call, including the new ones
+        return super().run(task=task, stream=stream, reset=reset, images=images, additional_args=additional_args, max_steps=max_steps, **kwargs)
 
 
 def make_glue_smol_agent(
@@ -549,8 +551,8 @@ def make_glue_smol_agent(
             logger.error(f"Tool at index {t_idx} for agent '{name}' ('{t_spec}') is not a valid SmolAgents Tool or GLUE function tool.")
 
     system_prompt_override = None
-    if hasattr(model, 'smol_config') and isinstance(model.smol_config, dict): 
-        system_prompt_override = model.smol_config.get('system_prompt', None) 
+    if hasattr(model, 'smol_config') and isinstance(model.smol_config, dict): # type: ignore
+        system_prompt_override = model.smol_config.get('system_prompt', None) # type: ignore
 
     if managed_agents_dict:
         for ma_name, ma_instance in managed_agents_dict.items():
