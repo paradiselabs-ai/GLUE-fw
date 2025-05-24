@@ -26,6 +26,7 @@ class FlowType(str, Enum):
     PUSH = "->"  # Source pushes to target
     PULL = "<-"  # Target pulls from source
     REPEL = "<>"  # No interaction allowed
+    UNIDIRECTIONAL = "->"  # One-way flow from source to target
 
 
 # Add TaskStatus enum for orchestrator subtask states

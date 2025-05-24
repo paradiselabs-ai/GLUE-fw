@@ -4,8 +4,8 @@ from .glue_smolagent import GlueSmolAgent, make_glue_smol_agent
 from .providers.openrouter import OpenrouterProvider
 import asyncio
 import logging
-logger = logging.getLogger(__name__)
 from ..core.types import FlowType
+logger = logging.getLogger(__name__)
 
 class SimpleMessage:
     def __init__(self, content):
@@ -53,14 +53,19 @@ class GlueSmolTeam:
             raise ValueError(f"Unsupported model client type for lead {lead_name}: {type(raw_client)}")
         lead_client = raw_client
         lead_description = getattr(raw_client, "description", f"Lead agent for team {lead_name}")
+        # Filter tools for the lead agent to include all tools
+        lead_tools = list(self.team.tools)
+
+        # Initialize lead agent with all tools
         self.lead_agent = make_glue_smol_agent(
             model=lead_client,
-            tools=list(self.team.tools),
+            tools=lead_tools,
             glue_config=self.glue_config,
             managed_agents_dict={},  # Placeholder for later population
             name=lead_name,
             description=lead_description,
         )
+
         # Debug: print the memory configuration for the lead agent
         self.lead_agent.debug_print_agent_memory()
 
@@ -92,9 +97,13 @@ class GlueSmolTeam:
                 raise ValueError(f"Unsupported model client type for member {member_name}: {type(raw_member)}")
             member_client = raw_member
             member_description = getattr(raw_member, "description", f"Team member agent {member_name}")
+
+            # Filter tools for member agents to exclude 'user_input'
+            member_tools = [tool for tool in self.team.tools if getattr(tool, 'name', None) != 'user_input']
+
             agent = make_glue_smol_agent(
                 model=member_client,
-                tools=list(self.team.tools),
+                tools=member_tools,
                 glue_config=self.glue_config,
                 name=member_name,
                 description=member_description,
@@ -173,7 +182,7 @@ class GlueSmolTeam:
             # Otherwise, wrap the provider output as a normal message
             content_for_message = str(raw_result) if raw_result is not None else ""
             final_message_obj = SimpleMessage(content_for_message)
-            logger.debug(f"CALLABLE RETURNING SimpleMessage with content: '{final_message_obj.content[:500]}...'" )
+            logger.debug(f"CALLABLE RETURNING SimpleMessage with content: '{final_message_obj.content[:500]}'" )
             return final_message_obj
 
         return FunctionModelWrapper(call)
@@ -212,4 +221,4 @@ class GlueSmolTeam:
             except Exception as e:
                 logger.error(f"Error closing OpenRouter provider: {e}", exc_info=True)
         # Clear the list after closing
-        self._openrouter_providers.clear() 
+        self._openrouter_providers.clear()

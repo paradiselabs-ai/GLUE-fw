@@ -1,6 +1,9 @@
-Top priority(llm chaching):
-Removal of pydantic, get_tool_class
+Top priority:
 understanding the flow of agents well and adjusting their prompts so they do as the flow expects them to do
+For now the team lead understands the request well and interacts with it's environment in order to get the user task done.
+(Important) Test the team lead ability to understand requests and it's adherence to the reAct prompt.
+(Next) Test it's ability to use it's team members update team members prompt definition according to their specialization.
+(Upcoming) Update the DSL and make sure it's robust and works well.
 https://python.langchain.com/docs/integrations/llm_caching/
 
 

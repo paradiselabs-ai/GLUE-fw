@@ -12,7 +12,7 @@ from enum import Enum
 from typing import Dict, List, Any, Optional
 import logging
 from datetime import datetime
-from pydantic import BaseModel, Field, ConfigDict
+from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger(__name__)
 
@@ -25,18 +25,26 @@ class ComponentType(str, Enum):
     MCP_TOOL = "mcp_tool"
 
 
-class ComponentSpec(BaseModel):
+@dataclass
+class ComponentSpec:
     """Specification for a persisted component"""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     id: str
     component_type: ComponentType
     name: str
     code: str
-    metadata: Dict[str, Any] = Field(default_factory=dict)
     created_at: str
     updated_at: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]):
+        # Ensure component_type is an enum
+        ct = data.get("component_type")
+        if ct is not None and not isinstance(ct, ComponentType):
+            data = dict(data)
+            data["component_type"] = ComponentType(ct)
+        return cls(**data)
 
 
 class DynamicComponentStore:
@@ -166,7 +174,7 @@ class DynamicComponentStore:
             with open(path, "r") as f:
                 data = json.load(f)
 
-            spec = ComponentSpec(**data)
+            spec = ComponentSpec.from_dict(data)
             logger.info(f"Loaded component {spec.name} ({spec.component_type.value})")
             return spec
 
@@ -263,9 +271,8 @@ class DynamicComponentStore:
                     with open(os.path.join(dir_path, filename), "r") as f:
                         data = json.load(f)
 
-                    spec = ComponentSpec(**data)
+                    spec = ComponentSpec.from_dict(data)
                     components.append(spec)
-
                 except Exception as e:
                     logger.warning(f"Failed to load component {filename}: {str(e)}")
 
@@ -284,8 +291,6 @@ class DynamicComponentStore:
         )
 
         # Get the file path
-        path = self._get_component_path(spec.id, spec.component_type)
-
-        # Save to file
+        path = self._get_component_path(spec.id, spec.component_type)        # Save to file
         with open(path, "w") as f:
-            json.dump(spec.model_dump(), f, indent=2)
+            json.dump(asdict(spec), f, indent=2)

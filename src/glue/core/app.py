@@ -124,7 +124,9 @@ class TogetherInferenceClientModel(InferenceClientModel):
     def generate(self, messages, *args, **kwargs):
         # Call TogetherProvider asynchronously but return synchronously
         coro = self._tg_provider.generate_response(messages)
-        import asyncio, concurrent.futures, threading
+        import asyncio
+        import concurrent.futures
+        import threading
         try:
             loop = asyncio.get_running_loop()
             if loop.is_running() and threading.current_thread() is threading.main_thread():
@@ -146,7 +148,9 @@ class SambanovaInferenceClientModel(InferenceClientModel):
 
     def generate(self, messages, *args, **kwargs):
         coro = self._sb_provider.generate_response(messages, **kwargs)
-        import asyncio, concurrent.futures, threading
+        import asyncio
+        import concurrent.futures
+        import threading
         try:
             loop = asyncio.get_running_loop()
             if loop.is_running() and threading.current_thread() is threading.main_thread():
@@ -169,7 +173,9 @@ class NovitaInferenceClientModel(InferenceClientModel):
     def generate(self, messages, *args, **kwargs):
         # Call NovitaProvider asynchronously but return synchronously
         coro = self._nv_provider.generate_response(messages, **kwargs)
-        import asyncio, concurrent.futures, threading
+        import asyncio
+        import concurrent.futures
+        import threading
         try:
             loop = asyncio.get_running_loop()
             if loop.is_running() and threading.current_thread() is threading.main_thread():
@@ -192,7 +198,9 @@ class NebiusInferenceClientModel(InferenceClientModel):
     def generate(self, messages, *args, **kwargs):
         # Call NebiusProvider asynchronously but return synchronously
         coro = self._nb_provider.generate_response(messages, **kwargs)
-        import asyncio, concurrent.futures, threading
+        import asyncio
+        import concurrent.futures
+        import threading
         try:
             loop = asyncio.get_running_loop()
             if loop.is_running() and threading.current_thread() is threading.main_thread():
@@ -215,7 +223,9 @@ class CohereInferenceClientModel(InferenceClientModel):
     def generate(self, messages, *args, **kwargs):
         # Call CohereProvider asynchronously but return synchronously
         coro = self._co_provider.generate_response(messages, **kwargs)
-        import asyncio, concurrent.futures, threading
+        import asyncio
+        import concurrent.futures
+        import threading
         try:
             loop = asyncio.get_running_loop()
             if loop.is_running() and threading.current_thread() is threading.main_thread():
@@ -284,6 +294,11 @@ class GlueApp:
             self._setup_from_parsed_config(parsed_config)
         elif config is not None:
             if isinstance(config, dict):
+                # Support top-level 'name' and 'description' keys for backward compatibility
+                if 'name' in config:
+                    self.name = config['name']
+                if 'description' in config:
+                    self.description = config['description']
                 self._setup_from_parsed_config(config)
             else:
                 self._setup_from_app_config(config)

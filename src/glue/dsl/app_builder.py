@@ -17,7 +17,6 @@ from ..core.teams import Team
 from ..core.types import AdhesiveType, FlowType
 from ..core.flow import Flow
 
-
 class GlueAppBuilder:
     """Builder for GLUE applications from runtime configurations."""
 
@@ -136,33 +135,31 @@ class GlueAppBuilder:
                 else:
                     self.logger.warning(f"Unknown adhesive type: {adhesive_str}")
             except ValueError:
-                self.logger.warning(f"Unknown adhesive type: {adhesive_str}")
-
-        # Substitute environment variables in config
+                self.logger.warning(f"Unknown adhesive type: {adhesive_str}")        # Substitute environment variables in config
         processed_config = self._substitute_env_vars(model_config)
 
-        # Convert dictionary to Pydantic ModelConfig
-        from ..core.schemas import ModelConfig as PydanticModelConfig
+        # Convert dictionary to simple ModelConfig (smolagents compatible)
+        from ..core.simple_schemas import create_model_config_from_dict
 
-        # Create a ModelConfig instance with the required fields
-        model_pydantic_config = PydanticModelConfig(
-            name=name,
-            provider=provider,
-            model=processed_config.get("model", provider),
-            temperature=processed_config.get("temperature", 0.7),
-            max_tokens=processed_config.get("max_tokens", 2048),
-            description=processed_config.get("description", ""),
-            api_key=processed_config.get("api_key"),
-            api_params=processed_config.get("api_params", {}),
-            provider_class=processed_config.get("provider_class"),
-        )
+        # Create a ModelConfig instance with sensible defaults
+        model_simple_config = create_model_config_from_dict({
+            "name": name,
+            "provider": provider,
+            "model": processed_config.get("model", provider),
+            "temperature": processed_config.get("temperature", 0.7),
+            "max_tokens": processed_config.get("max_tokens", 2048),
+            "description": processed_config.get("description", ""),
+            "api_key": processed_config.get("api_key"),
+            "api_params": processed_config.get("api_params", {}),
+            "provider_class": processed_config.get("provider_class"),
+        })
 
         self.logger.info(f"Creating model: {name}")
         # Instantiate a SmolAgents InferenceClientModel
         model = InferenceClientModel(
-            model_id=model_pydantic_config.model,
-            provider=model_pydantic_config.provider,
-            api_key=model_pydantic_config.api_key,
+            model_id=model_simple_config.model,
+            provider=model_simple_config.provider,
+            api_key=model_simple_config.api_key,
             **{k: v for k, v in config.get("config", {}).items() if v is not None}
         )
         # Assign the model name for compatibility

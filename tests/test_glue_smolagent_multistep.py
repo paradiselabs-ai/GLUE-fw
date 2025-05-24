@@ -1,4 +1,3 @@
-import pytest
 
 from glue.core.glue_smolagent import make_glue_smol_agent
 from smolagents import Tool  # noqa: F401, import kept for potential future extensions

@@ -4,7 +4,7 @@ from typing import Dict, Set, Any, Optional, List
 from datetime import datetime
 import logging
 import asyncio
-from pydantic import BaseModel, Field, ConfigDict
+from dataclasses import dataclass, field
 
 from ..core.teams import Team
 from ..core.types import FlowType
@@ -13,34 +13,30 @@ from ..core.types import FlowType
 logger = logging.getLogger(__name__)
 
 
-class FlowMetrics(BaseModel):
+@dataclass
+class FlowMetrics:
     """Metrics for flow health monitoring"""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     latency: float = 0.0  # Time for information transfer
     congestion: float = 0.0  # Flow congestion level (0-1)
     throughput: float = 0.0  # Successful transfers per minute
     errors: int = 0  # Failed transfers
-    last_update: datetime = Field(default_factory=datetime.now)
+    last_update: datetime = field(default_factory=datetime.now)
 
 
 # ==================== Class Definitions ====================
-class FlowState(BaseModel):
+@dataclass
+class FlowState:
     """State of a magnetic flow between teams"""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     source_team: str
     target_team: str
     flow_type: FlowType
     active: bool = True
-    metrics: FlowMetrics = Field(default_factory=FlowMetrics)
-    alternate_routes: List[List[str]] = Field(
-        default_factory=list
-    )  # List of team paths
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
+    metrics: FlowMetrics = field(default_factory=FlowMetrics)
+    alternate_routes: List[List[str]] = field(default_factory=list)  # List of team paths
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
 
 
 class MagneticField:

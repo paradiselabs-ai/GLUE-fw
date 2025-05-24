@@ -1,7 +1,6 @@
 import os
 import aiohttp
 import logging
-import asyncio
 from typing import List, Optional, Dict, Any
 from ..schemas import Message
 from .provider_base import ProviderBase

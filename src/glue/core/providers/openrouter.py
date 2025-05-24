@@ -11,7 +11,8 @@ import logging
 import os
 from typing import Dict, List, Any, Callable, AsyncIterable
 import asyncio
-import openai
+import json
+import ast
 
 from ..schemas import Message, ToolCall, ToolResult
 from smolagents import OpenAIServerModel
@@ -77,11 +78,9 @@ class OpenrouterProvider:
             if isinstance(msg, dict):
                 role = msg.get("role", "user")
                 raw_content = msg.get("content", "")
-                # If content is a list of text segments, flatten into a single string
+                # If content is a list of text segments (including cache_control), pass it through unmodified
                 if isinstance(raw_content, list):
-                    content = "".join(
-                        [segment.get("text", "") for segment in raw_content if isinstance(segment, dict)]
-                    )
+                    content = raw_content
                 else:
                     content = raw_content
             elif hasattr(msg, "role") and hasattr(msg, "content"):
@@ -136,7 +135,7 @@ class OpenrouterProvider:
                     return msg_obj
                 # No valid content
                 logger.error("OpenrouterProvider direct generate returned no content")
-                return "ERROR_IN_OPENROUTER_PROVIDER_NO_CONTENT"
+                return "I'm sorry, but I couldn't generate a response at this time. Please try again."
 
             logger.debug(f"OpenrouterProvider RAW API RESPONSE: {response}")
 
@@ -149,57 +148,79 @@ class OpenrouterProvider:
                 content = msg.content
                 # Ignore structured tool call outputs
                 if content.strip().startswith("Calling tools:"):
-                    logger.warning("OpenrouterProvider ignoring structured tool call content")
+                    logger.info("Tool call detected: parsing tool instructions.")
+                    tool_block = content[len("Calling tools:"):].strip()
+                    try:
+                        tool_data = json.loads(tool_block)
+                        return {"tool_calls": tool_data}
+                    except Exception as e_json:
+                        try:
+                            tool_data = ast.literal_eval(tool_block)
+                            return {"tool_calls": tool_data}
+                        except Exception as e_ast:
+                            logger.error(f"Failed to parse tool call as JSON ({e_json}) or Python literal ({e_ast})")
+                            return "I'm sorry, but the response format was not understood."
                 else:
                     logger.debug(f"OpenrouterProvider RETURNING content: {content}")
                     return content
             
-            # Warm-up retry for empty content when finish_reason is None
-            finish_reason = getattr(choice, "finish_reason", None)
-            if finish_reason is None:
-                logger.warning("OpenRouter response had no finish reason and empty content; retrying after delay")
-                await asyncio.sleep(2)
-                response_warmup = self.client.chat.completions.create(**api_params)
-                logger.debug(f"OpenrouterProvider RAW API RESPONSE (warm-up retry): {response_warmup}")
-                choice_warmup = None
-                if response_warmup and getattr(response_warmup, "choices", None):
-                    choice_warmup = response_warmup.choices[0]
-                msg_warmup = getattr(choice_warmup, "message", None)
-                if msg_warmup and hasattr(msg_warmup, "content") and msg_warmup.content and msg_warmup.content.strip():
-                    content_warmup = msg_warmup.content
-                    # Ignore structured tool call outputs
-                    if content_warmup.strip().startswith("Calling tools:"):
-                        logger.warning("OpenrouterProvider ignoring structured tool call content in warm-up retry")
-                    else:
-                        logger.debug(f"OpenrouterProvider RETURNING content (warm-up retry): {content_warmup}")
-                        return content_warmup
-            # Retry once on empty content
-            logger.warning("OpenRouter response contained empty content; retrying once")
-            response_retry = self.client.chat.completions.create(**api_params)
-            logger.debug(f"OpenrouterProvider RAW API RESPONSE (retry): {response_retry}")
-            choice_retry = None
-            if response_retry and getattr(response_retry, "choices", None):
-                choice_retry = response_retry.choices[0]
-            msg_retry = getattr(choice_retry, "message", None)
-            if msg_retry and hasattr(msg_retry, "content") and msg_retry.content and msg_retry.content.strip():
-                content_retry = msg_retry.content
-                # Ignore structured tool call outputs
-                if content_retry.strip().startswith("Calling tools:"):
-                    logger.warning("OpenrouterProvider ignoring structured tool call content in retry")
-                else:
-                    logger.debug(f"OpenrouterProvider RETURNING content (retry): {content_retry}")
-                    return content_retry
-            logger.error("OpenRouter response contained empty content after retry; returning error code")
-            return "ERROR:LLM_EMPTY_CONTENT_NULL"
+            # Maximum number of retries
+            max_retries = 3
+            retry_count = 0
+            retry_delay = 2  # Initial delay in seconds
             
-        except openai.NotFoundError as e:
-            logger.error(f"Error generating response from OpenRouter: {e}", exc_info=True)
-            return f"ERROR_IN_OPENROUTER_PROVIDER_NOTFOUND: {type(e).__name__}: {str(e)}"
+            # Retry loop for empty content
+            while retry_count < max_retries:
+                # Warm-up retry for empty content when finish_reason is None
+                finish_reason = getattr(choice, "finish_reason", None)
+                if finish_reason is None:
+                    logger.warning(f"OpenRouter response had no finish reason and empty content; retry {retry_count+1}/{max_retries} after {retry_delay}s delay")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.warning(f"OpenRouter response contained empty content; retry {retry_count+1}/{max_retries}")
+                
+                # Perform the retry
+                retry_response = openai_client.chat.completions.create(**api_params)
+                logger.debug(f"OpenrouterProvider RAW API RESPONSE (retry {retry_count+1}): {retry_response}")
+                
+                # Process retry response
+                retry_choice = None
+                if retry_response and getattr(retry_response, "choices", None):
+                    retry_choice = retry_response.choices[0]
+                retry_msg = getattr(retry_choice, "message", None)
+                
+                if retry_msg and hasattr(retry_msg, "content") and retry_msg.content and retry_msg.content.strip():
+                    retry_content = retry_msg.content
+                    # Ignore structured tool call outputs
+                    if retry_content.strip().startswith("Calling tools:"):
+                        logger.info("Tool call detected in retry: parsing tool instructions.")
+                        tool_block = retry_content[len("Calling tools:"):].strip()
+                        try:
+                            tool_data = json.loads(tool_block)
+                            return {"tool_calls": tool_data}
+                        except Exception as e_json:
+                            try:
+                                tool_data = ast.literal_eval(tool_block)
+                                return {"tool_calls": tool_data}
+                            except Exception as e_ast:
+                                logger.error(f"Failed to parse tool call in retry as JSON ({e_json}) or Python literal ({e_ast})")
+                                return "I'm sorry, but the response format was not understood."
+                    else:
+                        logger.debug(f"OpenrouterProvider RETURNING content (retry {retry_count+1}): {retry_content}")
+                        return retry_content
+                
+                # Increase retry count and delay
+                retry_count += 1
+                retry_delay = min(retry_delay * 1.5, 10)  # Exponential backoff with 10s cap
+            
+            # If we reached here, all retries failed
+            logger.error("OpenRouter response contained empty content after maximum retries")
+            # Return a user-friendly message instead of an error code
+            return "I'm sorry, but I'm having trouble generating a response right now. Please try again in a moment."
             
         except Exception as e:
-            logger.error(f"Error generating response from OpenRouter: {e}", exc_info=True)
-            logger.error("OpenRouter generic exception; RETURNING ERROR MESSAGE STRING")
-            return f"ERROR_IN_OPENROUTER_PROVIDER: {type(e).__name__}: {str(e)}"
+            logger.error(f"Error in OpenrouterProvider: {str(e)}")
+            return "I'm sorry, but I encountered an issue while processing your request. Please try again."
 
     async def process_tool_calls(
         self,

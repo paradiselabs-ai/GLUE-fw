@@ -17,7 +17,6 @@ import logging
 import re
 import datetime
 import time
-from pathlib import Path
 from typing import Dict, Any, Optional
 
 # Rich UI components
@@ -51,7 +50,6 @@ from .cliHelpers import parse_interactive_command, get_interactive_help_text
 from .utils.ui_utils import display_warning, set_cli_config
 
 # Import system modules
-import sys
 # Configure stdout/stderr for UTF-8 to avoid UnicodeEncodeError on Windows consoles
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -218,7 +216,7 @@ GLUE_LOGO = r"""[bold blue]
 # Command categories for help display
 COMMAND_CATEGORIES = {
     "core": ["run", "new", "validate", "version"],
-    "dev": ["forge", "list-tools", "list-models"],
+    "dev": ["list-tools", "list-models"],
     "interactive": [
         "help",
         "status",
@@ -544,7 +542,12 @@ async def run_app(
             first_team_name = next(iter(app.teams))
             entry_team = app.teams[first_team_name]
             app.tools['user_input'] = ui_tool
-            await entry_team.add_tool('user_input', ui_tool)
+            
+            # Use hierarchy-based assignment for user input tool
+            success = await entry_team.assign_user_input_tool_to_hierarchy_top(ui_tool)
+            if not success:
+                # Fallback to traditional assignment if hierarchy detection fails
+                await entry_team.add_tool('user_input', ui_tool)
             # Instantiate and configure SmolAgents orchestrator
             from .core.glue_smolteam import GlueSmolTeam
             smol_team = GlueSmolTeam(
@@ -1873,202 +1876,6 @@ def create_new_project(
         )
         return
 
-
-# ==================== Forge Functions ====================
-def run_forge_command():
-    """Run the GLUE Forge interactive CLI to create custom components using Google Gemini.
-
-    This function implements an interactive CLI that guides users through setting up
-    their API key for Google Gemini and using it to create custom components.
-    """
-    import os
-    import json
-    import getpass
-    logger = logging.getLogger(__name__)
-
-    # ASCII art banner
-    banner = """
-  ██████  ██      ██    ██ ███████     ███████  ██████  ██████   ██████  ███████ 
- ██       ██      ██    ██ ██          ██      ██    ██ ██   ██ ██       ██      
- ██   ███ ██      ██    ██ █████       █████   ██    ██ ██████  ██   ███ █████   
- ██    ██ ██      ██    ██ ██          ██      ██    ██ ██   ██ ██    ██ ██      
-  ██████  ███████  ██████  ███████     ██       ██████  ██   ██  ██████  ███████ 
-                                                                                 
-"""
-    print(banner)
-    print("Welcome to GLUE Forge - Create custom components with AI assistance")
-    print("=" * 70)
-    print("\nGLUE Forge uses Google Gemini 2.5 Pro, which is currently free to use.")
-    print("You'll need an API key from either Google AI Studio or OpenRouter.")
-
-    # Check if API key is already configured
-    config_dir = Path(os.path.expanduser("~/.glue"))
-    config_dir.mkdir(exist_ok=True)
-
-    forge_config_file = config_dir / "forge_config.json"
-    api_key = None
-    api_source = None
-    model_name = None
-
-    if forge_config_file.exists():
-        try:
-            with open(forge_config_file, "r") as f:
-                config = json.load(f)
-                api_key = config.get("api_key")
-                api_source = config.get("api_source")
-                model_name = config.get("model_name")
-
-            print(f"\nFound existing configuration: Using {api_source} API key")
-            use_existing = (
-                prompt_with_help(
-                    "Would you like to use this configuration?",
-                    default="Y",
-                    choices=["Y", "n"],
-                    icon="🔑",
-                )
-                .strip()
-                .lower()
-            )
-
-            if use_existing != "n":
-                print(f"Using existing {api_source} API key")
-            else:
-                api_key = None
-                api_source = None
-                model_name = None
-        except Exception as e:
-            logger.error(f"Error reading forge config: {str(e)}")
-            print("Error reading existing configuration. Setting up new configuration.")
-            api_key = None
-            api_source = None
-            model_name = None
-
-    # If no API key is configured, prompt for one
-    if not api_key:
-        print("\nYou need an API key to use GLUE Forge. Choose your API key source:")
-        print("1. Google AI Studio (https://makersuite.google.com/app/apikey)")
-        print("2. OpenRouter (https://openrouter.ai/keys)")
-
-        choice = None
-        while choice not in ["1", "2"]:
-            choice = prompt_with_help(
-                "Enter your choice",
-                choices=["1", "2"],
-                icon="🔑",
-            ).strip()
-
-        if choice == "1":
-            api_source = "Google AI Studio"
-            model_name = "gemini-1.5-pro"
-            print("\nGet your API key from: https://makersuite.google.com/app/apikey")
-        else:
-            api_source = "OpenRouter"
-            model_name = "google/gemini-2.5-pro-exp-03-25:free"
-            print("\nGet your API key from: https://openrouter.ai/keys")
-
-        api_key = getpass.getpass(f"\nEnter your {api_source} API key: ").strip()
-
-        # Validate API key format
-        if not api_key or len(api_key) < 10:
-            print("Invalid API key. Please provide a valid API key.")
-            return False
-
-        # Save configuration
-        config = {
-            "api_key": api_key,
-            "api_source": api_source,
-            "model_name": model_name,
-        }
-
-        with open(forge_config_file, "w") as f:
-            json.dump(config, f)
-
-        print(f"\nAPI key saved. Using {api_source} with model: {model_name}")
-
-    # Set the appropriate environment variable based on the API source
-    if api_source == "Google AI Studio":
-        os.environ["GOOGLE_API_KEY"] = api_key
-    else:  # OpenRouter
-        os.environ["OPENROUTER_API_KEY"] = api_key
-
-    # Now run the forge command
-    print("\nWhat would you like to create with GLUE Forge?")
-    print("1. Custom Tool")
-    print("2. Custom MCP Integration")
-    print("3. Custom API Integration")
-
-    forge_choice = None
-    while forge_choice not in ["1", "2", "3"]:
-        forge_choice = prompt_with_help(
-            "Enter your choice",
-            choices=["1", "2", "3"],
-            icon="🔨",
-        ).strip()
-
-    if forge_choice == "1":
-        name = prompt_with_help(
-            "Enter a name for your tool (letters, numbers, underscores only)",
-            icon="🔧",
-        ).strip()
-        description = prompt_with_help(
-            "Enter a brief description of what your tool does",
-            icon="📝",
-        ).strip()
-
-        print("\nChoose a template:")
-        print("1. Basic Tool (simple function)")
-        print("2. API Tool (makes external API calls)")
-        print("3. Data Tool (processes data files)")
-
-        template_choice = None
-        while template_choice not in ["1", "2", "3"]:
-            template_choice = prompt_with_help(
-                "Enter your choice",
-                choices=["1", "2", "3"],
-                icon="📁",
-            ).strip()
-
-        template = (
-            "basic"
-            if template_choice == "1"
-            else "api"
-            if template_choice == "2"
-            else "data"
-        )
-
-        print(f"\nCreating {template} tool: {name}")
-        forge_tool(name, description, template)
-
-    elif forge_choice == "2":
-        name = prompt_with_help(
-            "Enter a name for your MCP integration (letters, numbers, underscores only)",
-            icon="🔌",
-        ).strip()
-        description = prompt_with_help(
-            "Enter a brief description of what your MCP integration does",
-            icon="📝",
-        ).strip()
-
-        print(f"\nCreating MCP integration: {name}")
-        forge_mcp(name, description)
-
-    elif forge_choice == "3":
-        name = prompt_with_help(
-            "Enter a name for your API integration (letters, numbers, underscores only)",
-            icon="🔗",
-        ).strip()
-        description = prompt_with_help(
-            "Enter a brief description of what your API integration does",
-            icon="📝",
-        ).strip()
-
-        print(f"\nCreating API integration: {name}")
-        forge_api(name, description)
-
-    print("\nThank you for using GLUE Forge!")
-    return True
-
-
 # ==================== Utility Functions ====================
 def list_models():
     """List available models."""
@@ -2748,31 +2555,6 @@ def main():
             default="interactive",
         )
 
-        # Forge command (for creating custom components)
-        forge_parser = subparsers.add_parser(
-            "forge", help="Create custom components with AI assistance"
-        )
-        forge_subparsers = forge_parser.add_subparsers(
-            dest="forge_type", help="Type of component to forge"
-        )
-
-        # Forge MCP
-        forge_mcp_parser = forge_subparsers.add_parser(
-            "mcp", help="Create a custom MCP integration"
-        )
-        forge_mcp_parser.add_argument("name", help="MCP name")
-        forge_mcp_parser.add_argument(
-            "--description", "-d", required=True, help="MCP description"
-        )
-
-        # Forge API
-        forge_api_parser = forge_subparsers.add_parser(
-            "api", help="Create a custom API integration"
-        )
-        forge_api_parser.add_argument("name", help="API name")
-        forge_api_parser.add_argument(
-            "--description", "-d", required=True, help="API description"
-        )
 
         # List tools command
         subparsers.add_parser("list-tools", help="List available tools")
@@ -2819,10 +2601,6 @@ def main():
                 # If no project name provided, just pass None and let create_new_project handle it
                 create_new_project(args.project)
 
-            elif args.command == "forge":
-                print("Error: 'forge' command is no longer supported.")
-                parser.print_help()
-                sys.exit(1)
 
             elif args.command == "list-tools":
                 display_tools(args)
@@ -3975,7 +3753,3 @@ def get_template_content(template: str, project_name: str) -> str:
     console.print("\n[bold green]✨ GLUE file created successfully![/bold green]")
 
     return glue_content
-
-
-if __name__ == "__main__":
-    main()

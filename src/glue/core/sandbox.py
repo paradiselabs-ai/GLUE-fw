@@ -11,14 +11,15 @@ import inspect
 import types
 from typing import Any, Dict, List, Callable
 import builtins
-from pydantic import BaseModel, Field
+from dataclasses import dataclass, field
 
 
-class SandboxConfig(BaseModel):
+@dataclass
+class SandboxConfig:
     """Configuration for the code sandbox environment."""
 
-    allowed_modules: List[str] = Field(
-        default=[
+    allowed_modules: List[str] = field(
+        default_factory=lambda: [
             "math",
             "json",
             "re",
@@ -28,12 +29,11 @@ class SandboxConfig(BaseModel):
             "itertools",
             "time",
             "typing",
-        ],
-        description="List of module names that are allowed to be imported",
+        ]
     )
 
-    forbidden_modules: List[str] = Field(
-        default=[
+    forbidden_modules: List[str] = field(
+        default_factory=lambda: [
             "os",
             "sys",
             "subprocess",
@@ -46,28 +46,13 @@ class SandboxConfig(BaseModel):
             "smtplib",
             "ctypes",
             "multiprocessing",
-        ],
-        description="List of module names that are explicitly forbidden",
+        ]
     )
 
-    memory_limit_mb: int = Field(
-        default=100,
-        description="Maximum memory usage allowed in megabytes",
-        ge=1,
-        le=1000,
-    )
-
-    execution_timeout_seconds: int = Field(
-        default=5, description="Maximum execution time allowed in seconds", ge=1, le=60
-    )
-
-    allow_network: bool = Field(
-        default=False, description="Whether network access is allowed"
-    )
-
-    allow_file_operations: bool = Field(
-        default=False, description="Whether file operations are allowed"
-    )
+    memory_limit_mb: int = 100  # default=100, ge=1, le=1000
+    execution_timeout_seconds: int = 5  # default=5, ge=1, le=60
+    allow_network: bool = False
+    allow_file_operations: bool = False
 
 
 class SandboxViolation(Exception):

@@ -10,7 +10,6 @@ from .provider_base import ProviderBase
 
 # Import all providers
 from . import gemini
-from . import openai
 from . import anthropic
 from . import openrouter
 from . import portkey_wrapper
@@ -23,7 +22,6 @@ from . import nebius
 __all__ = [
     "ProviderBase",
     "gemini",
-    "openai",
     "anthropic",
     "openrouter",
     "sambanova",

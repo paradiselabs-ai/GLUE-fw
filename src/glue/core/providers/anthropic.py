@@ -9,7 +9,7 @@ import logging
 import os
 from typing import Dict, List, Any, Optional, Callable, AsyncIterable
 
-from glue.core.schemas import Message, ToolCall, ToolResult
+from glue.core.simple_schemas import Message, ToolCall, ToolResult
 
 # Set up logging
 logger = logging.getLogger(__name__)

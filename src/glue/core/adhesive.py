@@ -14,7 +14,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
-from glue.core.schemas import AdhesiveType, ToolResult
+from glue.core.simple_schemas import AdhesiveType, ToolResult
 
 # Set up logging
 logger = logging.getLogger(__name__)

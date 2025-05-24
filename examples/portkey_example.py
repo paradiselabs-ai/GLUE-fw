@@ -18,7 +18,6 @@ import logging
 from datetime import datetime, timedelta
 
 from glue import GlueApp
-from glue.core.team import Team
 from glue.utils.portkey_client import get_portkey_client
 from glue.cli import setup_logging
 

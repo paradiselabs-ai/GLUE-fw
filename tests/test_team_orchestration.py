@@ -69,4 +69,4 @@ def test_flow_function_registration(model_clients):
     assert "pull_from_member3" in lg
     # repel should not register flows for member4
     assert "push_to_member4" not in lg
-    assert "pull_from_member4" not in lg 
+    assert "pull_from_member4" not in lg

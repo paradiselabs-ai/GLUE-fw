@@ -7,24 +7,19 @@ usage tracking, and cost optimization for AI services.
 
 import os
 from typing import Dict, Any, Optional
+from dataclasses import dataclass, field
 
 import aiohttp
-from pydantic import BaseModel, Field
 
 
-class PortkeyConfig(BaseModel):
+@dataclass
+class PortkeyConfig:
     """Configuration for Portkey.ai integration."""
 
-    api_key: str = Field(..., description="Portkey API key")
-    base_url: str = Field(
-        "https://api.portkey.ai/v1", description="Portkey API base URL"
-    )
-    trace_id: Optional[str] = Field(
-        None, description="Optional trace ID for request tracking"
-    )
-    tags: Dict[str, str] = Field(
-        default_factory=dict, description="Tags for request tracking"
-    )
+    api_key: str
+    base_url: str = "https://api.portkey.ai/v1"
+    trace_id: Optional[str] = None
+    tags: Dict[str, str] = field(default_factory=dict)
 
 
 class PortkeyClient:
