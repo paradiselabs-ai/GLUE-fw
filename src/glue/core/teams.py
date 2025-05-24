@@ -775,9 +775,19 @@ class GlueTeam:
         agno_agents_list: List[AgnoAgent] = []
         for model_name, glue_model_instance in self.models.items():
             try:
-                # Placeholder: Create a simple Agno Agent from the GLUE Model
-                # This will need significant refinement.
-                agno_agent = AgnoAgent(name=f"{glue_model_instance.name}_agno_proxy")
+                # Extract system prompt from GLUE Model config if available
+                system_prompt = glue_model_instance.config.get('system_prompt')
+                
+                # Create Agno Agent with mapped parameters
+                agno_agent_kwargs = {
+                    'name': f"{glue_model_instance.name}_agno_proxy"
+                }
+                
+                # Map system_prompt to system_message if available
+                if system_prompt:
+                    agno_agent_kwargs['system_message'] = system_prompt
+                
+                agno_agent = AgnoAgent(**agno_agent_kwargs)
                 agno_agents_list.append(agno_agent)
                 logger.info(f"Created placeholder AgnoAgent: {agno_agent.name} for GLUE model: {model_name}")
             except Exception as e:

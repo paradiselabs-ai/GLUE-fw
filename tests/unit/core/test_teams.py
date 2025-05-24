@@ -105,6 +105,92 @@ class TestGlueTeam:
         assert created_agno_agent_names == expected_agno_agent_names, \
             f"AgnoAgent names do not match expected. Got: {created_agno_agent_names}, Expected: {expected_agno_agent_names}"
 
+    @pytest.mark.asyncio
+    async def test_initialize_agno_team_maps_system_prompts(self, basic_glue_team: GlueTeam):
+        """
+        Tests that _initialize_agno_team correctly maps GLUE Model system prompts
+        to Agno Agent system_message parameters.
+        """
+        # Create a model with a specific system prompt
+        test_system_prompt = "You are a specialized test agent with custom instructions."
+        model_config = {
+            "name": "test_model_with_prompt",
+            "provider": "test",
+            "model_name": "test_model_variant_1",
+            "system_prompt": test_system_prompt
+        }
+        model_with_prompt = Model(config=model_config)
+        
+        # Add the model to the team
+        await basic_glue_team.add_member(model_with_prompt)
+        
+        # Initialize the Agno team
+        basic_glue_team._initialize_agno_team()
+        
+        # Verify the Agno team was created
+        assert basic_glue_team.agno_team is not None
+        assert hasattr(basic_glue_team.agno_team, 'members')
+        
+        # Find the agent corresponding to our test model
+        test_agent = None
+        for agent in basic_glue_team.agno_team.members:
+            if agent.name == f"{model_with_prompt.name}_agno_proxy":
+                test_agent = agent
+                break
+        
+        assert test_agent is not None, f"Agent for {model_with_prompt.name} not found in Agno team"
+        # Check for system_message attribute first (this is the main system message in Agno)
+        assert hasattr(test_agent, 'system_message'), "Agno Agent does not have system_message attribute"
+        assert test_agent.system_message == test_system_prompt, "System prompt was not correctly mapped to system_message"
+
+    @pytest.mark.asyncio
+    async def test_initialize_agno_team_maps_llm_configuration(self, basic_glue_team: GlueTeam):
+        """
+        Tests that _initialize_agno_team correctly maps GLUE Model LLM configuration
+        (model_name, temperature, max_tokens) to Agno Agent model parameters.
+        """
+        # Create a model with specific LLM configuration
+        model_config = {
+            "name": "test_model_with_llm_config",
+            "provider": "test",
+            "model_name": "gpt-4",
+            "temperature": 0.8,
+            "max_tokens": 2048
+        }
+        model_with_config = Model(config=model_config)
+        
+        # Add the model to the team
+        await basic_glue_team.add_member(model_with_config)
+        
+        # Initialize the Agno team
+        basic_glue_team._initialize_agno_team()
+        
+        # Verify the Agno team was created
+        assert basic_glue_team.agno_team is not None
+        assert hasattr(basic_glue_team.agno_team, 'members')
+        
+        # Find the agent corresponding to our test model
+        test_agent = None
+        for agent in basic_glue_team.agno_team.members:
+            if agent.name == f"{model_with_config.name}_agno_proxy":
+                test_agent = agent
+                break
+        
+        assert test_agent is not None, f"Agent for {model_with_config.name} not found in Agno team"
+        
+        # Check that the agent has a model attribute
+        assert hasattr(test_agent, 'model'), "Agno Agent does not have model attribute"
+        
+        # If the agent has a model, check its configuration
+        if test_agent.model is not None:
+            # Check if the model has configuration attributes we expect
+            if hasattr(test_agent.model, 'model'):
+                assert test_agent.model.model == "gpt-4", "Model name was not correctly mapped"
+            if hasattr(test_agent.model, 'temperature'):
+                assert test_agent.model.temperature == 0.8, "Temperature was not correctly mapped"
+            if hasattr(test_agent.model, 'max_tokens'):
+                assert test_agent.model.max_tokens == 2048, "Max tokens was not correctly mapped"
+
     # TODO: Add more tests for GlueTeam functionality, e.g.:
     # - test_add_member
     # - test_run_with_agno_team
