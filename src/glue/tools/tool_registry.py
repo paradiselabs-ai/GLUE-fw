@@ -153,14 +153,14 @@ class ToolRegistry:
         """
         return self._tools.get(tool_name)
 
-    def get_all_tools(self) -> List[Tool]:
+    def get_all_tools(self) -> Dict[str, Tool]:
         """
         Get all registered tools.
 
         Returns:
-            A list of all registered tool instances
+            A dictionary of all registered tool instances, keyed by tool name.
         """
-        return list(self._tools.values())
+        return self._tools
 
     def get_tools_by_permission(self, permission: ToolPermission) -> List[Tool]:
         """

@@ -154,7 +154,7 @@ async def test_initialize_agno_team_maps_llm_configuration(self, basic_glue_team
 ```
 
 #### Task 4: Map GLUE Model LLM configuration to AgnoAgent parameters
-**Description:** Update the _initialize_agno_team method to map GLUE Model LLM configuration (like model_name, temperature, max_tokens) to corresponding AgnoAgent parameters. This involves:
+**Description:** Update the _initialize_agno_team method to map GLUE Model LLM configuration (like model_name, temperature, max_tokens) to corresponding AgnoAgent constructor parameters. This involves:
 1. Extract LLM configuration from GLUE Model instances
 2. Map these parameters to the appropriate AgnoAgent constructor parameters
 3. Handle default values when specific parameters aren't available
@@ -264,8 +264,6 @@ async def test_agno_integration_preserves_team_lead_orchestration(self, basic_gl
     # The key is to verify that the lead agent coordinates the member agents
 ```
 
-### Phase 3: Team Lead Orchestration (continued)
-
 #### Task 6: Implement team lead orchestration in Agno integration
 **Description:** Update the _initialize_agno_team method to properly designate the GLUE team lead as the orchestrator in the Agno team. This involves:
 1. Identify the lead model in the GLUE team
@@ -341,7 +339,7 @@ if lead_agent and hasattr(self.agno_team, 'set_lead'):
 3. Verify the created AgnoWorkflow has the correct configuration
 4. Verify the workflow is properly associated with the team
 
-This follows TDD principles by creating the test before implementing the feature, and ensures we're using real implementations rather than mocks.
+This follows TDD principles by creating the test before implementing the feature, ensuring we're using real implementations rather than mocks.
 
 **Complexity:** 4
 
@@ -687,29 +685,32 @@ async def test_agno_integration_preserves_magnetic_flow_operators(self):
     
     # Test PUSH relationship: Team1 -> Team2
     test_data = "Data from Team1 to Team2"
-    await team1.send_information(team2.name, test_data)
     
-    # Verify Team2 received the information
-    assert team2.incoming_flows[-1].content == test_data
+    # Mock the direct_communication method to track calls
+    original_direct_comm = team1.direct_communication
+    direct_comm_called = False
     
-    # Test PULL relationship: Team2 <- Team3
-    test_data = "Data from Team3 to Team2"
-    await team2.request_information(team3.name)
-    await team3.send_information(team2.name, test_data)
+    async def mock_direct_communication(target_team, message):
+        nonlocal direct_comm_called
+        direct_comm_called = True
+        return await original_direct_comm(target_team, message)
     
-    # Verify Team2 received the information
-    assert team2.incoming_flows[-1].content == test_data
+    team1.direct_communication = mock_direct_communication
     
-    # Test BIDIRECTIONAL relationship: Team1 <-> Team3
-    test_data1 = "Data from Team1 to Team3"
-    test_data3 = "Data from Team3 to Team1"
-    
-    await team1.send_information(team3.name, test_data1)
-    await team3.send_information(team1.name, test_data3)
-    
-    # Verify both teams received the information
-    assert team3.incoming_flows[-1].content == test_data1
-    assert team1.incoming_flows[-1].content == test_data3
+    try:
+        # Simulate a communication that should use magnetic flow
+        await team1.send_information(team2.name, test_data)
+        
+        # Verify magnetic flow was used
+        assert direct_comm_called, "Magnetic flow was not used"
+        
+        # Verify the message was received by Team2
+        # This might require checking team2's conversation history or a mock
+        # The exact verification will depend on how we implement magnetic flows
+        
+    finally:
+        # Restore original method
+        team1.direct_communication = original_direct_comm
 ```
 
 #### Task 14: Implement magnetic flow operators in Agno integration
@@ -970,10 +971,8 @@ def _register_direct_communication_tool(self, lead_agent, target_team_name):
     if not hasattr(lead_agent, 'tools'):
         lead_agent.tools = []
     lead_agent.tools.append(direct_comm_tool)
-    
-    # Update the lead agent's instructions to include information about polarity
-    if hasattr(lead_agent, 'instructions'):
-        lead_agent.instructions += f"\nYou have a direct communication channel with the lead of {target_team_name}. Use this for coordination and information sharing without involving the entire team."
+
+# Similar implementations for other polarity types
 ```
 
 ### Phase 9: DSL Integration
@@ -1423,3 +1422,135 @@ When using Agno integration:
 - Ensure proper error handling and logging
 - Document all integration decisions
 - Preserve GLUE's unique features while leveraging Agno's capabilities
+
+---
+
+# GLUE-Agno Integration Implementation Plan - Part 2
+
+## Overview
+This plan outlines the steps needed to further enhance the GLUE-Agno integration by mapping GLUE's core loops and structures to Agno's agent and team execution, while preserving GLUE's unique features.
+
+## Implementation Tasks
+
+### Phase A: Core Loop and Structure Mapping
+
+#### Part 2 Task 1: Analyze and Document Agno Agent/Team Execution Flow
+**Description:** Conduct a detailed analysis of Agno's `Agent.run`/`arun` and `Team.run`/`arun` (including modes: `collaborate`, `coordinate`, `route`) internal logic. Document the execution flow, context propagation, and how member agents are invoked. This forms the basis for mapping GLUE loops.
+**Complexity:** 7
+
+#### Part 2 Task 2: Map GLUE TeamMemberAgentLoop to Agno Agent Execution
+**Description:** Based on P2T1, design and document how GLUE's `TeamMemberAgentLoop` functionalities (task fetching, context gathering, parse/analyze, plan substeps, tool selection/execution, memory decision, self-eval, report) will be implemented or driven by an Agno `Agent` instance operating within an Agno `Team`. Create tests for key interaction points. Implement the mapping.
+**Complexity:** 8
+
+#### Part 2 Task 3: Map GLUE TeamLeadAgentLoop to Agno Team Orchestration
+**Description:** Based on P2T1, design and document how GLUE's `TeamLeadAgentLoop` functionalities (goal decomposition, subtask delegation, report evaluation, synthesis) will be implemented using an Agno `Team`. This includes how the Agno `Team.model` acts as the GLUE Team Lead and utilizes Agno modes. Create tests for core orchestration logic. Implement the mapping.
+**Complexity:** 9
+
+#### Part 2 Task 4: Define and Implement GLUE Intra-Team Communication within Agno
+**Description:** Design and implement mechanisms for GLUE's 'natural' intra-team communication philosophy when using Agno `Team` modes. Detail how Agno `Agent`s (GLUE members) access shared team context, history (`team_context_str`, `team_member_interactions_str`), and potentially communicate more directly if Agno's modes allow, while being orchestrated by the GLUE Team Lead (Agno `Team.model`). Test communication patterns.
+**Complexity:** 7
+
+### Phase B: Advanced Feature Integration & Research
+
+#### Part 2 Task 5: Research Agno RAG and Vector DB Capabilities
+**Description:** Investigate Agno's codebase and documentation for built-in RAG (Retrieval Augmented Generation) or vector database integration features. Document findings.
+**Complexity:** 6
+
+#### Part 2 Task 6: Integrate Agno RAG/VectorDB into GLUE (if applicable)
+**Description:** If P2T5 identifies RAG/VectorDB features in Agno, design and implement their integration into GLUE. This includes configuration via StickyScript, interaction with GLUE's memory/adhesive system, and making it available as a GLUE feature (e.g., specialized tool, memory configuration). Create tests for the RAG-enabled workflow.
+**Complexity:** 8
+
+#### Part 2 Task 7: Detail GLUE Adhesive Type Mapping to Agno Memory Operations
+**Description:** Elaborate on 'Part 1, Task 9-10'. Specifically define how GLUE's adhesive types (`GLUE`, `VELCRO`, `TAPE`) translate to concrete operations on Agno's `memory.v2.Memory` system (e.g., `create_user_memories`, `create_session_summary`, direct `RunResponse` storage/retrieval, interaction with `MemoryDb`). Test persistence and retrieval for each adhesive type.
+**Complexity:** 7
+
+#### Part 2 Task 8: Research Agno Self-Learning/Adapting Mechanisms
+**Description:** Investigate Agno's codebase and documentation for any explicit self-learning or self-adapting features (e.g., automated prompt tuning, dynamic strategy adjustment). Document findings.
+**Complexity:** 6
+
+#### Part 2 Task 9: Integrate Agno Self-Learning into GLUE (if applicable)
+**Description:** If P2T8 identifies self-learning/adapting features in Agno, design and implement their integration into GLUE. Define how these capabilities are exposed and controlled within the GLUE framework. Test the adaptive behaviors.
+**Complexity:** 8
+
+### Phase C: Tooling and Operational Modes
+
+#### Part 2 Task 10: Identify and List Agno's Native External Tools
+**Description:** Review Agno's codebase and documentation to identify all standard and external tools that come bundled or are natively supported by Agno (e.g., web search, code execution, API tools). Create a comprehensive list.
+**Complexity:** 5
+
+#### Part 2 Task 11: Adapt and Integrate Agno's Native Tools into GLUE
+**Description:** For each tool identified in P2T10, design and implement an adapter or wrapper to make it compatible with GLUE's tool definition (`Tool` base class) and registration system (`ToolRegistry`). Ensure these tools can be assigned to GLUE Teams (Agno `Team`) and are selectable/usable by GLUE members (Agno `Agent`s) according to GLUE's tool management philosophy. Test each integrated tool.
+**Complexity:** 8
+
+#### Part 2 Task 12: Implement and Test GLUE's Dual Operational Modes (Interactive/Continuous) with Agno
+**Description:** Design and implement support for GLUE's interactive (human-in-the-loop) and continuous non-interactive operational modes when using Agno as the backend. Define how HITL points are managed. Test both modes with a sample GLUE application running on Agno.
+**Complexity:** 7
+
+### Phase D: Documentation
+
+#### Part 2 Task 13: Document GLUE's Agent Loop Philosophy and Agno Mapping
+**Description:** Create content for `docs/Agent_loops.md` (currently empty). This document should explain GLUE's conceptual agent loop(s) and team orchestration strategies, and then detail how these are mapped to and implemented using Agno's core Agent and Team functionalities and operational modes.
+**Complexity:** 6
+
+## Part 3: Agno v2 Memory System Analysis and GLUE Adhesive/Persistence Mapping
+
+Our investigation into Agno's memory capabilities, informed by GLUE's core concept documents (`01_core_concepts.md`, `03_tool_system.md`, `sticky apps.md`), focuses on Agno's `v2` memory system. This system, particularly `agno.memory.v2.memory.Memory` and its components, is best suited for GLUE.
+
+### Core Agno v2 Memory Components:
+
+1.  **`agno.memory.v2.memory.Memory`**: The central class. Manages:
+    *   `runs`: Dict storing `RunResponse`/`TeamRunResponse` lists per session (raw interaction history).
+    *   `memories`: Dict storing `UserMemory` objects (long-term, cross-session persistence).
+    *   `summaries`: Dict storing `SessionSummary` objects (session overviews).
+    *   `team_context`: Dict storing `TeamContext` objects (team interaction details per session).
+    *   Utilizes `MemoryDb` for persistent `UserMemory` storage.
+
+2.  **`agno.memory.v2.schema.UserMemory`**: Dataclass for individual persistent memories (content, topics, context, timestamps).
+
+3.  **`agno.memory.v2.schema.SessionSummary`**: Dataclass for session summaries (summary, topics, timestamps).
+
+4.  **`agno.memory.v2.manager.MemoryManager`**: LLM-driven component for intelligent CRUD operations on `UserMemory` objects via `MemoryDb`.
+
+5.  **`agno.memory.v2.summarizer.SessionSummarizer`**: LLM-driven component generating `SessionSummaryResponse` from conversation history.
+
+### GLUE Concepts and Agno v2 Memory Mapping:
+
+**A. GLUE Adhesive Bindings (Agent-Tool Interaction Persistence):**
+
+*   **`tape` (GLUE Adhesive):**
+    *   **GLUE Meaning:** Tool output is one-time, used, and discarded. No specific persistence beyond the immediate interaction.
+    *   **Agno Mapping:** The tool's `RunResponse` is captured in `Memory.runs`.
+    *   **Nature:** In-memory, session-specific, raw interaction data. Available for immediate use within the current operational scope of an agent or team.
+
+*   **`velcro` (GLUE Adhesive):**
+    *   **GLUE Meaning:** Tool output is session-based and private to the agent using it. Persists for the agent's current session/task, allowing the agent to refer back to its own recent tool uses.
+    *   **Agno Mapping:** The tool's `RunResponse` is stored in `Memory.runs`. The agent can access its recent history from these runs. This might contribute to an agent-specific `SessionSummary` if the agent's work over a session is summarized. It does *not* automatically become a team-wide `UserMemory`.
+    *   **Nature:** In-memory, session-specific, raw interaction data. Available for immediate use within the current operational scope of an agent or team.
+
+*   **`glue` (GLUE Adhesive):**
+    *   **GLUE Meaning:** Tool output is permanently bound, and results are automatically shared with the team, becoming part of team-wide persistent knowledge.
+    *   **Agno Mapping:** The tool's `RunResponse` is recorded in `Memory.runs`. Crucially, the output (or a processed/summarized version of it) should be transformed into a `UserMemory` object via `MemoryManager`. This `UserMemory` would be associated with the team or the overarching user/task, making it available across sessions for the team.
+    *   **Nature:** Persistent, cross-session, shared knowledge. Available for use by the team across multiple sessions.
+
+**B. GLUE App-Level Persistence (`sticky = true`):**
+
+*   **GLUE Meaning (Current):** As defined in `sticky apps.md` and `01_core_concepts.md`, this flag in the `glue app {}` block enables global app persistence between runs. This includes:
+    *   Last user interactions (to a certain point).
+    *   Output of tools used with `glue` adhesive (persisting within the team between runs).
+    *   Inner-team, agent-to-agent communication and context memory for each team.
+    *   Previous tasks completed per model/team.
+*   **Agno Mapping (Current):** Achieving this requires saving and reloading the entire state of the Agno `Memory` object (e.g., via `Memory.to_dict()` and `Memory.from_dict()`). This ensures that `Memory.runs` (for recent interaction context), `Memory.summaries` (for session overviews and summarized team context), and `Memory.memories` (containing `UserMemory` from `glue` adhesive use and other persistent knowledge) are all preserved and reloaded across application runs.
+
+*   **GLUE Meaning (Future Vision from `sticky apps.md`):** Expand `sticky` persistence to include a structured, app-wide task execution log. This log would detail task breakdown among teams, summaries of team outputs, `glue` tool usage outputs, lists of all tools used by teams, and the overall task's final output. This is intended to feed a self-learning mechanism.
+*   **Agno Mapping (Future Vision):** This enhanced log could be implemented as specialized `UserMemory` objects (created and managed by `MemoryManager`) or a separate structured logging system that GLUE integrates. `SessionSummarizer` could assist in generating the concise team output summaries for this log.
+
+### Summary for GLUE Implementation:
+
+GLUE will primarily use Agno's `v2.memory.Memory` system. The `AdhesiveType` used by a GLUE agent when calling `model.use_tool()` will determine how the tool's output is processed by Agno's memory components:
+*   `TAPE` -> Stays in `Memory.runs`.
+*   `VELCRO` -> Stays in `Memory.runs`, potentially contributes to agent's `SessionSummary`.
+*   `GLUE` -> Stored in `Memory.runs`, then processed by `MemoryManager` into a `UserMemory` for team-wide, cross-session persistence.
+
+The `sticky = true` app setting will trigger the serialization and deserialization of the Agno `Memory` object's state to persist GLUE sessions.
+
+This refined understanding provides a clear path for implementing GLUE's adhesive and persistence mechanisms using Agno's v2 memory system.

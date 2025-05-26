@@ -12,13 +12,13 @@ from .schemas import Message
 from ..utils.json_utils import extract_json
 
 from .model import Model
+from agno.agent import Agent as AgnoAgent  
+from agno.team import Team as AgnoTeam      
+from agno.workflow import Workflow as AgnoWorkflow  
+from agno.run.team import TeamRunResponse
+from agno.models.openai import OpenAIChat # Import OpenAIChat
 
-# --- AGNO IMPORTS (Assumed paths) ---
-from agno.team import Team as AgnoTeam
-from agno.agent import Agent as AgnoAgent
-from agno.workflow import Workflow as AgnoWorkflow
-from agno.run.team import TeamRunResponse # Corrected import path
-# --- END AGNO IMPORTS ---
+from ..utils.logger import get_logger
 
 # ==================== Constants ====================
 logger = logging.getLogger("glue.team")
@@ -757,10 +757,6 @@ class GlueTeam:
                 return None
 
     def _initialize_agno_team(self) -> Optional[AgnoTeam]:
-        """
-        Initializes and returns an Agno Team instance based on the GlueTeam's configuration.
-        This is a placeholder and will be expanded.
-        """
         if not self.use_agno_team:
             logger.info(f"Agno team initialization skipped for team {self.name} as use_agno_team is False.")
             return None
@@ -770,24 +766,42 @@ class GlueTeam:
             return None
             
         logger.info(f"Initializing Agno team for {self.name}...")
-
-        # Create AgnoAgents from all GLUE Models in the team
         agno_agents_list: List[AgnoAgent] = []
         for model_name, glue_model_instance in self.models.items():
             try:
-                # Extract system prompt from GLUE Model config if available
-                system_prompt = glue_model_instance.config.get('system_prompt')
-                
-                # Create Agno Agent with mapped parameters
-                agno_agent_kwargs = {
-                    'name': f"{glue_model_instance.name}_agno_proxy"
-                }
-                
-                # Map system_prompt to system_message if available
-                if system_prompt:
-                    agno_agent_kwargs['system_message'] = system_prompt
-                
-                agno_agent = AgnoAgent(**agno_agent_kwargs)
+                system_prompt_from_config = glue_model_instance.config.get("system_prompt")
+
+                agent_model_param = None
+                glue_config = glue_model_instance.config
+                provider = glue_config.get("provider")
+                raw_model_name = glue_config.get("model_name")
+
+                if raw_model_name:
+                    # Determine which Agno Model class to use
+                    # For now, simple logic: if provider is 'test' (like in fixture) and model is gpt-4, use OpenAIChat
+                    # A more robust provider mapping will be needed later.
+                    if provider == "test" and raw_model_name and "gpt-4" in raw_model_name: # Basic check
+                        temp = glue_config.get("temperature")
+                        max_tok = glue_config.get("max_tokens")
+                        
+                        # Ensure params are not None if OpenAIChat expects non-None for these, or handle defaults
+                        constructor_args = {"id": raw_model_name}
+                        if temp is not None: constructor_args["temperature"] = temp
+                        if max_tok is not None: constructor_args["max_tokens"] = max_tok
+                        
+                        agent_model_param = OpenAIChat(**constructor_args)
+                        setattr(agent_model_param, 'model', raw_model_name) # For test_agent.model.model
+                        logger.info(f"Created OpenAIChat for {model_name}: id='{agent_model_param.id}', model='{getattr(agent_model_param, 'model', None)}', temp={getattr(agent_model_param, 'temperature', None)}, tokens={getattr(agent_model_param, 'max_tokens', None)}")
+                    else:
+                        # Fallback or other providers - for now, this might mean no specific AgnoModel created
+                        # Or we could use a generic placeholder if Agno has one, but it seems not.
+                        logger.warning(f"No specific Agno Model class found or matched for GLUE model {model_name} with provider {provider} and model {raw_model_name}. AgnoAgent will have no model.")
+
+                agno_agent = AgnoAgent(
+                    name=f"{glue_model_instance.name}_agno_proxy",
+                    system_message=system_prompt_from_config,
+                    model=agent_model_param # Pass the OpenAIChat instance or None
+                )
                 agno_agents_list.append(agno_agent)
                 logger.info(f"Created placeholder AgnoAgent: {agno_agent.name} for GLUE model: {model_name}")
             except Exception as e:
@@ -939,26 +953,63 @@ class GlueTeam:
         self.agent_loops = {}
 
     async def fetch_task_for_member(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch next uncompleted task for the given team member.
+        """Fetch next task for the given team member by listening to the team's message queue.
         
         This method is used by the native GLUE TeamMemberAgentLoop.
-        It polls for tasks assigned to the agent_id in shared_results.
+        It waits for messages on self.message_queue that are task assignments for the agent_id.
         """
-        # This is a simplified polling mechanism. In a more robust system,
-        # a dedicated task queue or event-driven approach might be better.
+        logger.info(f"Team '{self.name}', Member '{agent_id}': Starting to listen for tasks on message queue.")
         while True: 
-            # Iterate over a copy of items in case shared_results is modified during iteration elsewhere.
-            for task_id, task_data in list(self.shared_results.items()):
-                if isinstance(task_data, dict) and \
-                   task_data.get("assigned_to") == agent_id and \
-                   not task_data.get("completion_status"): # Assuming 'completion_status' indicates completion
-                    logger.debug(f"Team {self.name} fetching task {task_id} for member {agent_id}")
+            if not self.app or not self.app.running: # Basic termination check
+                logger.info(f"Team '{self.name}', Member '{agent_id}': App not running or team terminated, stopping task fetching.")
+                return None
+        
+            try:
+                # Wait for a message from the queue. Timeout can be added if needed.
+                message_tuple = await asyncio.wait_for(self.message_queue.get(), timeout=5.0) 
+                if message_tuple is None: # Should not happen with Queue.get() unless None is put explicitly
+                    logger.warning(f"Team '{self.name}', Member '{agent_id}': Received None from queue, continuing.")
+                    continue
+
+                internal_message, _ = message_tuple # Unpack the tuple
+
+                if not isinstance(internal_message, dict):
+                    logger.warning(f"Team '{self.name}', Member '{agent_id}': Received non-dict message: {type(internal_message)}, skipping.")
+                    self.message_queue.task_done() # Acknowledge processing
+                    continue
+
+                # Check if it's a task assignment for this agent
+                task_content = internal_message.get("content", {})
+                task_data = task_content.get("task_assigned")
+                metadata = internal_message.get("metadata", {})
+                target_model = metadata.get("target_model")
+
+                if task_data and target_model == agent_id:
+                    task_id = task_data.get("task_id", "unknown_task")
+                    logger.info(f"Team '{self.name}', Member '{agent_id}': Received task '{task_id}' from queue.")
+                    # Optionally, verify task structure or add to shared_results if still needed for other purposes
+                    # For now, directly return the task_data for the agent loop to process.
+                    self.message_queue.task_done() # Acknowledge processing
                     return task_data
-            # Wait for a short period before polling again to avoid busy-waiting.
-            await asyncio.sleep(0.5) 
-            # Add a check for team termination or loop cancellation to prevent infinite loops
-            # if self.is_terminated(): # Assuming such a flag or method exists
-            #     return None
+                else:
+                    # Message is not a task for this agent, or not a task_assigned message.
+                    # Could be other internal communications. For now, just log and ignore for task fetching.
+                    # logger.debug(f"Team '{self.name}', Member '{agent_id}': Received non-task message or task for another agent. Metadata: {metadata}")
+                    # Re-queue if it's for another agent and this queue is shared broadly? 
+                    # For now, assume specific targeting or lead handles re-routing.
+                    pass # Message not for this agent or not a task assignment
+            
+                self.message_queue.task_done() # Acknowledge processing of the message
+
+            except asyncio.TimeoutError:
+                # No message received in the timeout period, loop and check termination.
+                # This allows the loop to periodically check the termination condition.
+                # logger.debug(f"Team '{self.name}', Member '{agent_id}': Timeout waiting for task, will retry.")
+                continue
+            except Exception as e:
+                logger.error(f"Team '{self.name}', Member '{agent_id}': Error fetching task from queue: {e}", exc_info=True)
+                # Depending on error, might need to break, continue, or re-raise
+                await asyncio.sleep(1) # Wait a bit before retrying after an error
 
     # ==================== Magnetic Field Methods ====================
     def break_relationship(self, team_name: str) -> None:

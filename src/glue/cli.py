@@ -519,7 +519,7 @@ async def run_app(
         return False
 
 
-async def run_interactive_session(app: GlueApp, console: Optional[Console] = None): # Added console parameter
+async def run_interactive_session(app: GlueApp, console: Console):
     """Run an enhanced interactive session with the GLUE application.
 
     This function provides a command-line interface for interacting with GLUE applications,
@@ -531,8 +531,7 @@ async def run_interactive_session(app: GlueApp, console: Optional[Console] = Non
         console: Rich console to use for display
     """
     logger = logging.getLogger("glue.interactive")
-    if console is None:
-        console = get_console()
+    logger.setLevel(logging.DEBUG) # Set the logger level to DEBUG
 
     # State management for interactive session with better comments
     state = {
@@ -630,6 +629,16 @@ async def run_interactive_session(app: GlueApp, console: Optional[Console] = Non
     )
     console.print(columns)
 
+    # Debug logging for app and app.tools
+    print(f"[CLI PRINT DEBUG] app object type: {type(app)}")
+    if hasattr(app, 'tool_registry'):
+        print(f"[CLI PRINT DEBUG] app.tool_registry type: {type(app.tool_registry)}")
+        print(f"[CLI PRINT DEBUG] app.tool_registry.get_all_tools() type: {type(app.tool_registry.get_all_tools()) if app.tool_registry else 'N/A'}")
+    else:
+        print("[CLI PRINT DEBUG] app has no tool_registry attribute.")
+    print(f"[CLI PRINT DEBUG] app.tools type: {type(app.tools)}")
+    print(f"[CLI PRINT DEBUG] app.tools value: {app.tools}")
+
     # Show available tools with better filtering
     if app.tools:
         emoji = "tool" if emoji_enabled else None
@@ -641,6 +650,9 @@ async def run_interactive_session(app: GlueApp, console: Optional[Console] = Non
             if name not in ["_internal"]
         }
         console.print(create_tool_table(filtered_tools))
+    else:
+        display_section_header(console, "Available Tools", emoji=emoji)
+        console.print("No tools are currently available.")
 
     # Enhanced initial instructions
     console.print(
@@ -3020,7 +3032,7 @@ def create_status_panel(app: Any, state: Dict[str, Any]) -> Panel:
                     total_models += 1
 
     status_table.add_row("Models:", str(total_models))
-    status_table.add_row("Tools:", str(len(app.tools) - 1))
+    status_table.add_row("Tools:", str(len(app.tools)))
 
     # Add mode settings
     status_table.add_row(

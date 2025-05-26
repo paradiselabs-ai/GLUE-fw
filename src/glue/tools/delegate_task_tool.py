@@ -16,7 +16,7 @@ logger = logging.getLogger("glue.tools.delegate_task")
 
 # PydanticAI schema for delegate_task arguments
 class DelegateTaskArgs(BaseModel):
-    target_agent: str = Field(
+    target_agent_id: str = Field(
         ..., min_length=1, description="Name of the agent to delegate the task to"
     )
     task_description: str = Field(
@@ -133,7 +133,7 @@ class DelegateTaskTool(Tool):
         # PydanticAI validate incoming parameters
         try:
             args = DelegateTaskArgs(
-                target_agent=target_agent_id,
+                target_agent_id=target_agent_id,
                 task_description=task_description,
                 parent_task_id=parent_task_id,
                 calling_team=kwargs.get("calling_team", ""),
@@ -145,12 +145,37 @@ class DelegateTaskTool(Tool):
             return {"success": False, "error": str(e)}
 
         # Map validated fields back
-        target_agent_id = args.target_agent
+        target_agent_id = args.target_agent_id
         task_description = args.task_description
         parent_task_id = args.parent_task_id
         calling_team = args.calling_team
         context_keys = args.context_keys
         required_artifacts = args.required_artifacts
+
+        # NEW: Check for Agno adapter context for delegation
+        if hasattr(self.app, "agno_adapter_context") and self.app.agno_adapter_context:
+            logger.info(f"DelegateTaskTool: Agno adapter context found. Attempting delegation via Agno for target '{target_agent_id}'.")
+            
+            agno_delegation_result = await self.app.agno_adapter_context.delegate_task_via_agno(
+                target_agent_id=target_agent_id,
+                task_description=task_description,
+                parent_task_id=parent_task_id,
+                calling_model=calling_agent_id, # Pass original calling_agent_id from kwargs or inference
+                calling_team=calling_team,
+                context_keys=context_keys,
+                required_artifacts=required_artifacts,
+                **kwargs # Pass along any other relevant kwargs
+            )
+            
+            if agno_delegation_result.get("success"):
+                logger.info(f"Task delegation for '{target_agent_id}' handled by Agno adapter. Result: {agno_delegation_result}")
+                return agno_delegation_result
+            else:
+                logger.warning(f"Agno adapter delegation failed for '{target_agent_id}'. Result: {agno_delegation_result}. No fallback to GLUE native for this path currently.")
+                return agno_delegation_result # Return Agno failure
+
+        # --- Fallback to GLUE native intra-team delegation (if no Agno context) ---
+        logger.info(f"DelegateTaskTool: No Agno adapter context, or Agno delegation not used/failed. Proceeding with GLUE native intra-team delegation for target '{target_agent_id}'.")
 
         # Ensure the target agent is a member of the team (allow case-insensitive match)
         if target_agent_id not in self.app.teams[calling_team].models:

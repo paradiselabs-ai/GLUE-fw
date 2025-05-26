@@ -15,6 +15,7 @@ from .types import FlowType, TeamConfig
 from .flow import Flow
 from .schemas import MagnetConfig
 from ..magnetic.field import MagneticField
+from ..tools.tool_base import Tool
 
 # Import built-in tool classes
 from glue.tools.web_search_tool import WebSearchTool
@@ -124,7 +125,6 @@ class GlueApp:
 
         # Initialize empty collections
         self.models: Dict[str, Model] = {}
-        self.tools: Dict[str, Any] = {}
         self.teams: Dict[str, GlueTeam] = {}
         self.flows: List[Flow] = []
         self.magnets: Dict[str, MagnetConfig] = {}
@@ -137,6 +137,7 @@ class GlueApp:
         self.interactive = (
             False  # Flag to indicate if app is running in interactive mode
         )
+        self.agno_adapter_context: Optional[Any] = None
 
         # Initialize magnetic field after setting default properties
         self.field = MagneticField(name=self.name)
@@ -442,7 +443,6 @@ class GlueApp:
 
         # Copy collections
         self.models = config.models
-        self.tools = config.tools
         self.teams = config.teams
         self.flows = config.flows
         self.magnets = config.magnets
@@ -738,6 +738,60 @@ class GlueApp:
 
         # Call cleanup after handling flows
         await self.cleanup()
+
+    @property
+    def tools(self) -> Dict[str, Any]:
+        """Get all tools available to this application.
+
+        Returns:
+            Dictionary of tools (Tool instances, not ToolConfig).
+        """
+        if hasattr(self, '_adapter') and isinstance(self._adapter, GlueAgnoAdapter):
+            # Priority 1: Adapter has a 'tools' property that is already Dict[str, Tool]
+            if hasattr(self._adapter, 'tools'):
+                adapter_tools_value = self._adapter.tools
+                # Check if it's the correct type (Dict of Tool instances)
+                if isinstance(adapter_tools_value, dict) and \
+                   all(isinstance(t, Tool) for t in adapter_tools_value.values()):
+                    return adapter_tools_value
+                # If self._adapter.tools is, for example, List[ToolConfig], we ignore it here
+                # and proceed to check the adapter's registry.
+
+            # Priority 2: Adapter has a tool_registry, use tools from there.
+            if hasattr(self._adapter, 'tool_registry') and self._adapter.tool_registry is not None:
+                # This should return Dict[str, Tool]
+                return self._adapter.tool_registry.get_all_tools()
+
+        # Fallback: GlueApp's own tool_registry (populated by adapter or directly)
+        if hasattr(self, "tool_registry") and self.tool_registry is not None:
+            # This should return Dict[str, Tool]
+            return self.tool_registry.get_all_tools()
+        
+        # Deprecated: Directly returning self.config.tools (List[ToolConfig]) is wrong.
+        # If we reach here, it means tools were not properly registered into any registry.
+        # For robustness, log a warning and return an empty dict.
+        # if self.config and hasattr(self.config, 'tools') and isinstance(self.config.tools, list):
+        #     logger.warning("Accessing raw tool configurations via GlueApp.tools. Tools may not be instantiated.")
+        #     # This would be List[ToolConfig], which is incorrect for this property's contract.
+        #     # To temporarily satisfy type hint and avoid .items() error if this was returned:
+        #     # return {tc.name: tc for tc in self.config.tools} # Returns Dict[str, ToolConfig]
+
+        logger.warning("GlueApp.tools: No valid tool source found (adapter.tools, adapter.registry, or app.registry). Returning empty dict.")
+        return {} # Fallback empty dict
+
+    def get_tool(self, tool_name: str) -> Optional[Any]:
+        """Get a tool by name.
+
+        Args:
+            tool_name: Name of the tool
+
+        Returns:
+            Tool instance or None if not found
+        """
+        if tool_name in self.tools:
+            return self.tools[tool_name]
+        else:
+            return None
 
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """Execute a tool registered with the application."""

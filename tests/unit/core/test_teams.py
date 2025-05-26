@@ -178,18 +178,19 @@ class TestGlueTeam:
         
         assert test_agent is not None, f"Agent for {model_with_config.name} not found in Agno team"
         
-        # Check that the agent has a model attribute
+        # Check that the agent has a model attribute and it's properly configured
         assert hasattr(test_agent, 'model'), "Agno Agent does not have model attribute"
+        assert test_agent.model is not None, "Agno Agent model should not be None - LLM configuration was not mapped"
         
-        # If the agent has a model, check its configuration
-        if test_agent.model is not None:
-            # Check if the model has configuration attributes we expect
-            if hasattr(test_agent.model, 'model'):
-                assert test_agent.model.model == "gpt-4", "Model name was not correctly mapped"
-            if hasattr(test_agent.model, 'temperature'):
-                assert test_agent.model.temperature == 0.8, "Temperature was not correctly mapped"
-            if hasattr(test_agent.model, 'max_tokens'):
-                assert test_agent.model.max_tokens == 2048, "Max tokens was not correctly mapped"
+        # Check the model configuration attributes
+        assert hasattr(test_agent.model, 'model'), "Agno Agent model does not have 'model' attribute"
+        assert test_agent.model.model == "gpt-4", f"Model name was not correctly mapped. Expected 'gpt-4', got {test_agent.model.model}"
+        
+        assert hasattr(test_agent.model, 'temperature'), "Agno Agent model does not have 'temperature' attribute"
+        assert test_agent.model.temperature == 0.8, f"Temperature was not correctly mapped. Expected 0.8, got {test_agent.model.temperature}"
+        
+        assert hasattr(test_agent.model, 'max_tokens'), "Agno Agent model does not have 'max_tokens' attribute"
+        assert test_agent.model.max_tokens == 2048, f"Max tokens was not correctly mapped. Expected 2048, got {test_agent.model.max_tokens}"
 
     # TODO: Add more tests for GlueTeam functionality, e.g.:
     # - test_add_member

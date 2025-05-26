@@ -28,6 +28,9 @@ dependencies = [
     "openai>=1.0.0",
     "anthropic>=0.5.0",
     "pytest-asyncio>=0.21.0",
+    "rich>=13.0.0",  # Added rich for agno dependency
+    "docstring-parser>=0.15",  # Added docstring-parser for agno
+    "mcp>=0.1.0"  # Added mcp for agno dependency (version assumed, adjust if known)
 ]
 
 [project.optional-dependencies]
@@ -51,8 +54,8 @@ glue = "glue.cli:main"
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
-where = ["src"]
-include = ["glue*"]
+where = ["src", "agno/agno/agno/libs/agno"]
+include = ["glue*", "agno*"]
 
 [tool.black]
 line-length = 88

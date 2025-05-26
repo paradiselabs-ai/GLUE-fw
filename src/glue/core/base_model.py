@@ -307,6 +307,15 @@ class BaseModel:
                         # If it's not a string or dict, convert to a dict with a default key
                         arguments = {"query": str(arguments)}
 
+                    # Add calling context for tools that need it
+                    current_calling_model = getattr(self, 'name', None)
+                    current_calling_team = getattr(getattr(self, 'team', None), 'name', None)
+
+                    if current_calling_model:
+                        arguments['calling_model'] = current_calling_model
+                    if current_calling_team:
+                        arguments['calling_team'] = current_calling_team
+
                     # Find the tool
                     tool_obj = None
                     if hasattr(self, "tools") and self.tools:
@@ -403,6 +412,7 @@ class BaseModel:
                             else:
                                 logger.warning(f"Tool '{tool_name}' is not callable")
                                 continue
+
                             # Append tool result message
                             tool_result_msg = Message(
                                 role="function", content=str(result), name=tool_name
@@ -416,6 +426,7 @@ class BaseModel:
                                 name=tool_name,
                             )
                             messages.append(error_msg)
+
                     # Continue loop: re-call LLM with appended tool results
                     continue
 

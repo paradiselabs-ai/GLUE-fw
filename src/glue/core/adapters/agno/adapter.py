@@ -20,7 +20,8 @@ from glue.core.openrouter_handler import OpenRouterModelHandler
 from glue.core.team import Team
 from glue.magnetic.field import MagneticField
 from glue.tools.tool_base import Tool # Import GLUE Tool base
-from glue.core.types import Message as GlueMessage # Import GLUE Message
+from glue.core.types import Message as GlueMessage, TeamConfig # Import GLUE Message and TeamConfig
+import glue.core.types # For types.TeamConfig
 
 logger = logging.getLogger(__name__)
 
@@ -876,6 +877,7 @@ class GlueAgnoAdapter:
         glue_app.teams = self.teams
         glue_app.magnetic_field = self.magnetic_field
         glue_app.adhesive_system = self.adhesive_system
+        glue_app.agno_adapter_context = self
 
         logger.info(f"Interactive setup for GlueApp '{glue_app.name}' and AgnoAdapter is complete. GlueApp uses adapter's components.")
         return glue_app
@@ -954,59 +956,91 @@ class GlueAgnoAdapter:
                                        adhesive_system: AdhesiveSystem, 
                                        magnetic_field: MagneticField) -> Optional[Team]:
         """Creates an actual GLUE Team instance from configuration data."""
-        description = team_data.get("description", f"Team {team_name}")
-        is_lead_team = team_data.get("is_lead", False)
-        communication_pattern = team_data.get("communication_pattern", "hierarchical")
-        agent_configs = team_data.get("agents", {})
-        tool_refs = team_data.get("tools", []) # List of tool names
 
-        logger.debug(f"Creating team instance: {team_name}")
+        team_name = team_data.get("name")
+        if not team_name:
+            logger.error("Team configuration missing 'name'. Cannot create team.")
+            return None
 
-        team_agents = {}
-        for agent_name, agent_data in agent_configs.items():
-            model_ref_key = agent_data.get("model") # e.g., "models.gemini_pro" or just "gemini_pro"
-            # Clean up the reference to be just the key, e.g., "gemini_pro"
-            if model_ref_key and model_ref_key.startswith("models."):
-                model_key = model_ref_key.split("models.", 1)[1]
+        lead_agent_name = team_data.get("lead")
+        agent_configs_dict = team_data.get("agents", {}) 
+        tool_names_list = team_data.get("tools", []) 
+
+        logger.debug(f"Initial tool list for team '{team_name}': {tool_names_list}")
+
+        # Add 'report_task_completion' for all teams
+        if "report_task_completion" not in tool_names_list:
+            tool_names_list.append("report_task_completion")
+            logger.debug(f"Added 'report_task_completion' to tool list for team '{team_name}'.")
+
+        # Add 'delegate_task' only if there's a lead agent
+        if lead_agent_name:
+            if "delegate_task" not in tool_names_list:
+                tool_names_list.append("delegate_task")
+                logger.debug(f"Added 'delegate_task' to tool list for lead agent in team '{team_name}'.")
+
+        logger.debug(f"Final (potentially augmented) tool names for '{team_name}' before TeamConfig: {tool_names_list}")
+
+        team_agents_map: Dict[str, Model] = {}
+        for agent_name_key, agent_config_data in agent_configs_dict.items():
+            model_ref_key = agent_config_data.get("model")
+            actual_model_key = model_ref_key.split("models.", 1)[1] if model_ref_key and model_ref_key.startswith("models.") else model_ref_key
+            if actual_model_key and actual_model_key in all_models:
+                team_agents_map[agent_name_key] = all_models[actual_model_key]
+                logger.debug(f"Agent '{agent_name_key}' in team '{team_name}' will use model '{actual_model_key}'.")
             else:
-                model_key = model_ref_key
+                logger.warning(f"Model key '{actual_model_key}' for agent '{agent_name_key}' in team '{team_name}' not found. Agent will not use this model.")
 
-            if model_key and model_key in all_models:
-                # Here, we'd typically create an Agent wrapper/handler if agents are more complex
-                # than just the model. For now, assuming agents are closely tied to their model for simplicity.
-                # A real Agent class would be instantiated here, taking the model as a parameter.
-                # For now, let's assume the model itself can act as the 'agent' for the team's perspective.
-                team_agents[agent_name] = all_models[model_key] # This is simplified
-                logger.debug(f"Agent '{agent_name}' in team '{team_name}' will use model '{model_key}'.")
-            else:
-                logger.warning(f"Model key '{model_key}' for agent '{agent_name}' in team '{team_name}' not found in available models.")
-                # Optionally, create a default/dummy agent or skip
+        lead_model_instance: Optional[Model] = all_models.get(lead_agent_name) # Corrected lookup
+        if not lead_model_instance and lead_agent_name:
+            logger.warning(f"Lead agent '{lead_agent_name}' for team '{team_name}' could not be mapped to a model instance.")
+            logger.info(f"DEBUG_PROBE: Available models during lead agent mapping for team '{team_name}': {list(all_models.keys()) if all_models is not None else 'None (models attribute is None)'}")
 
-        team_tools_instances = []
-        for tool_name in tool_refs:
-            if tool_name in tool_registry:
-                team_tools_instances.append(tool_registry.get_tool(tool_name))
-            else:
-                logger.warning(f"Tool '{tool_name}' referenced by team '{team_name}' not found in ToolRegistry.")
-        
+        member_agent_names = [name for name in agent_configs_dict.keys() if name != lead_agent_name]
+        member_model_instances: List[Model] = []
+        for member_name in member_agent_names:
+            member_model = team_agents_map.get(member_name)
+            if member_model:
+                member_model_instances.append(member_model)
+
+        lead_model_name_for_dc = lead_model_instance.name if lead_model_instance else ""
+        member_model_names_for_dc = [m.name for m in member_model_instances]
+
+        glue_team_config = glue.core.types.TeamConfig(
+            name=team_name,
+            lead=lead_model_name_for_dc,
+            members=member_model_names_for_dc,
+            tools=tool_names_list
+        )
+        logger.debug(f"Prepared glue.core.types.TeamConfig for '{team_name}': {glue_team_config}")
+
         try:
-            team_instance = Team(
+            team_instance = Team( 
                 name=team_name,
-                description=description,
-                model_handlers=team_agents, # This should be a dict of Agent objects in a full impl.
-                tool_registry=tool_registry, # Pass the main tool registry
-                tools_config=tool_refs, # Pass the list of tool names for the team to select from registry
-                adhesive_system=adhesive_system,
-                magnetic_field=magnetic_field,
-                is_lead=is_lead_team,
-                communication_pattern=communication_pattern
+                config=glue_team_config,
+                lead=lead_model_instance, 
+                members=member_model_instances,
+                use_agno_team=True 
             )
-            # If Team needs async setup, call it here
-            # await team_instance.setup() # If such a method exists
-            logger.info(f"Successfully created Team instance: {team_name}")
+            logger.info(f"Successfully instantiated Team: {team_name} with constructor args.")
+
+            for tool_name_ref in tool_names_list: 
+                tool_object = tool_registry.get_tool(tool_name_ref)
+                if tool_object:
+                    team_instance._tools[tool_name_ref] = tool_object 
+                    logger.debug(f"Made tool '{tool_name_ref}' available to team '{team_name}'.")
+                else:
+                    logger.warning(f"Tool '{tool_name_ref}' for team '{team_name}' not found in main tool_registry.")
+        
+            logger.debug(f"Team '{team_name}' (GlueTeam instance) has been populated with tool instances. Final tool keys in team_instance._tools: {list(team_instance._tools.keys())}")
+            if team_instance.config.lead:
+                logger.debug(f"Team '{team_name}' has lead: {team_instance.config.lead}. Expected 'delegate_task' to be in its tools. All teams should have 'report_task_completion'.")
+
+            logger.info(f"Successfully created and configured Team instance: {team_name}")
             return team_instance
+        
         except Exception as e:
-            logger.error(f"Error instantiating team '{team_name}': {e}", exc_info=True)
+            logger.error(f"Error instantiating or configuring team '{team_name}': {e}", exc_info=True)
             return None
 
     def _parse_flow_string(self, flow_def_str: str) -> Optional[Dict[str, Any]]:
@@ -1079,6 +1113,52 @@ class GlueAgnoAdapter:
             
         logger.debug(f"Parsed flow string '{flow_def_str}' into: {flow_dict}")
         return flow_dict
+
+    async def delegate_task_via_agno(
+        self,
+        target_agent_id: str,
+        task_description: str,
+        parent_task_id: Optional[str] = None,
+        calling_model: Optional[str] = None, 
+        calling_team: Optional[str] = None, 
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Delegates a task using Agno's mechanisms. Placeholder for now."""
+        logger.info(
+            f"GlueAgnoAdapter.delegate_task_via_agno called for target_agent_id='{target_agent_id}'. "
+            f"Task: '{task_description[:50]}...'"
+        )
+        # TODO: Implement actual Agno task delegation logic.
+        # This might involve finding the Agno agent, creating an Agno task message,
+        # and sending it through Agno's message bus or workflow engine.
+        # For now, simulate a successful delegation response.
+        if not self.workflow:
+            logger.error("Agno workflow not initialized in adapter. Cannot delegate task.")
+            return {"success": False, "task_id": None, "error": "Agno workflow not initialized."}
+
+        # Example placeholder logic (replace with actual Agno calls)
+        # agno_agent = self.workflow.get_agent(target_agent_id) # Hypothetical
+        # if not agno_agent:
+        #     return {"success": False, "task_id": None, "error": f"Agno agent '{target_agent_id}' not found."}
+        
+        # new_task_id = f"agno_task_{uuid.uuid4()}" # Hypothetical
+        # agno_task = {
+        #     "id": new_task_id,
+        #     "description": task_description,
+        #     "parent_id": parent_task_id,
+        #     "delegated_by_model": calling_model,
+        #     "delegated_by_team": calling_team,
+        #     "status": "pending"
+        # }
+        # await self.workflow.message_bus.publish(f"agent.{target_agent_id}.tasks", agno_task) # Hypothetical
+        
+        logger.warning("Agno task delegation is currently a placeholder and does not actually delegate.")
+        # Simulate success for now
+        return {
+            "success": True, 
+            "task_id": f"simulated_agno_task_for_{target_agent_id}", 
+            "message": "Task delegation simulated via Agno adapter."
+        }
 
 # Define the AgnoMessage class for type hinting (or import if it's a real class)
 # For now, mirroring the test file's placeholder.

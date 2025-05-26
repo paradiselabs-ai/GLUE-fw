@@ -69,6 +69,8 @@ class GlueParser:
                     self._parse_magnetize()
                 elif keyword == "apply":
                     self._parse_apply()
+                elif keyword == "flow":
+                    self._parse_named_flow()
                 elif keyword == "app":
                     # Handle 'app' keyword for YAML-style configs
                     self._advance()  # Skip 'app' keyword
@@ -268,39 +270,71 @@ class GlueParser:
                 )
 
             source_token = self._advance()
-            source_team = source_token.value
+            source_team_dsl = source_token.value # This is the first identifier read
 
             # Expect arrow operator
-            flow_type = None
+            flow_type_str = None
+            actual_source_for_flow_def = None
+            actual_target_for_flow_def = None
+            flow_name = None
+
             if self._check(TokenType.RIGHTARROW):
-                flow_type = "PUSH"
+                flow_type_str = "PUSH"
                 self._advance()  # Consume '->'
+                target_token = self._consume(TokenType.IDENTIFIER, f"Expected target team identifier after '->' for source '{source_team_dsl}'")
+                target_team_dsl = target_token.value
+                actual_source_for_flow_def = source_team_dsl
+                actual_target_for_flow_def = target_team_dsl
+                flow_name = f"{actual_source_for_flow_def}_to_{actual_target_for_flow_def}"
+
             elif self._check(TokenType.LEFTARROW):
-                flow_type = "PULL"
+                flow_type_str = "PULL"
                 self._advance()  # Consume '<-'
+                # In 'A <- B', A is source_team_dsl, B is target_team_dsl
+                # For FlowDefinitionConfig: target is A, source is B (or None if B is 'pull')
+                target_token = self._consume(TokenType.IDENTIFIER, f"Expected source team identifier or 'pull' after '<-' for target '{source_team_dsl}'")
+                pull_source_dsl = target_token.value # This is B or 'pull'
+
+                actual_target_for_flow_def = source_team_dsl # Team A is the target of the pull
+                if pull_source_dsl.lower() == "pull":
+                    actual_source_for_flow_def = None
+                    flow_name = f"{actual_target_for_flow_def}_pulls_from_any"
+                else:
+                    actual_source_for_flow_def = pull_source_dsl
+                    flow_name = f"{actual_target_for_flow_def}_pulls_from_{actual_source_for_flow_def}"
+
             elif self._check(TokenType.BIDIARROW):
-                flow_type = "BIDIRECTIONAL"
-                self._advance()  # Consume '<>'
+                flow_type_str = "BIDIRECTIONAL"
+                self._advance()  # Consume '<->'
+                target_token = self._consume(TokenType.IDENTIFIER, f"Expected target team identifier after '<->' for source '{source_team_dsl}'")
+                target_team_dsl = target_token.value
+                actual_source_for_flow_def = source_team_dsl
+                actual_target_for_flow_def = target_team_dsl
+                # Sort names to ensure consistent naming for A<->B and B<->A if that's desired, or pick one convention
+                teams = sorted([actual_source_for_flow_def, actual_target_for_flow_def])
+                flow_name = f"{teams[0]}_bidir_{teams[1]}"
+
             elif self._check(TokenType.REPELARROW):
-                flow_type = "REPEL"
+                flow_type_str = "REPEL"
                 self._advance()  # Consume '<>'
+                target_token = self._consume(TokenType.IDENTIFIER, f"Expected target team identifier after '<>' for source '{source_team_dsl}'")
+                target_team_dsl = target_token.value
+                actual_source_for_flow_def = source_team_dsl
+                actual_target_for_flow_def = target_team_dsl
+                teams = sorted([actual_source_for_flow_def, actual_target_for_flow_def])
+                flow_name = f"{teams[0]}_repels_{teams[1]}"
             else:
                 raise SyntaxError(
                     f"Expected arrow operator at line {self._peek().line}, got {self._peek().type}"
                 )
 
-            # Expect target team identifier
-            if not self._check(TokenType.IDENTIFIER):
-                token = self._peek()
-                raise SyntaxError(
-                    f"Expected target team identifier at line {token.line}, got {token.type}"
-                )
-
-            target_token = self._advance()
-            target_team = target_token.value
-
             # Create flow definition
-            flow = {"source": source_team, "target": target_team, "type": flow_type}
+            flow = {
+                "name": flow_name,
+                "source": actual_source_for_flow_def,
+                "target": actual_target_for_flow_def,
+                "type": flow_type_str
+            }
 
             # Add flow to AST
             self.ast["flows"].append(flow)
@@ -313,6 +347,33 @@ class GlueParser:
 
         # Expect closing brace
         self._consume(TokenType.RBRACE, "Expected '}' after flow definitions")
+
+    def _parse_named_flow(self):
+        """Parse named flow definition"""
+        # Expect 'flow' keyword (already consumed by the caller if we adapt parse loop, or check here)
+        # For consistency with _parse_model, _parse_tool, we'd expect 'flow' to be consumed before calling this.
+        # However, if called from the main loop like other top-level keywords, it's fine.
+        # Let's assume it's called from the main parse loop like _parse_model.
+        self._consume(TokenType.KEYWORD, "Expected 'flow' keyword") # Consume 'flow' keyword itself
+
+        # Expect flow name
+        name_token = self._consume(TokenType.IDENTIFIER, "Expected flow name")
+        flow_name = name_token.value
+        flow_definition = {"name": flow_name} # Initialize with name
+
+        # Expect opening brace
+        self._consume(TokenType.LBRACE, f"Expected '{{' after flow name '{flow_name}'")
+
+        # Parse flow properties (source, target, type, config)
+        # We can reuse _parse_properties or have a more specific parsing logic here
+        # For now, let's use _parse_properties for simplicity, assuming flow properties are key-value pairs.
+        self._parse_properties(flow_definition)
+
+        # Expect closing brace
+        self._consume(TokenType.RBRACE, f"Expected '}}' after flow properties for '{flow_name}'")
+
+        # Add named flow to AST's flows list
+        self.ast["flows"].append(flow_definition)
 
     def _parse_apply(self):
         """Parse apply statement"""
@@ -461,7 +522,10 @@ class GlueParser:
             else:
                 return keyword
         elif self._check(TokenType.IDENTIFIER):
-            return self._advance().value
+            identifier_token = self._advance()
+            if identifier_token.value == "null":
+                return None
+            return identifier_token.value
         elif self._check(TokenType.LBRACKET):
             return self._parse_array()
         else:
