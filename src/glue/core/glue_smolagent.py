@@ -232,6 +232,10 @@ class GlueSmolAgent(CodeAgent):
     """
     A wrapper around smolagents CodeAgent that integrates GLUE-specific features
     such as adhesives and custom memory persistence hooks.
+
+    IMPORTANT: After a user_input tool response, call
+        agent.handle_tool_response(tool_name, tool_output)
+    before the next agent step. This ensures the agent treats the user's reply as a new task.
     """
 
     def __init__(
@@ -248,36 +252,17 @@ class GlueSmolAgent(CodeAgent):
         team_name_for_prompt: Optional[str] = "team",
         **kwargs
     ):
+        # --- BEGIN ADHESIVE POLICY FIELDS ---
+        self._next_adhesive_override: Optional[AdhesiveType] = None
+        self._adhesive_policy_config: Dict[str, Any] = {}
+        self._adhesive_rationale_log: List[Dict[str, Any]] = []
+        self._model_adhesive_compatibility = [AdhesiveType.GLUE, AdhesiveType.VELCRO, AdhesiveType.TAPE]
+        # --- END ADHESIVE POLICY FIELDS ---
+
         self.glue_config = glue_config or {}
         self._agent_name_for_prompt = name or "Agent"
         self._team_name_for_prompt = team_name_for_prompt
         self._initial_managed_agents_dict_for_template_choice = managed_agents_dict or {}
-        
-        # Adhesive policy management
-        self._next_adhesive_override: Optional[AdhesiveType] = None
-        self._adhesive_policy_config: Dict[str, Any] = {}
-        self._adhesive_rationale_log: List[Dict[str, Any]] = []
-        
-        # Store model reference for adhesive system
-        self.model = model
-        
-        # Store model compatibility info separately to avoid modifying the model object
-        self._model_adhesive_compatibility = [AdhesiveType.GLUE, AdhesiveType.VELCRO, AdhesiveType.TAPE]
-        logger.debug(f"Set adhesive compatibility for model: {[a.value for a in self._model_adhesive_compatibility]}")
-        
-        # Initialize or set team for adhesive system
-        if not hasattr(self, '_team_initialized'):
-            from ..core.teams import Team
-            team_name = team_name_for_prompt or "DefaultTeam"
-            agent_name = name or "DefaultAgent"
-            self.team = Team(name=team_name, description=f"Team for agent {agent_name}")
-            self._team_initialized = True
-
-        # Initialize adhesive system if not provided
-        if not hasattr(self, 'adhesive_system'):
-            from .adhesive import AdhesiveSystem
-            self.adhesive_system = AdhesiveSystem()
-
         # Removed basicConfig and local logger; use module-level logger
 
         # Ensure name and description attributes exist before initializing prompt templates
@@ -304,7 +289,7 @@ class GlueSmolAgent(CodeAgent):
                 valid_tool = t_spec
                 tool_name_for_log = getattr(valid_tool, 'name', tool_name_for_log)
             elif hasattr(t_spec, '_glue_tool_schema') and callable(t_spec):
-                schema = t_spec._glue_tool_schema  # type: ignore
+                schema = t_spec._glue_tool_schema
                 func_name = getattr(t_spec, '__name__', 'dynamic_tool')
                 tool_name_for_log = func_name
                 description_str = schema.get('description') or getattr(t_spec, '__doc__', f'Executes the {func_name} tool.') or ''
@@ -342,90 +327,29 @@ class GlueSmolAgent(CodeAgent):
             
             if valid_tool:
                 original_tool_callable = valid_tool.__call__
-                def create_adhesive_aware_call(tool_instance, original_callable, agent_ref):
-                    def adhesive_aware_logged_call(*args, **kwargs):
+                def create_logged_call(tool_instance, original_callable):
+                    def logged_call(*args, **kwargs):
                         tool_name_call = getattr(tool_instance, 'name', 'unnamed_tool_instance')
-                        
                         # Log tool execution start
                         logging.getLogger("glue.smolagent").debug(
                             f"[GLUE TOOL EXEC] Calling {tool_name_call} with args={args}, kwargs={kwargs}"
                         )
-                        
                         try:
-                            # Execute the tool
                             result = original_callable(*args, **kwargs)
-                            
                             # Log tool execution result
                             logging.getLogger("glue.smolagent").debug(
                                 f"[GLUE TOOL EXEC] {tool_name_call} returned: {str(result)[:500]}..."
                             )
-                            
-                            # Agent-controlled adhesive binding
-                            try:
-                                # Create context for adhesive decision
-                                context = {
-                                    "args": args,
-                                    "kwargs": kwargs,
-                                    "result_type": type(result).__name__,
-                                    "result_length": len(str(result)) if result else 0,
-                                    "team_context": agent_ref._is_team_context() if hasattr(agent_ref, '_is_team_context') else False
-                                }
-                                
-                                # Let agent choose adhesive
-                                chosen_adhesive = agent_ref.choose_adhesive(tool_name_call, result, context)
-                                
-                                # Create ToolResult for binding
-                                from ..core.simple_schemas import ToolResult
-                                tool_result = ToolResult(
-                                    tool_name=tool_name_call,
-                                    result=result,
-                                    metadata={"agent": agent_ref.name, "timestamp": datetime.now().isoformat()},
-                                    timestamp=datetime.now().isoformat()
-                                )
-                                
-                                # Bind result with chosen adhesive using custom compatibility check
-                                from ..core.adhesive import bind_tool_result
-                                
-                                # Create a custom model compatibility check
-                                def custom_check_compatibility(model, adhesive_type):
-                                    # Always return True for our agent since we manage compatibility internally
-                                    return True
-                                
-                                # Temporarily patch the compatibility check
-                                import glue.core.adhesive as adhesive_module
-                                original_check = adhesive_module.check_adhesive_compatibility
-                                adhesive_module.check_adhesive_compatibility = custom_check_compatibility
-                                
-                                try:
-                                    bind_tool_result(
-                                        system=agent_ref.adhesive_system,
-                                        team=agent_ref.team,
-                                        model=agent_ref.model,
-                                        tool_result=tool_result,
-                                        adhesive_type=chosen_adhesive
-                                    )
-                                    
-                                    logger.info(f"[ADHESIVE BINDING] Agent '{agent_ref.name}': Bound tool '{tool_name_call}' result with {chosen_adhesive.value} adhesive")
-                                    
-                                finally:
-                                    # Restore original compatibility check
-                                    adhesive_module.check_adhesive_compatibility = original_check
-                                
-                            except Exception as binding_error:
-                                logger.error(f"[ADHESIVE BINDING ERROR] Failed to bind result for tool {tool_name_call}: {binding_error}")
-                                # Continue execution even if binding fails
-                            
                             return result
-                            
                         except Exception as e:
                             error_message = f"Error executing tool {tool_name_call}: {type(e).__name__}: {str(e)}"
                             logging.getLogger("glue.smolagent").error(
                                 f"[GLUE TOOL EXEC ERROR] {error_message}"
                             )
                             raise
-                    return adhesive_aware_logged_call
+                    return logged_call
 
-                valid_tool.__call__ = types.MethodType(create_adhesive_aware_call(valid_tool, original_tool_callable, self), valid_tool)
+                valid_tool.__call__ = types.MethodType(create_logged_call(valid_tool, original_tool_callable), valid_tool)
                 smolagents_tools.append(valid_tool)
                 logger.debug(f"Processed and wrapped GLUE tool: {tool_name_for_log} for agent '{name}'")
         
@@ -460,7 +384,7 @@ class GlueSmolAgent(CodeAgent):
             tools=smolagents_tools,
             model=model,
             additional_authorized_imports=additional_authorized_imports,
-            planning_interval=planning_interval,
+            planning_interval=planning_interval if is_lead_agent_initial_check else None,
             name=name,
             description=description,
             managed_agents=managed_agents_list_for_super,
@@ -472,10 +396,8 @@ class GlueSmolAgent(CodeAgent):
         self.user_task = "" 
 
         self._init_glue_features()
-        
-        # Wrap all tools (including base tools) with adhesive functionality
+        # --- WRAP TOOLS WITH ADHESIVE ---
         self._wrap_all_tools_with_adhesive()
-        
         final_managed_agents_in_self = getattr(self, 'managed_agents', {})
         final_tools_in_self = getattr(self, 'tools', {})
         logger.info(
@@ -576,11 +498,8 @@ class GlueSmolAgent(CodeAgent):
             adhesives = {AdhesiveType.GLUE}
         self.memories: Dict[str, Any] = {}
         team_id_for_mem = getattr(self, 'team_id', self._team_name_for_prompt) 
-        # Ensure team_id_for_mem is a string for GLUEPersistentAdapter
-        if not isinstance(team_id_for_mem, str):
-            logger.warning(f"Agent '{self.name}': team_id_for_mem was not a string (was {type(team_id_for_mem)}), defaulting to 'default_team_id_fallback'.")
-            team_id_for_mem = "default_team_id_fallback"
-        
+        if not isinstance(team_id_for_mem, str) or not team_id_for_mem:
+            team_id_for_mem = "default_team"
         for adhesive in adhesives:
             if adhesive == AdhesiveType.GLUE:
                 self.memories['glue'] = GLUEPersistentAdapter(team_id=team_id_for_mem, memory_dir='memory')
@@ -595,131 +514,9 @@ class GlueSmolAgent(CodeAgent):
         elif 'tape' in self.memories:
             self.memory = self.memories['tape']
         else:
-            # Ensure team_id_for_mem is a string for the fallback GLUEPersistentAdapter
-            fallback_team_id = team_id_for_mem
-            if not isinstance(team_id_for_mem, str): # This check is redundant due to the earlier check, but kept for safety here
-                 logger.warning(f"Agent '{self.name}': team_id_for_mem was not a string for fallback (was {type(team_id_for_mem)}), using 'default_team_id_fallback_else'.")
-                 fallback_team_id = "default_team_id_fallback_else"
-            self.memory = GLUEPersistentAdapter(team_id=fallback_team_id, memory_dir='memory')
+            self.memory = GLUEPersistentAdapter(team_id=team_id_for_mem, memory_dir='memory')
             logging.warning(f"Agent '{self.name}' had no specific memory adapter; defaulted to GLUEPersistentAdapter.")
         logger.info(f"[GLUE] Agent '{self.name}' memory adapters: {list(self.memories.keys())}, default: {type(self.memory).__name__ if self.memory else None}")
-
-    def _wrap_all_tools_with_adhesive(self):
-        """
-        Wrap all tools (including base tools added by smolagents) with adhesive-aware functionality.
-        This method is called after superclass initialization to ensure all tools are wrapped.
-        """
-        if not hasattr(self, 'tools') or not self.tools:
-            logger.debug(f"Agent '{self.name}': No tools to wrap with adhesive functionality")
-            return
-            
-        wrapped_count = 0
-        for tool_name, tool_instance in self.tools.items():
-            # Check if tool is already wrapped (has our custom adhesive wrapper)
-            if hasattr(tool_instance, '_adhesive_wrapped'):
-                logger.debug(f"Agent '{self.name}': Tool '{tool_name}' already wrapped, skipping")
-                continue
-                
-            # Store original callable
-            original_tool_callable = tool_instance.__call__
-            
-            # Create adhesive-aware wrapper
-            def create_adhesive_aware_call(tool_inst, original_callable, agent_ref):
-                def adhesive_aware_logged_call(*args, **kwargs):
-                    tool_name_call = getattr(tool_inst, 'name', 'unnamed_tool_instance')
-                    
-                    # Log tool execution start
-                    logging.getLogger("glue.smolagent").debug(
-                        f"[GLUE TOOL EXEC] Calling {tool_name_call} with args={args}, kwargs={kwargs}"
-                    )
-                    
-                    try:
-                        # Execute the tool
-                        result = original_callable(*args, **kwargs)
-                        
-                        # Log tool execution result
-                        logging.getLogger("glue.smolagent").debug(
-                            f"[GLUE TOOL EXEC] {tool_name_call} returned: {str(result)[:500]}..."
-                        )
-                        
-                        # Agent-controlled adhesive binding
-                        try:
-                            # Create context for adhesive decision
-                            context = {
-                                "args": args,
-                                "kwargs": kwargs,
-                                "result_type": type(result).__name__,
-                                "result_length": len(str(result)) if result else 0,
-                                "team_context": agent_ref._is_team_context() if hasattr(agent_ref, '_is_team_context') else False
-                            }
-                            
-                            # Let agent choose adhesive
-                            chosen_adhesive = agent_ref.choose_adhesive(tool_name_call, result, context)
-                            
-                            # Create ToolResult for binding
-                            from ..core.simple_schemas import ToolResult
-                            tool_result = ToolResult(
-                                tool_name=tool_name_call,
-                                result=result,
-                                metadata={"agent": agent_ref.name, "timestamp": datetime.now().isoformat()},
-                                timestamp=datetime.now().isoformat()
-                            )
-                            
-                            # Bind result with chosen adhesive using custom compatibility check
-                            from ..core.adhesive import bind_tool_result
-                            
-                            # Create a custom model compatibility check
-                            def custom_check_compatibility(model, adhesive_type):
-                                # Always return True for our agent since we manage compatibility internally
-                                return True
-                            
-                            # Temporarily patch the compatibility check
-                            import glue.core.adhesive as adhesive_module
-                            original_check = adhesive_module.check_adhesive_compatibility
-                            adhesive_module.check_adhesive_compatibility = custom_check_compatibility
-                            
-                            try:
-                                bind_tool_result(
-                                    system=agent_ref.adhesive_system,
-                                    team=agent_ref.team,
-                                    model=agent_ref.model,
-                                    tool_result=tool_result,
-                                    adhesive_type=chosen_adhesive
-                                )
-                                
-                                logger.info(f"[ADHESIVE BINDING] Agent '{agent_ref.name}': Bound tool '{tool_name_call}' result with {chosen_adhesive.value} adhesive")
-                                
-                            finally:
-                                # Restore original compatibility check
-                                adhesive_module.check_adhesive_compatibility = original_check
-                            
-                        except Exception as binding_error:
-                            logger.error(f"[ADHESIVE BINDING ERROR] Failed to bind result for tool {tool_name_call}: {binding_error}")
-                            # Continue execution even if binding fails
-                        
-                        return result
-                        
-                    except Exception as e:
-                        error_message = f"Error executing tool {tool_name_call}: {type(e).__name__}: {str(e)}"
-                        logging.getLogger("glue.smolagent").error(
-                            f"[GLUE TOOL EXEC ERROR] {error_message}"
-                        )
-                        raise
-                
-                return adhesive_aware_logged_call
-
-            # Apply the wrapper
-            tool_instance.__call__ = types.MethodType(
-                create_adhesive_aware_call(tool_instance, original_tool_callable, self), 
-                tool_instance
-            )
-            
-            # Mark as wrapped to avoid double wrapping
-            tool_instance._adhesive_wrapped = True
-            wrapped_count += 1
-            logger.debug(f"Agent '{self.name}': Wrapped tool '{tool_name}' with adhesive functionality")
-        
-        logger.info(f"[GLUE] Agent '{self.name}': Wrapped {wrapped_count} tools with adhesive functionality")
 
     def debug_print_agent_memory(self): 
         logger.debug(f"Agent '{getattr(self, 'name', 'unnamed')}' memory adapters:")
@@ -738,42 +535,176 @@ class GlueSmolAgent(CodeAgent):
             logger.debug(f"    Inputs: {inputs}")
             logger.debug(f"    Output type: {output_type}")
 
-    # Agent-controlled adhesive policy methods
+    def _generate_messages(self, stream: bool = False, summary_mode: bool = False) -> List[Dict[str, Any]]:
+        """
+        Only include the system prompt at the very start of the conversation.
+        After a user_input tool call, treat the tool_output as a new user task.
+        """
+        # Assume self.memory.steps is the chronological list of memory steps (TaskStep, ToolStep, etc.)
+        # and self.user_task is the current user task string.
+        messages = []
+        steps = getattr(self.memory, 'steps', [])
+        # Only include system prompt if this is the very first message (no prior steps except maybe system prompt)
+        if not steps or (len(steps) == 1 and hasattr(steps[0], 'system_prompt')):
+            try:
+                self.prompt_templates['system_prompt'] = self.initialize_system_prompt()
+            except Exception as e:
+                logging.getLogger("glue.smolagent").warning(
+                    f"Agent '{self.name}': failed to refresh system_prompt in _generate_messages: {e}"
+                )
+            messages.append({"role": "system", "content": self.prompt_templates['system_prompt']})
+            # Add the real user input as the first user message
+            if hasattr(self, 'user_task') and self.user_task:
+                messages.append({"role": "user", "content": self.user_task})
+        else:
+            # For subsequent steps, do not prepend the system prompt
+            # Add the real user input as the first user message if present and not already in steps
+            if hasattr(self, 'user_task') and self.user_task:
+                # Only add if not already present as a TaskStep
+                if not any(getattr(step, 'task', None) == self.user_task for step in steps):
+                    messages.append({"role": "user", "content": self.user_task})
+            # Add the rest of the memory steps as messages
+            for step in steps:
+                # Skip system prompt steps
+                if hasattr(step, 'system_prompt'):
+                    continue
+                # If this is a TaskStep (user input), skip if already added
+                if hasattr(step, 'task') and step.task == self.user_task:
+                    continue
+                # Convert step to messages
+                if hasattr(step, 'to_messages'):
+                    messages.extend(step.to_messages(summary_mode=summary_mode))
+        logger.debug(f"Messages being sent to LLM: {messages}")
+        return messages
+
+    def handle_tool_response(self, tool_name: str, tool_output: str):
+        """
+        If the last tool called was user_input, treat the tool_output as a new user task.
+        Call this method after receiving a tool response, e.g.:
+            agent.handle_tool_response(tool_name, tool_output)
+        This ensures that after a clarification, the agent will proceed with normal reasoning.
+        """
+        if tool_name == "user_input" and tool_output and tool_output.strip():
+            self.user_task = tool_output.strip()
+            logger.info(f"[GlueSmolAgent] Received user_input response, setting new user_task: {self.user_task!r}")
+            # Optionally, clear memory steps after clarification to start fresh
+            # self.memory.steps = []
+        # Otherwise, do nothing (default behavior)
+
+    def run(self, task: str, **kwargs):
+        self.user_task = task
+        logger.info(f"Agent '{self.name}' starting run for task: {task}")
+        self.force_interpreter()
+        return super().run(task=task, **kwargs)
+
+    def force_interpreter(self):
+        """Ensure interpreter and interpreter_globals exist for code execution and flow function injection."""
+        if hasattr(self, 'python_executor'):
+            interp = self.python_executor
+        else:
+            interp = type('Interpreter', (), {})()
+        if not hasattr(interp, 'globals'):
+            setattr(interp, 'globals', {})
+        self.interpreter = interp
+        self.interpreter_globals = getattr(interp, 'globals', {})
+
+    def _wrap_all_tools_with_adhesive(self):
+        """
+        Wrap all tools (including base tools added by smolagents) with adhesive-aware functionality.
+        This method is called after superclass initialization to ensure all tools are wrapped.
+        """
+        if not hasattr(self, 'tools') or not self.tools:
+            logger.debug(f"Agent '{self.name}': No tools to wrap with adhesive functionality")
+            return
+        wrapped_count = 0
+        for tool_name, tool_instance in self.tools.items():
+            # Skip adhesive wrapping for user_input tool
+            if tool_name == "user_input" or getattr(tool_instance, "name", None) == "user_input":
+                logger.debug(f"Agent '{self.name}': Skipping adhesive wrapping for 'user_input' tool")
+                continue
+            if hasattr(tool_instance, '_adhesive_wrapped'):
+                logger.debug(f"Agent '{self.name}': Tool '{tool_name}' already wrapped, skipping")
+                continue
+            original_tool_callable = tool_instance.__call__
+            def create_adhesive_aware_call(tool_inst, original_callable, agent_ref):
+                def adhesive_aware_logged_call(*args, **kwargs):
+                    tool_name_call = getattr(tool_inst, 'name', 'unnamed_tool_instance')
+                    logging.getLogger("glue.smolagent").debug(
+                        f"[GLUE TOOL EXEC] Calling {tool_name_call} with args={args}, kwargs={kwargs}"
+                    )
+                    try:
+                        result = original_callable(*args, **kwargs)
+                        logging.getLogger("glue.smolagent").debug(
+                            f"[GLUE TOOL EXEC] {tool_name_call} returned: {str(result)[:500]}..."
+                        )
+                        try:
+                            context = {
+                                "args": args,
+                                "kwargs": kwargs,
+                                "result_type": type(result).__name__,
+                                "result_length": len(str(result)) if result else 0,
+                                "team_context": agent_ref._is_team_context() if hasattr(agent_ref, '_is_team_context') else False
+                            }
+                            chosen_adhesive = agent_ref.choose_adhesive(tool_name_call, result, context)
+                            from ..core.simple_schemas import ToolResult
+                            tool_result = ToolResult(
+                                tool_name=tool_name_call,
+                                result=result,
+                                metadata={"agent": agent_ref.name, "timestamp": datetime.now().isoformat()},
+                                timestamp=datetime.now().isoformat()
+                            )
+                            from ..core.adhesive import bind_tool_result
+                            def custom_check_compatibility(model, adhesive_type):
+                                return True
+                            import glue.core.adhesive as adhesive_module
+                            original_check = adhesive_module.check_adhesive_compatibility
+                            adhesive_module.check_adhesive_compatibility = custom_check_compatibility
+                            try:
+                                bind_tool_result(
+                                    system=getattr(agent_ref, 'adhesive_system', None),
+                                    team=getattr(agent_ref, 'team', None),
+                                    model=agent_ref.model,
+                                    tool_result=tool_result,
+                                    adhesive_type=chosen_adhesive
+                                )
+                                logger.info(f"[ADHESIVE BINDING] Agent '{agent_ref.name}': Bound tool '{tool_name_call}' result with {chosen_adhesive.value} adhesive")
+                            finally:
+                                adhesive_module.check_adhesive_compatibility = original_check
+                        except Exception as binding_error:
+                            logger.error(f"[ADHESIVE BINDING ERROR] Failed to bind result for tool {tool_name_call}: {binding_error}")
+                        return result
+                    except Exception as e:
+                        error_message = f"Error executing tool {tool_name_call}: {type(e).__name__}: {str(e)}"
+                        logging.getLogger("glue.smolagent").error(
+                            f"[GLUE TOOL EXEC ERROR] {error_message}"
+                        )
+                        raise
+                return adhesive_aware_logged_call
+            tool_instance.__call__ = types.MethodType(
+                create_adhesive_aware_call(tool_instance, original_tool_callable, self),
+                tool_instance
+            )
+            tool_instance._adhesive_wrapped = True
+            wrapped_count += 1
+            logger.debug(f"Agent '{self.name}': Wrapped tool '{tool_name}' with adhesive functionality")
+        logger.info(f"[GLUE] Agent '{self.name}': Wrapped {wrapped_count} tools with adhesive functionality")
+
     def choose_adhesive(self, tool_name: str, result: Any = None, context: Optional[Dict[str, Any]] = None) -> AdhesiveType:
-        """
-        Choose the appropriate adhesive type for a tool result based on agent policy.
-        
-        Args:
-            tool_name: Name of the tool being executed
-            result: The result from tool execution (optional)
-            context: Additional context for adhesive decision (optional)
-            
-        Returns:
-            AdhesiveType: The chosen adhesive type
-        """
         context = context or {}
-        
-        # Check for explicit override first
         if self._next_adhesive_override is not None:
             chosen = self._next_adhesive_override
             rationale = f"Using explicit override: {chosen.value}"
             self._log_adhesive_decision(tool_name, chosen, rationale, context)
-            self._next_adhesive_override = None  # Clear after use
+            self._next_adhesive_override = None
             return chosen
-        
-        # Check for tool-specific policy
         if tool_name in self._adhesive_policy_config:
             chosen = self._adhesive_policy_config[tool_name]
             rationale = f"Using tool-specific policy: {chosen.value}"
             self._log_adhesive_decision(tool_name, chosen, rationale, context)
             return chosen
-        
-        # Apply default policy based on agent capabilities and context
         available_adhesives = set()
         if hasattr(self, 'memories'):
             available_adhesives = set(self.memories.keys())
-        
-        # Convert string keys to AdhesiveType for comparison
         available_types = set()
         for mem_key in available_adhesives:
             if mem_key == 'glue':
@@ -782,8 +713,6 @@ class GlueSmolAgent(CodeAgent):
                 available_types.add(AdhesiveType.VELCRO)
             elif mem_key == 'tape':
                 available_types.add(AdhesiveType.TAPE)
-        
-        # Default policy: GLUE > VELCRO > TAPE (team tools > model tools > ephemeral)
         if AdhesiveType.GLUE in available_types and self._is_team_context():
             chosen = AdhesiveType.GLUE
             rationale = "Default policy: GLUE for team-wide persistence"
@@ -794,58 +723,34 @@ class GlueSmolAgent(CodeAgent):
             chosen = AdhesiveType.TAPE
             rationale = "Default policy: TAPE for ephemeral use"
         else:
-            # Fallback to GLUE if no memories configured
             chosen = AdhesiveType.GLUE
             rationale = "Fallback: GLUE (no adhesive memories configured)"
-        
         self._log_adhesive_decision(tool_name, chosen, rationale, context)
         return chosen
-    
+
     def set_next_adhesive(self, adhesive_type: AdhesiveType, rationale: Optional[str] = None):
-        """
-        Set the adhesive type for the next tool execution.
-        
-        Args:
-            adhesive_type: The adhesive type to use for the next tool call
-            rationale: Optional explanation for the choice
-        """
         self._next_adhesive_override = adhesive_type
         log_msg = f"Agent '{self.name}': Set next adhesive override to {adhesive_type.value}"
         if rationale:
             log_msg += f" (rationale: {rationale})"
         logger.info(log_msg)
-    
+
     def get_adhesive_policy(self) -> Dict[str, Any]:
-        """
-        Get the current adhesive policy configuration.
-        
-        Returns:
-            Dict containing current policy settings
-        """
         return {
             "next_override": self._next_adhesive_override.value.lower() if self._next_adhesive_override else None,
             "tool_specific_policies": {k: v.value.lower() for k, v in self._adhesive_policy_config.items()},
             "available_adhesives": list(self.memories.keys()) if hasattr(self, 'memories') else [],
-            "recent_decisions": self._adhesive_rationale_log[-10:]  # Last 10 decisions
+            "recent_decisions": self._adhesive_rationale_log[-10:]
         }
-    
+
     def set_tool_adhesive_policy(self, tool_name: str, adhesive_type: AdhesiveType):
-        """
-        Set a specific adhesive policy for a particular tool.
-        
-        Args:
-            tool_name: Name of the tool
-            adhesive_type: Adhesive type to use for this tool
-        """
         self._adhesive_policy_config[tool_name] = adhesive_type
         logger.info(f"Agent '{self.name}': Set adhesive policy for tool '{tool_name}' to {adhesive_type.value}")
-    
+
     def _is_team_context(self) -> bool:
-        """Check if the agent is operating in a team context."""
         return bool(getattr(self, 'managed_agents', {})) or len(getattr(self, '_initial_managed_agents_dict_for_template_choice', {})) > 0
-    
+
     def _log_adhesive_decision(self, tool_name: str, adhesive_type: AdhesiveType, rationale: str, context: Dict[str, Any]):
-        """Log an adhesive decision for debugging and transparency."""
         decision_entry = {
             "timestamp": datetime.now().isoformat(),
             "tool_name": tool_name,
@@ -855,34 +760,16 @@ class GlueSmolAgent(CodeAgent):
             "agent_name": self.name
         }
         self._adhesive_rationale_log.append(decision_entry)
-        
-        # Keep only last 100 decisions to prevent memory growth
         if len(self._adhesive_rationale_log) > 100:
             self._adhesive_rationale_log = self._adhesive_rationale_log[-100:]
-        
         logger.debug(f"[ADHESIVE DECISION] Agent '{self.name}': {tool_name} -> {adhesive_type.value} ({rationale})")
 
-    # Advanced adhesive API methods
     def run_tool_with_adhesive(self, tool_name: str, adhesive_type: AdhesiveType, *args, **kwargs) -> Any:
-        """
-        Run a tool with a specific adhesive type, bypassing the agent's policy.
-        
-        Args:
-            tool_name: Name of the tool to execute
-            adhesive_type: Specific adhesive type to use
-            *args, **kwargs: Arguments to pass to the tool
-            
-        Returns:
-            The tool result after binding with specified adhesive
-        """
-        # Find the tool - self.tools is a dictionary (tool_name -> tool_object)
         tool_instance = None
         if hasattr(self, 'tools') and self.tools:
-            # First try direct lookup by name (most efficient)
             if tool_name in self.tools:
                 tool_instance = self.tools[tool_name]
             else:
-                # Fallback: iterate through all tools to check name attributes
                 for name, tool_obj in self.tools.items():
                     if hasattr(tool_obj, 'name') and tool_obj.name == tool_name:
                         tool_instance = tool_obj
@@ -890,55 +777,31 @@ class GlueSmolAgent(CodeAgent):
                     elif hasattr(tool_obj, '__name__') and tool_obj.__name__ == tool_name:
                         tool_instance = tool_obj
                         break
-        
         if tool_instance is None:
             available_tools = list(self.tools.keys()) if hasattr(self, 'tools') and self.tools else []
             raise ValueError(f"Tool '{tool_name}' not found in agent's toolset. Available tools: {available_tools}")
-        
-        # Set override for this specific execution
         old_override = self._next_adhesive_override
         self._next_adhesive_override = adhesive_type
-        
         try:
-            # Execute the tool through normal mechanism to leverage existing wrapper
             if hasattr(tool_instance, '__call__'):
                 result = tool_instance(*args, **kwargs)
             else:
-                # For Tool objects, need to call their execution method
                 result = tool_instance(*args, **kwargs)
-            
-            # The wrapper should have handled the binding automatically
             return result
-            
         finally:
-            # Restore previous override state
             self._next_adhesive_override = old_override
-    
+
     def get_bound_result(self, result_id: str, adhesive_type: Optional[AdhesiveType] = None) -> Any:
-        """
-        Retrieve a previously bound result from adhesive storage.
-        
-        Args:
-            result_id: The ID of the result to retrieve
-            adhesive_type: Optional specific adhesive to search (searches all if None)
-            
-        Returns:
-            The bound result if found, None otherwise
-        """
         if not hasattr(self, 'memories'):
             logger.warning(f"Agent '{self.name}' has no adhesive memories configured")
             return None
-        
         adhesive_types_to_search = []
         if adhesive_type:
-            # Search specific adhesive type
             adhesive_key = adhesive_type.value.lower()
             if adhesive_key in self.memories:
                 adhesive_types_to_search = [adhesive_key]
         else:
-            # Search all available adhesives
             adhesive_types_to_search = list(self.memories.keys())
-        
         for adhesive_key in adhesive_types_to_search:
             try:
                 memory_adapter = self.memories[adhesive_key]
@@ -951,21 +814,13 @@ class GlueSmolAgent(CodeAgent):
                     logger.warning(f"Memory adapter for '{adhesive_key}' does not support get() operation")
             except Exception as e:
                 logger.warning(f"Error retrieving result '{result_id}' from {adhesive_key}: {e}")
-        
         logger.debug(f"Result '{result_id}' not found in any adhesive storage")
         return None
-    
+
     def clear_adhesive_storage(self, adhesive_type: Optional[AdhesiveType] = None):
-        """
-        Clear adhesive storage for debugging or cleanup.
-        
-        Args:
-            adhesive_type: Specific adhesive to clear, or None to clear all
-        """
         if not hasattr(self, 'memories'):
             logger.warning(f"Agent '{self.name}' has no adhesive memories configured")
             return
-        
         adhesive_types_to_clear = []
         if adhesive_type:
             adhesive_key = adhesive_type.value.lower()
@@ -973,7 +828,6 @@ class GlueSmolAgent(CodeAgent):
                 adhesive_types_to_clear = [adhesive_key]
         else:
             adhesive_types_to_clear = list(self.memories.keys())
-        
         for adhesive_key in adhesive_types_to_clear:
             try:
                 memory_adapter = self.memories[adhesive_key]
@@ -984,35 +838,14 @@ class GlueSmolAgent(CodeAgent):
                     logger.warning(f"Memory adapter for '{adhesive_key}' does not support clear() operation")
             except Exception as e:
                 logger.error(f"Error clearing {adhesive_key} adhesive storage: {e}")
-    
+
     def get_adhesive_rationale_log(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
-        """
-        Get the adhesive decision rationale log for debugging and analysis.
-        
-        Args:
-            limit: Maximum number of recent entries to return (None for all)
-            
-        Returns:
-            List of adhesive decision entries
-        """
         if limit is None:
             return self._adhesive_rationale_log.copy()
         else:
             return self._adhesive_rationale_log[-limit:] if limit > 0 else []
 
-    # Agent negotiation methods for collaborative adhesive selection
     def suggest_adhesive_for_task(self, task_description: str, preferred_adhesive: AdhesiveType, rationale: str) -> Dict[str, Any]:
-        """
-        Suggest an adhesive type for a collaborative task.
-        
-        Args:
-            task_description: Description of the task requiring adhesive choice
-            preferred_adhesive: The agent's preferred adhesive type
-            rationale: Reasoning for the preference
-            
-        Returns:
-            Dict containing the suggestion details
-        """
         suggestion = {
             "agent_name": self.name,
             "task_description": task_description,
@@ -1025,102 +858,53 @@ class GlueSmolAgent(CodeAgent):
                 "tools_count": len(self.tools)
             }
         }
-        
         logger.info(f"Agent '{self.name}' suggests {preferred_adhesive.value} for task: {task_description}")
         logger.debug(f"Suggestion rationale: {rationale}")
-        
         return suggestion
-    
+
     def evaluate_adhesive_suggestions(self, suggestions: List[Dict[str, Any]], task_context: Optional[Dict[str, Any]] = None) -> AdhesiveType:
-        """
-        Evaluate multiple adhesive suggestions and choose the best one.
-        
-        Args:
-            suggestions: List of adhesive suggestions from various agents
-            task_context: Additional context about the task
-            
-        Returns:
-            The chosen adhesive type based on evaluation
-        """
         if not suggestions:
             logger.warning("No adhesive suggestions provided, using default policy")
             return self.choose_adhesive("collaborative_task", context=task_context)
-        
-        # Count preferences and weight by agent capabilities
         adhesive_scores = {
             AdhesiveType.GLUE: 0,
             AdhesiveType.VELCRO: 0,
             AdhesiveType.TAPE: 0
         }
-        
         total_weight = 0
         for suggestion in suggestions:
-            # Parse adhesive type
             suggested_type = None
             for adhesive_type in AdhesiveType:
                 if adhesive_type.value == suggestion["preferred_adhesive"]:
                     suggested_type = adhesive_type
                     break
-            
             if suggested_type is None:
                 logger.warning(f"Invalid adhesive type in suggestion: {suggestion['preferred_adhesive']}")
                 continue
-            
-            # Calculate weight based on agent capabilities
-            weight = 1  # Base weight
+            weight = 1
             capabilities = suggestion.get("agent_capabilities", {})
-            
-            # Team leads have higher weight
             if capabilities.get("is_team_lead", False):
                 weight += 2
-            
-            # Agents with more tools have slightly higher weight
             tools_count = capabilities.get("tools_count", 0)
-            weight += min(tools_count / 10, 1)  # Max +1 bonus for tool count
-            
-            # Agents with the suggested adhesive available have higher weight
+            weight += min(tools_count / 10, 1)
             available_adhesives = capabilities.get("available_adhesives", [])
             if suggested_type.value.lower() in available_adhesives:
                 weight += 1
-            
             adhesive_scores[suggested_type] += weight
             total_weight += weight
-        
-        # Choose the adhesive with highest score
         chosen_adhesive = max(adhesive_scores.items(), key=lambda x: x[1])[0]
-        
-        # Log the decision
         rationale = f"Collaborative choice: {chosen_adhesive.value} (score: {adhesive_scores[chosen_adhesive]:.1f}/{total_weight:.1f})"
         self._log_adhesive_decision("collaborative_task", chosen_adhesive, rationale, task_context or {})
-        
         logger.info(f"Agent '{self.name}' chose {chosen_adhesive.value} from {len(suggestions)} suggestions")
         return chosen_adhesive
-    
-    def negotiate_adhesive_with_peers(self, peer_agents: List['GlueSmolAgent'], task_description: str, my_preference: AdhesiveType, my_rationale: str) -> AdhesiveType:
-        """
-        Negotiate adhesive choice with peer agents for a collaborative task.
-        
-        Args:
-            peer_agents: List of other agents to negotiate with
-            task_description: Description of the collaborative task
-            my_preference: This agent's preferred adhesive
-            my_rationale: This agent's reasoning for the preference
-            
-        Returns:
-            The negotiated adhesive type
-        """
-        # Collect suggestions from all agents including self
+
+    def negotiate_adhesive_with_peers(self, peer_agents: list, task_description: str, my_preference: AdhesiveType, my_rationale: str) -> AdhesiveType:
         suggestions = []
-        
-        # Add own suggestion
         own_suggestion = self.suggest_adhesive_for_task(task_description, my_preference, my_rationale)
         suggestions.append(own_suggestion)
-        
-        # Collect suggestions from peers
         for peer in peer_agents:
             if hasattr(peer, 'suggest_adhesive_for_task'):
                 try:
-                    # Have peer suggest based on their default policy
                     peer_preference = peer.choose_adhesive("negotiation_task")
                     peer_rationale = f"Based on {peer.name}'s default policy and capabilities"
                     peer_suggestion = peer.suggest_adhesive_for_task(task_description, peer_preference, peer_rationale)
@@ -1129,104 +913,9 @@ class GlueSmolAgent(CodeAgent):
                     logger.warning(f"Could not get suggestion from peer '{peer.name}': {e}")
             else:
                 logger.warning(f"Peer agent '{peer.name}' does not support adhesive negotiation")
-        
-        # Evaluate all suggestions
         chosen_adhesive = self.evaluate_adhesive_suggestions(suggestions, {"task": task_description, "negotiation": True})
-        
         logger.info(f"Negotiation complete: chose {chosen_adhesive.value} for task '{task_description}'")
         return chosen_adhesive
-
-    # Removed _generate_messages method as it was causing an error with super()
-    # and its functionality for refreshing system prompt is handled by initialize_system_prompt
-    # or would be better placed in an overridden write_memory_to_messages if dynamic updates are needed.
-
-    # Add method to ensure interpreter exists for flow and tool injection
-    def force_interpreter(self):
-        """Ensure interpreter and interpreter_globals exist for code execution and flow function injection."""
-        if hasattr(self, 'python_executor'):
-            interp = self.python_executor
-        else:
-            interp = type('Interpreter', (), {})()
-        if not hasattr(interp, 'globals'):
-            setattr(interp, 'globals', {})
-        self.interpreter = interp
-        self.interpreter_globals = interp.globals # type: ignore
-
-    # Update run method to call force_interpreter and inject tools into interpreter.globals
-    def run(self, task: str, stream: bool = False, reset: bool = True, images: Optional[List[Any]] = None, additional_args: Optional[Dict[str, Any]] = None, max_steps: Optional[int] = None, **kwargs):
-        self.user_task = task
-        logger.info(f"Agent '{self.name}' starting run for task: {task}")
-        self.force_interpreter()
-        logger.debug(f"[GlueSmolAgent.run] Received task: {task!r}")
-        # --- PATCH: Robust fix for empty user input bug ---
-        # Only unwrap dict['content'] if it is a string or a list of dicts with non-empty 'text'.
-        if isinstance(task, dict) and 'content' in task:
-            fixed_task = task.get('content')
-            # If content is a string, use it directly
-            if isinstance(fixed_task, str):
-                logger.debug(f"[GlueSmolAgent.run] PATCH: Extracted string content from dict: {fixed_task!r}")
-                logger.debug(f"[GlueSmolAgent.run] About to call super().run with: {fixed_task!r}")
-                result = super().run(task=str(fixed_task), stream=stream, reset=reset, images=images, additional_args=additional_args, max_steps=max_steps, **kwargs)
-            # If content is a list of dicts, try to extract the first non-empty 'text' value
-            elif isinstance(fixed_task, list):
-                text_value = None
-                for part in fixed_task:
-                    if isinstance(part, dict):
-                        val = part.get('text') or part.get('content')
-                        if isinstance(val, str) and val.strip():
-                            text_value = val.strip()
-                            break
-                if text_value:
-                    logger.debug(f"[GlueSmolAgent.run] PATCH: Extracted non-empty text from list: {text_value!r}")
-                    logger.debug(f"[GlueSmolAgent.run] About to call super().run with: {text_value!r}")
-                    result = super().run(task=str(text_value), stream=stream, reset=reset, images=images, additional_args=additional_args, max_steps=max_steps, **kwargs)
-                else:
-                    logger.debug("[GlueSmolAgent.run] PATCH: Content list had no non-empty text, falling back to original logic.")
-                    result = super().run(task="", stream=stream, reset=reset, images=images, additional_args=additional_args, max_steps=max_steps, **kwargs)
-            else:
-                logger.debug(f"[GlueSmolAgent.run] About to call super().run with: {fixed_task!r}")
-                result = super().run(task=str(fixed_task) if fixed_task is not None else "", stream=stream, reset=reset, images=images, additional_args=additional_args, max_steps=max_steps, **kwargs)
-        elif isinstance(task, str) and not task.strip():
-            logger.info(f"[GlueSmolAgent.run] Skipping empty or blank user input: {task!r}")
-            return "[info] No input provided. Please enter a non-empty message."
-        elif isinstance(task, str):
-            logger.debug(f"[GlueSmolAgent.run] PATCH: Passing string task directly: {task!r}")
-            logger.debug(f"[GlueSmolAgent.run] About to call super().run with: {task!r}")
-            result = super().run(task=task, stream=stream, reset=reset, images=images, additional_args=additional_args, max_steps=max_steps, **kwargs)
-        else:
-            logger.debug(f"[GlueSmolAgent.run] About to call super().run with: {task!r}")
-            result = super().run(task=str(task) if task is not None else "", stream=stream, reset=reset, images=images, additional_args=additional_args, max_steps=max_steps, **kwargs)
-        # --- END PATCH ---
-
-        # --- PATCH: Unwrap output if it is a list of dicts with only empty 'text' or 'content' ---
-        if isinstance(result, list) and all(isinstance(part, dict) and (not (part.get('text') or part.get('content'))) for part in result):
-            logger.debug("[GlueSmolAgent.run] Output was a list of dicts with only empty text/content; returning empty string.")
-            return ""
-        return result
-
-    def write_memory_to_messages(self, summary_mode: bool | None = False) -> list:
-        """
-        Ensure the first user message is always the raw user input, not a TaskStep with 'New task:'.
-        """
-        messages = []
-        # Add system prompt as first message if present
-        system_prompt_step = getattr(self.memory, 'system_prompt', None)
-        if system_prompt_step:
-            messages.extend(system_prompt_step.to_messages(summary_mode=summary_mode))
-        # Add the real user input as the first user message
-        if hasattr(self, 'user_task') and self.user_task:
-            messages.append({"role": "user", "content": self.user_task})
-        # Add the rest of the memory steps, skipping the first TaskStep (which would duplicate the user input)
-        steps = self.memory.steps
-        skip_first_taskstep = False
-        for step in steps:
-            # Only skip the first TaskStep
-            if not skip_first_taskstep and hasattr(step, 'task'):
-                skip_first_taskstep = True
-                continue
-            messages.extend(step.to_messages(summary_mode=summary_mode))
-        return messages
-
 def make_glue_smol_agent(
     *,
     model: InferenceClientModel,

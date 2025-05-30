@@ -10,12 +10,13 @@ magnetic information flow.
 
 import os
 import sys
-import json
-import asyncio
-import argparse
-import logging
 import re
+import logging
+import codecs
 import datetime
+import argparse
+import asyncio
+import json
 import time
 from typing import Dict, Any, Optional
 
@@ -49,11 +50,15 @@ from .dsl.lexer import GlueLexer
 from .cliHelpers import parse_interactive_command, get_interactive_help_text
 from .utils.ui_utils import display_warning, set_cli_config
 
-# Import system modules
 # Configure stdout/stderr for UTF-8 to avoid UnicodeEncodeError on Windows consoles
 try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+try:
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
 
@@ -392,7 +397,7 @@ def prompt_with_help(
 
 # ==================== Application Functions ====================
 async def run_app(
-    config_file: str, interactive: bool = False, input_text: str = None
+    config_file: str, interactive: bool = False, input_text: Optional[str] = None
 ) -> bool:
     """Run a GLUE application from a configuration file.
 
@@ -439,7 +444,7 @@ async def run_app(
 
         # Parse tokens into AST
         logger.info("Parsing tokens into AST")
-        ast = parser.parse(tokens)
+        ast = parser.parse(list(tokens))
 
         # Check if Portkey integration is enabled
         portkey_enabled = False
@@ -676,7 +681,6 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
     display_logo(console)
 
     # Create welcome message with better fallback handling
-    app.name or "Anonymous Application"
     welcome_lines = [
         (
             "Welcome to the interactive GLUE session for:"
@@ -701,11 +705,7 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
     welcome_panel = Panel(
         Group(
             Align.center(welcome_lines[0], style="cyan"),
-            (
-                Align.center(welcome_lines[1], style="bold cyan")
-                if welcome_lines[1]
-                else None
-            ),
+            Align.center(welcome_lines[1], style="bold cyan") if welcome_lines[1] else Text(""),
             Rule(style="dim"),
             Align.center(tip_text),
         ),
@@ -1190,7 +1190,7 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
                         index = i + (len(state["history"]) - len(history_to_show))
 
                         console.print(
-                            f"[{role_style}]{index + 1}. {role.upper()}:[/{role_style}]"
+                            f"[{role_style}]{index + 1}. {role.upper()}:[/#{role_style}]"
                         )
                         # Truncate very long messages
                         if len(content) > 500:
@@ -1385,49 +1385,53 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
 
 
 # Helper function for processing messages with better error handling
-async def process_message(app: GlueApp, user_input: str, state: dict) -> str:
-    """Process a user message and route it to the appropriate handler.
-
-    Args:
-        app: The GLUE application
-        user_input: The user's input text
-        state: Current session state
-
-    Returns:
-        The response from the model or team
-    """
+async def process_message(app: GlueApp, user_input: str, state: dict) -> Any:
     logger = logging.getLogger(__name__)
 
     if state["current_team"]:
         logger.debug(f"[process_message] Sending to team: {state['current_team']}, user_input: {user_input}")
-        return await app.teams[state["current_team"]].process_message(user_input)
+        coro = app.teams[state["current_team"]].process_message(user_input)
+        if hasattr(coro, "__await__"):
+            return await coro
+        return coro
     elif state["current_model"]:
         logger.debug(f"[process_message] Sending to model: {state['current_model']}, user_input: {user_input}")
         model = find_model_in_teams(app, state["current_model"])
         if model:
-            # Legacy GLUE models with generate_response
             if hasattr(model, "generate_response") and callable(model.generate_response):
                 logger.debug(f"[process_message] Calling generate_response with messages=[{{'role': 'user', 'content': {user_input!r}}}]")
-                return await model.generate_response(
-                    messages=[{"role": "user", "content": user_input}]
-                )
-            # SmolAgents InferenceClientModel: wrap in CodeAgent
+                coro = model.generate_response(messages=[{"role": "user", "content": user_input}])
+                if hasattr(coro, "__await__"):
+                    return await coro
+                return coro
             try:
                 from smolagents import CodeAgent
-
                 agent = CodeAgent(tools=[], model=model)
-                return agent.run(user_input)
+                result = agent.run(user_input)
+                # If result is a generator, exhaust it to string
+                import types
+                if isinstance(result, types.GeneratorType):
+                    return "".join(str(x) for x in result)
+                if not isinstance(result, str):
+                    return str(result)
+                return result
             except (ImportError, AttributeError):
                 pass
-            # Fallback to run() if available
             if hasattr(model, "run") and callable(model.run):
-                return model.run(user_input)
+                result = model.run(user_input)
+                if not isinstance(result, str):
+                    return str(result)
+                return result
             return f"Error: Model {state['current_model']} cannot be invoked directly."
         else:
             return f"Error: Model {state['current_model']} not found or not accessible."
     else:
-        # Default routing through app
-        return await app.run(user_input)
+        result = app.run(user_input)
+        if hasattr(result, "__await__"):
+            return await result
+        if not isinstance(result, str):
+            return str(result)
+        return result
 
 
 # Helper function to find model in teams with improved search
@@ -1626,9 +1630,8 @@ def setup_logging(level=logging.DEBUG):
     # For Windows, ensure better Unicode support
     if hasattr(sys.stdout, 'buffer'):
         try:
-            import codecs
             # Wrap stdout buffer with UTF-8 writer that uses error replacement
-            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
         except Exception:
             pass  # Continue with default if wrapping fails
 
@@ -1807,18 +1810,6 @@ def create_new_project(
     display_logo(console, show_version=True)
     console.print()
 
-    welcome_panel = Panel(
-        "[bold]Welcome to the GLUE Project Builder![/bold]\n\n"
-        "This wizard will guide you through creating a new GLUE project with a customized "
-        "configuration for your multi-agent application.\n\n"
-        "[dim]You'll define models, tools, teams, and how they work together.[/dim]",
-        title="🚀 Create New GLUE Project",
-        border_style="blue",
-        padding=(1, 2),
-    )
-    console.print(welcome_panel)
-    console.print()
-
     # If no project name provided, prompt for one
     if not project_name:
         project_name = prompt_with_help(
@@ -1826,7 +1817,10 @@ def create_new_project(
         )
 
         # Sanitize project name
-        project_name = re.sub(r"[^a-zA-Z0-9_-]", "_", project_name)
+        if project_name is not None:
+            project_name = re.sub(r"[^a-zA-Z0-9_-]", "_", project_name)
+        else:
+            project_name = "my_glue_app"
 
     # Check if project directory already exists
     project_dir = os.path.join(os.getcwd(), project_name)
@@ -1856,7 +1850,7 @@ def create_new_project(
         # Generate GLUE file content
         try:
             # Generate content with the interactive builder
-            content = get_template_content(template, project_name)
+            content = get_template_content(template or "basic", project_name or "my_glue_app")
 
             # Debug: Check content before writing
             console.print("[dim]DEBUG: Writing GLUE file content...[/dim]")
@@ -1915,7 +1909,11 @@ def create_new_project(
 def list_models():
     """List available models."""
     # Import provider modules dynamically to get available models
-    from .core.providers import get_available_providers, get_provider_models
+    try:
+        from .core.providers import get_available_providers, get_provider_models
+    except ImportError:
+        print("Provider functions not found.")
+        return
 
     print("Available models:")
 
@@ -2028,7 +2026,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
             # Syntax analysis
             task2 = progress.add_task("[cyan]Performing syntax analysis...", total=1)
             try:
-                ast = parser.parse(iter(tokens_list))
+                ast = parser.parse(list(tokens_list))
                 progress.update(
                     task2, advance=1, description="[green]Syntax analysis completed"
                 )
@@ -2089,6 +2087,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
             if strict:
                 # Check model configs
                 if "models" in ast:
+
                     for model_name, model_config in ast["models"].items():
                         if "config" in model_config:
                             config = model_config["config"]
@@ -2130,21 +2129,21 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
 
         if syntax_errors:
             console.print(
-                f"[{CLI_CONFIG['theme']['error']}]Syntax Errors:[/{CLI_CONFIG['theme']['error']}]"
+                f"[{CLI_CONFIG['theme']['error']}]Syntax Errors:[/bold red]"
             )
             for i, error in enumerate(syntax_errors, 1):
                 console.print(f"  {i}. {error}")
 
         if semantic_errors:
             console.print(
-                f"[{CLI_CONFIG['theme']['error']}]Semantic Errors:[/{CLI_CONFIG['theme']['error']}]"
+                f"[{CLI_CONFIG['theme']['error']}]Semantic Errors:[/bold red]"
             )
             for i, error in enumerate(semantic_errors, 1):
                 console.print(f"  {i}. {error}")
 
         if warnings:
             console.print(
-                f"[{CLI_CONFIG['theme']['warning']}]Warnings:[/{CLI_CONFIG['theme']['warning']}]"
+                f"[{CLI_CONFIG['theme']['warning']}]Warnings:[/bold yellow]"
             )
             for i, warning in enumerate(warnings, 1):
                 console.print(f"  {i}. {warning}")
@@ -2162,6 +2161,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
 
     except Exception as e:
         logger.error(f"Error validating file: {e}", exc_info=True)
+        pass
         console.print_exception()
         console.print(
             f"[{CLI_CONFIG['theme']['error']}]Error validating file: {e}[/{CLI_CONFIG['theme']['error']}]"
@@ -2508,8 +2508,9 @@ def create_status_panel(app: Any, state: Dict[str, Any]) -> Panel:
     if state.get("current_team"):
         status_table.add_row("Active Team:", Text(state["current_team"], style="team"))
     elif state.get("current_model"):
+        model_name = state.get("current_model")
         style = CLI_CONFIG["theme"]["model"].get(
-            state["current_model"], CLI_CONFIG["theme"]["model"]["default"]
+            model_name, CLI_CONFIG["theme"]["model"]["default"]
         )
         status_table.add_row("Active Model:", Text(state["current_model"], style=style))
 
@@ -3708,7 +3709,6 @@ def get_template_content(template: str, project_name: str) -> str:
                 app_config.append(
                     f"    {flow['source']} <> {flow['target']}  // No flow"
                 )
-
     # Handle the case where we want to show a no-flow relationship
     elif len(teams) > 1:
         # Add explicit no-flow relationships between all teams
