@@ -45,12 +45,12 @@ def create_model(config: Dict[str, Any]) -> Any:
     from smolagents import InferenceClientModel
     # Create a SmolAgents InferenceClientModel instance
     model = InferenceClientModel(
-        model_id=config.get("model"),
-        provider=config.get("provider"),
-        api_key=config.get("api_key"),
+        model_id=str(config.get("model") or ""),
+        provider=str(config.get("provider") or ""),
+        api_key=str(config.get("api_key") or ""),
     )
     # Assign name for compatibility
-    model.name = config.get("name", config.get("model"))
+    setattr(model, "name", config.get("name", config.get("model", "")))
     return model
 
 
@@ -78,13 +78,13 @@ class AppConfig:
 
 # Custom subclass to support OpenRouter within InferenceClientModel type
 class OpenrouterInferenceClientModel(InferenceClientModel):
-    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
+    def __init__(self, model_id: Optional[str] = None, provider: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
         # Extract parameters needed by OpenrouterProvider
         # Copy other kwargs to api_params before popping temperature/max_tokens
         api_params = kwargs.copy()
         temperature = api_params.pop('temperature', None)
         max_tokens = api_params.pop('max_tokens', None)
-        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+        super().__init__(model_id=str(model_id or ""), provider=str(provider or ""), api_key=str(api_key or ""), **kwargs)
         # Expose attributes for OpenrouterProvider
         self.api_key = api_key
         self.temperature = temperature
@@ -93,9 +93,62 @@ class OpenrouterInferenceClientModel(InferenceClientModel):
         # Initialize Openrouter provider wrapper
         self._or_provider = OpenrouterProvider(self)
 
-    def generate(self, messages, *args, **kwargs):
+    def generate(self, messages, *args, **kwargs):  # type: ignore[override]
         """Override generate to call OpenrouterProvider synchronously."""
-        coro = self._or_provider.generate_response(messages)
+        logger.debug(f"[OpenrouterInferenceClientModel] RAW messages input: {messages}")
+        # Accept both string and list of messages
+        if isinstance(messages, str):
+            messages = [{"role": "user", "content": messages}]
+        # Normalize all messages to dicts with string role and string content
+        normalized = []
+        # PATCH: Robust normalization for message content
+        for msg in messages:
+            role = getattr(msg, "role", None) or (msg.get("role") if isinstance(msg, dict) else None)
+            content = getattr(msg, "content", None) if hasattr(msg, "content") else (msg.get("content") if isinstance(msg, dict) else None)
+            
+            logger.debug(f"[Content Debug] Raw content: {content}")
+            
+            # If content is a list of dicts (Smolagents format), extract text properly
+            if isinstance(content, list):
+                original_content_list = content  # Store reference to original list
+                text_parts = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if "text" in part and part["text"]:
+                            text_parts.append(str(part["text"]).strip())
+                        elif "content" in part and part["content"]:
+                            text_parts.append(str(part["content"]).strip())
+                
+                logger.debug(f"[Content Debug] Extracted text parts: {text_parts}")
+                content = " ".join(text_parts).strip()
+                
+                # If still empty, try alternative extraction methods
+                if not content:
+                    # Fix: iterate over the original content list, not the converted string
+                    for part in original_content_list:
+                        if isinstance(part, dict):
+                            # Try specific content keys first, then any string value
+                            if "text" in part and part["text"] and str(part["text"]).strip():
+                                content = str(part["text"]).strip()
+                                break
+                            elif "content" in part and part["content"] and str(part["content"]).strip():
+                                content = str(part["content"]).strip()
+                                break
+                        if content:
+                            break
+            
+            # Ensure content is a string
+            if not isinstance(content, str):
+                content = str(content) if content is not None else ""
+            
+            logger.debug(f"[Content Debug] Final normalized content: '{content}'")
+            
+            # Handle role enum conversion
+            if hasattr(role, "value") and role is not None and not isinstance(role, str):  # Enum
+                role = role.value
+            
+            normalized.append({"role": role or "user", "content": content})
+        coro = self._or_provider.generate_response(normalized)
         try:
             loop = asyncio.get_running_loop()
             import concurrent.futures
@@ -109,19 +162,129 @@ class OpenrouterInferenceClientModel(InferenceClientModel):
         except RuntimeError:
             # If no running loop, use asyncio.run
             result = asyncio.run(coro)
-        # Return object with content attribute
-        return type("Resp", (), {"content": result})()
+        # Return object with content and token_usage attributes
+        logger.debug(f"[OpenrouterInferenceClientModel] Raw result from provider: {result}")
+        
+        # Handle both dict and object responses
+        content = ""
+        token_usage = type("TokenUsage", (), {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "input_tokens": 0
+        })()
+        
+        if isinstance(result, dict):
+            content = result.get("content", result.get("message", str(result)))
+            # Try to extract token usage from various possible locations
+            if "usage" in result:
+                usage = result["usage"]
+                logger.debug(f"[TokenUsage] usage object: {usage} (type: {type(usage)})")
+                if isinstance(usage, dict):
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    # Prefer output_tokens, fallback to completion_tokens
+                    completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+                    total_tokens = usage.get("total_tokens", 0)
+                    if total_tokens == 0:
+                        total_tokens = prompt_tokens + completion_tokens
+                    token_usage = type("TokenUsage", (), {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "output_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "input_tokens": prompt_tokens
+                    })()
+                else:
+                    # usage is an object (e.g., CompletionUsage)
+                    prompt_tokens = getattr(usage, "prompt_tokens", 0)
+                    # Prefer output_tokens, fallback to completion_tokens
+                    completion_tokens = getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0))
+                    if completion_tokens == 0:
+                        completion_tokens = getattr(usage, "completion_tokens", 0)
+                    total_tokens = getattr(usage, "total_tokens", 0)
+                    if total_tokens == 0:
+                        total_tokens = prompt_tokens + completion_tokens
+                    token_usage = type("TokenUsage", (), {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "output_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "input_tokens": prompt_tokens
+                    })()
+            elif "token_usage" in result:
+                tu = result["token_usage"]
+                prompt_tokens = tu.get("prompt_tokens", 0)
+                completion_tokens = tu.get("completion_tokens", 0)
+                total_tokens = tu.get("total_tokens", 0)
+                if total_tokens == 0:
+                    total_tokens = prompt_tokens + completion_tokens
+                token_usage = type("TokenUsage", (), {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "output_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "input_tokens": prompt_tokens
+                })()
+        else:
+            # If result is an object, try to access attributes
+            content = getattr(result, "content", str(result))
+            if hasattr(result, "token_usage"):
+                tu = result.token_usage
+                if isinstance(tu, dict):
+                    prompt_tokens = tu.get("prompt_tokens", 0)
+                    completion_tokens = tu.get("completion_tokens", 0)
+                    total_tokens = tu.get("total_tokens", 0)
+                    if total_tokens == 0:
+                        total_tokens = prompt_tokens + completion_tokens
+                    token_usage = type("TokenUsage", (), {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "output_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "input_tokens": prompt_tokens
+                    })()
+                else:
+                    token_usage = tu
+            elif hasattr(result, "usage"):
+                usage = result.usage
+                if isinstance(usage, dict):
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("output_tokens", usage.get("completion_tokens", 0))
+                    total_tokens = usage.get("total_tokens", 0)
+                    if total_tokens == 0:
+                        total_tokens = prompt_tokens + completion_tokens
+                    token_usage = type("TokenUsage", (), {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "output_tokens": completion_tokens,
+                        "total_tokens": total_tokens,
+                        "input_tokens": prompt_tokens
+                    })()
+                else:
+                    token_usage = type("TokenUsage", (), {
+                        "prompt_tokens": getattr(usage, "prompt_tokens", 0),
+                        "completion_tokens": getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0)),
+                        "output_tokens": getattr(usage, "output_tokens", getattr(usage, "completion_tokens", 0)),
+                        "total_tokens": getattr(usage, "total_tokens", 0),
+                        "input_tokens": getattr(usage, "prompt_tokens", 0)
+                    })()
+        
+        logger.debug(f"[OpenrouterInferenceClientModel] Extracted content: '{content}'")
+        logger.debug(f"[OpenrouterInferenceClientModel] Extracted token_usage: {token_usage}")
+        
+        return type("Resp", (), {"content": content, "token_usage": token_usage})()
 
 
 # Add a model client subclass for native Together.ai
 class TogetherInferenceClientModel(InferenceClientModel):
     """InferenceClientModel subclass that routes requests directly to Together.ai."""
-    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
-        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+    def __init__(self, model_id: Optional[str] = None, provider: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
+        super().__init__(model_id=str(model_id or ""), provider=str(provider or ""), api_key=str(api_key or ""), **kwargs)
         # Initialize our Together provider wrapper
         self._tg_provider = TogetherProvider({"model": model_id, "api_key": api_key})
 
-    def generate(self, messages, *args, **kwargs):
+    def generate(self, messages, *args, **kwargs):  # type: ignore[override]
         # Call TogetherProvider asynchronously but return synchronously
         coro = self._tg_provider.generate_response(messages)
         import asyncio
@@ -142,11 +305,11 @@ class TogetherInferenceClientModel(InferenceClientModel):
 
 # Add a model client subclass for native Sambanova.ai
 class SambanovaInferenceClientModel(InferenceClientModel):
-    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
-        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+    def __init__(self, model_id: Optional[str] = None, provider: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
+        super().__init__(model_id=str(model_id or ""), provider=str(provider or ""), api_key=str(api_key or ""), **kwargs)
         self._sb_provider = SambanovaProvider({"model": model_id, "api_key": api_key})
 
-    def generate(self, messages, *args, **kwargs):
+    def generate(self, messages, *args, **kwargs):  # type: ignore[override]
         coro = self._sb_provider.generate_response(messages, **kwargs)
         import asyncio
         import concurrent.futures
@@ -166,11 +329,11 @@ class SambanovaInferenceClientModel(InferenceClientModel):
 # Add a model client subclass for native Novita.ai
 class NovitaInferenceClientModel(InferenceClientModel):
     """InferenceClientModel subclass that routes requests directly to Novita.ai."""
-    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
-        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+    def __init__(self, model_id: Optional[str] = None, provider: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
+        super().__init__(model_id=str(model_id or ""), provider=str(provider or ""), api_key=str(api_key or ""), **kwargs)
         self._nv_provider = NovitaProvider({"model": model_id, "api_key": api_key})
 
-    def generate(self, messages, *args, **kwargs):
+    def generate(self, messages, *args, **kwargs):  # type: ignore[override]
         # Call NovitaProvider asynchronously but return synchronously
         coro = self._nv_provider.generate_response(messages, **kwargs)
         import asyncio
@@ -191,11 +354,11 @@ class NovitaInferenceClientModel(InferenceClientModel):
 # Add a model client subclass for native Nebius.ai
 class NebiusInferenceClientModel(InferenceClientModel):
     """InferenceClientModel subclass that routes requests directly to Nebius.ai."""
-    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
-        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+    def __init__(self, model_id: Optional[str] = None, provider: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
+        super().__init__(model_id=str(model_id or ""), provider=str(provider or ""), api_key=str(api_key or ""), **kwargs)
         self._nb_provider = NebiusProvider({"model": model_id, "api_key": api_key})
 
-    def generate(self, messages, *args, **kwargs):
+    def generate(self, messages, *args, **kwargs):  # type: ignore[override]
         # Call NebiusProvider asynchronously but return synchronously
         coro = self._nb_provider.generate_response(messages, **kwargs)
         import asyncio
@@ -216,11 +379,11 @@ class NebiusInferenceClientModel(InferenceClientModel):
 # Add a model client subclass for native Cohere.ai
 class CohereInferenceClientModel(InferenceClientModel):
     """InferenceClientModel subclass that routes requests directly to Cohere.ai."""
-    def __init__(self, model_id: str, provider: str = None, api_key: str = None, **kwargs):
-        super().__init__(model_id=model_id, provider=provider, api_key=api_key, **kwargs)
+    def __init__(self, model_id: Optional[str] = None, provider: Optional[str] = None, api_key: Optional[str] = None, **kwargs):
+        super().__init__(model_id=str(model_id or ""), provider=str(provider or ""), api_key=str(api_key or ""), **kwargs)
         self._co_provider = CohereProvider({"model": model_id, "api_key": api_key})
 
-    def generate(self, messages, *args, **kwargs):
+    def generate(self, messages, *args, **kwargs):  # type: ignore[override]
         # Call CohereProvider asynchronously but return synchronously
         coro = self._co_provider.generate_response(messages, **kwargs)
         import asyncio
@@ -357,7 +520,7 @@ class GlueApp:
 
                 # Use model ID from config block (DSL `config { model = ... }`), fallback to top-level or provider
                 config_block = model_config.get("config", {}) or {}
-                model_id = config_block.get("model") or model_config.get("model") or model_config.get("provider")
+                model_id = config_block.get("model") or model_config.get("model") or model_config.get("provider") or ""
                 # Prepare provider-specific options: copy config block, remove api_key and model entries to avoid duplicates
                 opts = config_block.copy()
                 api_key = opts.pop("api_key", None)
@@ -368,60 +531,60 @@ class GlueApp:
                     api_key = os.environ.get(var_name, api_key)
                 # If no api_key provided and using OpenAI provider, load from OPENAI_API_KEY env var
                 if api_key is None and model_config.get("provider") == "openai":
-                    api_key = os.environ.get("OPENAI_API_KEY")
+                    api_key = os.environ.get("OPENAI_API_KEY", "")
                 # Use native Together provider if requested
-                if model_config.get("provider") == "together":
+                provider = str(model_config.get("provider") or "")
+                if provider == "together":
                     model_client = TogetherInferenceClientModel(
-                        model_id=model_id,
-                        provider=model_config.get("provider"),
-                        api_key=api_key,
+                        model_id=str(model_id),
+                        provider=provider,
+                        api_key=str(api_key or ""),
                         **opts
                     )
-                elif model_config.get("provider") == "sambanova":
+                elif provider == "sambanova":
                     model_client = SambanovaInferenceClientModel(
-                        model_id=model_id,
-                        provider=model_config.get("provider"),
-                        api_key=api_key,
+                        model_id=str(model_id),
+                        provider=provider,
+                        api_key=str(api_key or ""),
                         **opts
                     )
-                # Use custom subclass for Openrouter provider
-                elif model_config.get("provider") == "openrouter":
+                elif provider == "openrouter":
                     model_client = OpenrouterInferenceClientModel(
-                        model_id=model_id,
-                        provider=model_config.get("provider"),
-                        api_key=api_key,
+                        model_id=str(model_id),
+                        provider=provider,
+                        api_key=str(api_key or ""),
                         **opts
                     )
-                elif model_config.get("provider") == "novita":
+                elif provider == "novita":
                     model_client = NovitaInferenceClientModel(
-                        model_id=model_id,
-                        provider=model_config.get("provider"),
-                        api_key=api_key,
+                        model_id=str(model_id),
+                        provider=provider,
+                        api_key=str(api_key or ""),
                         **opts
                     )
-                elif model_config.get("provider") == "nebius":
+                elif provider == "nebius":
                     model_client = NebiusInferenceClientModel(
-                        model_id=model_id,
-                        provider=model_config.get("provider"),
-                        api_key=api_key,
+                        model_id=str(model_id),
+                        provider=provider,
+                        api_key=str(api_key or ""),
                         **opts
                     )
-                elif model_config.get("provider") == "cohere":
+                elif provider == "cohere":
                     model_client = CohereInferenceClientModel(
-                        model_id=model_id,
-                        provider=model_config.get("provider"),
-                        api_key=api_key,
+                        model_id=str(model_id),
+                        provider=provider,
+                        api_key=str(api_key or ""),
                         **opts
                     )
                 else:
                     model_client = InferenceClientModel(
-                        model_id=model_id,
-                        provider=model_config.get("provider"),
-                        api_key=api_key,
+                        model_id=str(model_id),
+                        provider=provider,
+                        api_key=str(api_key or ""),
                         **opts
                     )
                 # Assign name and store config
-                model_client.name = model_name
+                setattr(model_client, "name", model_name)
                 setattr(model_client, "smol_config", opts)
                 self.models[model_name] = model_client
 
@@ -540,7 +703,10 @@ class GlueApp:
             # Handle both real and mock models
             try:
                 if hasattr(model, "setup") and callable(model.setup):
-                    await model.setup()
+                    if asyncio.iscoroutinefunction(model.setup):
+                        await model.setup()
+                    else:
+                        model.setup()
             except (TypeError, AttributeError):
                 # If model.setup() is a MagicMock, it can't be awaited directly
                 # For test compatibility, just continue
@@ -550,7 +716,10 @@ class GlueApp:
         for tool_name, tool in self.tools.items():
             try:
                 if hasattr(tool, "initialize") and callable(tool.initialize):
-                    await tool.initialize()
+                    if asyncio.iscoroutinefunction(tool.initialize):
+                        await tool.initialize()
+                    else:
+                        tool.initialize()
                     logger.info(f"Initialized tool: {tool_name}")
             except Exception as e:
                 logger.warning(f"Failed to initialize tool {tool_name}: {e}")
@@ -558,7 +727,7 @@ class GlueApp:
         # Set up teams
         for team in self.teams.values():
             # Set app reference to support interactive mode detection
-            team.app = self
+            team.app = self  # type: ignore[attr-defined]
 
             # Get tools from config
             if hasattr(team.config, "tools") and team.config.tools:
@@ -585,7 +754,17 @@ class GlueApp:
             # Handle both real and mock teams
             try:
                 if hasattr(team, "setup") and callable(team.setup):
-                    await team.setup()
+                    if asyncio.iscoroutinefunction(team.setup):
+                        await team.setup()
+                    else:
+                        result = team.setup()
+                        # Only call team.setup() if not a coroutine function
+                        if asyncio.iscoroutinefunction(team.setup):
+                            await team.setup()
+                        else:
+                            result = team.setup()
+                            if asyncio.iscoroutine(result):
+                                await result
             except (TypeError, AttributeError):
                 # If team.setup() is a MagicMock, it can't be awaited directly
                 # For test compatibility, just continue
@@ -624,7 +803,7 @@ class GlueApp:
             except Exception as e:
                 logger.error(f"Error setting up flow: {e}")
 
-    async def run(self, input_text: str = None) -> str:
+    async def run(self, input_text: Optional[str] = None) -> str:
         """Run the application with the given input.
 
         Args:
@@ -681,16 +860,18 @@ class GlueApp:
             for model_name, model in self.models.items():
                 if hasattr(model, "use_tool") and callable(model.use_tool):
                     try:
-                        result = await model.use_tool(
-                            "test_tool", {"input": input_text}
-                        )
-                        return result.get("result", "Tool execution completed")
+                        if hasattr(model.use_tool, "__call__") and asyncio.iscoroutinefunction(model.use_tool):
+                            result = await model.use_tool("test_tool", {"input": input_text})
+                        elif hasattr(model.use_tool, "__call__"):
+                            result = model.use_tool("test_tool", {"input": input_text})
+                        else:
+                            result = None
+                        return str(result.get("result", "Tool execution completed")) if isinstance(result, dict) else str(result)
                     except (TypeError, AttributeError) as e:
                         # If this is a mock, it may not be awaitable
                         if hasattr(model.use_tool, "called"):
                             # Mark the mock as called for test purposes
-                            model.use_tool.called = True
-                            return "Test response"
+                            pass  # Removed to avoid attribute error
                         self.logger.error(
                             f"Error using tool with model {model_name}: {e}"
                         )
@@ -738,30 +919,44 @@ class GlueApp:
         for model in self.models.values():
             if hasattr(model, "cleanup") and callable(model.cleanup):
                 try:
-                    await model.cleanup()
+                    if asyncio.iscoroutinefunction(model.cleanup):
+                        await model.cleanup()
+                    else:
+                        model.cleanup()
                 except (TypeError, AttributeError):
                     # Handle non-async cleanup methods or mocks
                     if hasattr(model, "cleanup") and callable(model.cleanup):
-                        model.cleanup()
+                        if asyncio.iscoroutinefunction(model.cleanup):
+                            await model.cleanup()
+                        else:
+                            model.cleanup()
 
         # Clean up teams
+        async def _cleanup_entity(entity):
+            if hasattr(entity, "cleanup") and callable(entity.cleanup):
+                if asyncio.iscoroutinefunction(entity.cleanup):
+                    await entity.cleanup()
+                else:
+                    entity.cleanup()
         for team in self.teams.values():
-            if hasattr(team, "cleanup") and callable(team.cleanup):
-                try:
-                    await team.cleanup()
-                except (TypeError, AttributeError):
-                    # Handle non-async cleanup methods or mocks
-                    if hasattr(team, "cleanup") and callable(team.cleanup):
+            try:
+                await _cleanup_entity(team)
+            except (TypeError, AttributeError):
+                if hasattr(team, "cleanup") and callable(team.cleanup):
+                    if asyncio.iscoroutinefunction(team.cleanup):
+                        await team.cleanup()
+                    else:
                         team.cleanup()
 
         # Clean up tools
         for tool in self.tools.values():
-            if hasattr(tool, "cleanup") and callable(tool.cleanup):
-                try:
-                    await tool.cleanup()
-                except (TypeError, AttributeError):
-                    # Handle non-async cleanup methods or mocks
-                    if hasattr(tool, "cleanup") and callable(tool.cleanup):
+            try:
+                await _cleanup_entity(tool)
+            except (TypeError, AttributeError):
+                if hasattr(tool, "cleanup") and callable(tool.cleanup):
+                    if asyncio.iscoroutinefunction(tool.cleanup):
+                        await tool.cleanup()
+                    else:
                         tool.cleanup()
 
         # Clean up field
@@ -771,11 +966,18 @@ class GlueApp:
             and callable(self.field.cleanup)
         ):
             try:
-                await self.field.cleanup()
+                if asyncio.iscoroutinefunction(self.field.cleanup):
+                    await self.field.cleanup()
+                else:
+                    result = self.field.cleanup()
+                    if asyncio.iscoroutine(result):
+                        await result
             except (TypeError, AttributeError):
                 # Handle non-async cleanup methods or mocks
                 if hasattr(self.field, "cleanup") and callable(self.field.cleanup):
-                    self.field.cleanup()
+                    result = self.field.cleanup()
+                    if asyncio.iscoroutine(result):
+                        await result
 
     async def close(self) -> None:
         """Close the app and all resources."""
@@ -787,7 +989,11 @@ class GlueApp:
             if hasattr(team, "outgoing_flows") and team.outgoing_flows:
                 for flow in team.outgoing_flows:
                     try:
-                        await flow.terminate()
+                        if hasattr(flow, "terminate") and callable(flow.terminate):
+                            if asyncio.iscoroutinefunction(flow.terminate):
+                                await flow.terminate()
+                            else:
+                                flow.terminate()
                     except Exception as e:
                         self.logger.error(
                             f"Error terminating flow from {team_name}: {e}"
@@ -796,21 +1002,28 @@ class GlueApp:
             if hasattr(team, "incoming_flows") and team.incoming_flows:
                 for flow in team.incoming_flows:
                     try:
-                        await flow.terminate()
+                        if hasattr(flow, "terminate") and callable(flow.terminate):
+                            if asyncio.iscoroutinefunction(flow.terminate):
+                                await flow.terminate()
+                            else:
+                                flow.terminate()
                     except Exception as e:
                         self.logger.error(f"Error terminating flow to {team_name}: {e}")
 
             try:
-                if hasattr(team, "close") and callable(team.close):
-                    # Check if this is a mock or a real object
+                if hasattr(team, "close") and callable(getattr(team, "close", None)):
                     from unittest.mock import Mock
-
-                    if isinstance(team.close, Mock):
-                        # For mock objects, just mark as called
-                        team.close()
-                    else:
-                        # For real objects, await the coroutine
-                        await team.close()
+                    close_attr = getattr(team, "close", None)
+                    if close_attr is not None:
+                        if isinstance(close_attr, Mock):
+                            close_attr()
+                        else:
+                            if asyncio.iscoroutinefunction(close_attr):
+                                await close_attr()
+                            else:
+                                result = close_attr()
+                                if asyncio.iscoroutine(result):
+                                    await result
                 # Additional cleanup check after close
                 if hasattr(team, "outgoing_flows") or hasattr(team, "incoming_flows"):
                     self.logger.debug(f"Final flow cleanup check for team {team_name}")
@@ -834,15 +1047,9 @@ class GlueApp:
             tool = self.tools[tool_name]
             try:
                 if hasattr(tool, "execute") and callable(tool.execute):
-                    # Note: Context might be missing here compared to team-based execution
-                    # Add app context to arguments
                     arguments_with_context = arguments.copy()
-
-                    # Add app reference if not already present
                     if "app" not in arguments_with_context:
                         arguments_with_context["app"] = self
-
-                        # Default calling_model to team lead if not provided
                         if "calling_model" not in arguments_with_context:
                             for team_name, team in self.teams.items():
                                 if hasattr(team, "config") and getattr(
@@ -855,8 +1062,6 @@ class GlueApp:
                                         f"Defaulted calling_model to {arguments_with_context['calling_model']} for CLI context"
                                     )
                                     break
-
-                    # Auto-populate calling_agent_id and calling_team if missing
                     if "calling_agent_id" not in arguments_with_context:
                         if "calling_model" in arguments_with_context:
                             arguments_with_context["calling_agent_id"] = (
@@ -867,17 +1072,15 @@ class GlueApp:
                         and "calling_agent_id" in arguments_with_context
                     ):
                         caller = arguments_with_context["calling_agent_id"]
-                        # find the team that contains this agent
                         for team_name, team in self.teams.items():
                             if caller in getattr(team, "models", {}):
                                 arguments_with_context["calling_team"] = team_name
                                 break
-
-                    # Execute with enhanced context
-                    result = await tool.execute(**arguments_with_context)
+                    if asyncio.iscoroutinefunction(tool.execute):
+                        result = await tool.execute(**arguments_with_context)
+                    else:
+                        result = tool.execute(**arguments_with_context)
                     logger.info(f"Tool {tool_name} executed successfully by app.")
-                    # Tools might return complex objects, let's return them directly for now
-                    # The calling loop might need to serialize/deserialize if needed
                     return result
                 else:
                     logger.error(
@@ -885,14 +1088,14 @@ class GlueApp:
                     )
                     return {
                         "error": f"Tool {tool_name} has no execute method"
-                    }  # Return error dict
+                    }
             except Exception as e:
                 logger.error(
                     f"Error executing tool {tool_name} via app: {e}", exc_info=True
                 )
                 return {
                     "error": f"Error executing tool {tool_name}: {str(e)}"
-                }  # Return error dict
+                }
         else:
             logger.error(f"Tool '{tool_name}' not found in application tools.")
             return {"error": f"Tool '{tool_name}' not found"}  # Return error dict

@@ -340,7 +340,7 @@ class Team:
         target_model: Optional[str] = None,
         from_model: Optional[str] = None,
     ) -> str:
-        """Process a message within the team"""
+        logger.debug(f"[process_message] RAW content argument: {content!r}")
         # Handle backward compatibility
         if from_model is not None and source_model is None:
             source_model = from_model
@@ -349,6 +349,20 @@ class Team:
         message_content = content
         if isinstance(content, dict) and "content" in content:
             message_content = content["content"]
+
+        # PATCH: Robust extraction for list-of-dict content (smolagents format)
+        if isinstance(message_content, list):
+            text_value = None
+            for part in message_content:
+                if isinstance(part, dict):
+                    val = part.get('text') or part.get('content')
+                    if isinstance(val, str) and val.strip():
+                        text_value = val.strip()
+                        break
+            if text_value is not None:
+                message_content = text_value
+            else:
+                message_content = ""
 
         # Get source model
         source = None
@@ -843,7 +857,6 @@ class Team:
 
     async def start_agent_loops(self, initial_input: Optional[str] = None) -> None:
         """Start core agent loops using GlueSmolTeam instead of legacy loops."""
-        logger.info(f"Starting core agent loops for team {self.name}")
         # Orchestrate entire team via GlueSmolTeam
         if self.config.lead and initial_input:
             smol_team = GlueSmolTeam(

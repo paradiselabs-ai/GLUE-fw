@@ -43,6 +43,17 @@ class AdhesiveSystem:
 
         logger.info("Adhesive system initialized")
 
+    def _extract_tool_name(self, tool_result: ToolResult) -> str:
+        """Helper to extract the tool name or fallback appropriately."""
+        tool_name = tool_result.tool_name
+        if tool_name is not None:
+            return tool_name
+        tool_call_id = getattr(tool_result, 'tool_call_id', None)
+        if tool_call_id is not None:
+            return tool_call_id
+        logger.warning("Tool name or tool_call_id is None in tool result. Using 'unknown_tool'.")
+        return "unknown_tool"
+
     def store_glue_result(
         self, team_name: str, model_name: str, tool_result: ToolResult
     ) -> None:
@@ -58,13 +69,7 @@ class AdhesiveSystem:
         if team_name not in self.glue_storage:
             self.glue_storage[team_name] = {}
 
-        # For backward compatibility with tests
-        tool_name = (
-            tool_result.tool_name if tool_result.tool_name else getattr(tool_result, 'tool_call_id', None)
-        )
-        if tool_name is None:
-            logger.warning("Tool name or tool_call_id is None in store_glue_result. Using 'unknown_tool'.")
-            tool_name = "unknown_tool"
+        tool_name = self._extract_tool_name(tool_result)
 
         # Store the result
         self.glue_storage[team_name][tool_name] = {
@@ -90,13 +95,7 @@ class AdhesiveSystem:
         if model_name not in self.velcro_storage:
             self.velcro_storage[model_name] = {}
 
-        # For backward compatibility with tests
-        tool_name = (
-            tool_result.tool_name if tool_result.tool_name else getattr(tool_result, 'tool_call_id', None)
-        )
-        if tool_name is None:
-            logger.warning("Tool name or tool_call_id is None in store_velcro_result. Using 'unknown_tool'.")
-            tool_name = "unknown_tool"
+        tool_name = self._extract_tool_name(tool_result)
 
         # Store the result
         self.velcro_storage[model_name][tool_name] = {
@@ -118,13 +117,7 @@ class AdhesiveSystem:
             model_name: Name of the model using the tool
             tool_result: Result from the tool execution
         """
-        # For backward compatibility with tests
-        tool_name = (
-            tool_result.tool_name if tool_result.tool_name else getattr(tool_result, 'tool_call_id', None)
-        )
-        if tool_name is None:
-            logger.warning("Tool name or tool_call_id is None in store_tape_result. Using 'unknown_tool'.")
-            tool_name = "unknown_tool"
+        tool_name = self._extract_tool_name(tool_result)
 
         # Store the result
         self.tape_storage[tool_name] = {
@@ -292,7 +285,7 @@ AdhesiveManager = AdhesiveSystem
 
 
 def bind_tool_result(
-    system: AdhesiveSystem,
+    system: Optional[AdhesiveSystem],
     team: Any,
     model: Any,
     tool_result: ToolResult,
@@ -314,14 +307,21 @@ def bind_tool_result(
     Raises:
         ValueError: If the model doesn't support the adhesive type
     """
-    # Handle backward compatibility
-    if manager is not None and system is None:
+    # Use manager if system is None (backward compatibility)
+    if system is None and manager is not None:
         system = manager
+    if system is None:
+        raise ValueError("No AdhesiveSystem instance provided.")
 
     if not check_adhesive_compatibility(model, adhesive_type):
         raise ValueError(
             f"Model {model.name} does not support adhesive type {adhesive_type}"
         )
+
+    # Robust check for known adhesive types
+    valid_types = {AdhesiveType.GLUE, AdhesiveType.VELCRO, AdhesiveType.TAPE}
+    if adhesive_type not in valid_types:
+        raise ValueError(f"Unknown adhesive type: {adhesive_type}")
 
     if adhesive_type == AdhesiveType.GLUE:
         system.store_glue_result(team.name, model.name, tool_result)
@@ -338,7 +338,7 @@ def bind_tool_result(
 
 
 def get_tool_result(
-    system: AdhesiveSystem,
+    system: Optional[AdhesiveSystem],
     tool_call_id: str,
     # For backward compatibility with tests
     manager: Optional[AdhesiveSystem] = None,
@@ -356,9 +356,11 @@ def get_tool_result(
     Returns:
         The tool result if found, None otherwise
     """
-    # Handle backward compatibility
-    if manager is not None and system is None:
+    # Use manager if system is None (backward compatibility)
+    if system is None and manager is not None:
         system = manager
+    if system is None:
+        raise ValueError("No AdhesiveSystem instance provided.")
 
     # Use tool_name if provided (for backward compatibility)
     lookup_key = tool_name if tool_name is not None else tool_call_id
@@ -385,11 +387,19 @@ def check_adhesive_compatibility(model: Any, adhesive_type: AdhesiveType) -> boo
     if hasattr(model, "supported_adhesives") and isinstance(
         model.supported_adhesives, (set, list)
     ):
-        # Check if the adhesive type is in the list (could be string or enum)
-        return (
-            adhesive_type in model.supported_adhesives
-            or adhesive_type.value in model.supported_adhesives
-        )
+        # Accept both enum and string, case-insensitive
+        for item in model.supported_adhesives:
+            if isinstance(item, AdhesiveType):
+                if item == adhesive_type:
+                    return True
+            elif isinstance(item, str):
+                try:
+                    if AdhesiveType.from_value(item) == adhesive_type:
+                        return True
+                except Exception:
+                    # Not a valid AdhesiveType string, skip
+                    pass
+        return False
 
     # For models with has_adhesive method
     if hasattr(model, "has_adhesive") and callable(model.has_adhesive):

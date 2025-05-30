@@ -795,8 +795,8 @@ async def run_interactive_session(app: GlueApp, smol_team) -> None:
                 bg_task.cancel()
                 break
 
-            # Skip empty input but handle special case for repeating last command
-            if not user_input:
+            # Skip empty or whitespace-only input but handle special case for repeating last command
+            if user_input is None or not user_input.strip():
                 if state["last_command"]:
                     user_input = state["last_command"]
                     console.print(
@@ -1396,16 +1396,18 @@ async def process_message(app: GlueApp, user_input: str, state: dict) -> str:
     Returns:
         The response from the model or team
     """
+    logger = logging.getLogger(__name__)
+
     if state["current_team"]:
-        # Direct message to specific team
+        logger.debug(f"[process_message] Sending to team: {state['current_team']}, user_input: {user_input}")
         return await app.teams[state["current_team"]].process_message(user_input)
     elif state["current_model"]:
-        # Direct message to specific model
+        logger.debug(f"[process_message] Sending to model: {state['current_model']}, user_input: {user_input}")
         model = find_model_in_teams(app, state["current_model"])
-
         if model:
             # Legacy GLUE models with generate_response
             if hasattr(model, "generate_response") and callable(model.generate_response):
+                logger.debug(f"[process_message] Calling generate_response with messages=[{{'role': 'user', 'content': {user_input!r}}}]")
                 return await model.generate_response(
                     messages=[{"role": "user", "content": user_input}]
                 )
@@ -1602,15 +1604,33 @@ def setup_logging(level=logging.DEBUG):
     logging.basicConfig(
         level=level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        encoding='utf-8',
         handlers=[
-            logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode="w"),
-            logging.FileHandler("myapp.log", mode="w"),
+            logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode="w", encoding="utf-8"),
+            logging.FileHandler("myapp.log", mode="w", encoding="utf-8"),
         ],
     )
 
-    # Create console handler with a higher log level
-    console_handler = logging.StreamHandler()
+    # Create console handler with a higher log level and UTF-8 encoding
+    import sys
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
+    
+    # Configure console handler to handle Unicode properly
+    if hasattr(sys.stdout, 'reconfigure'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass  # Fallback if reconfigure fails
+    
+    # For Windows, ensure better Unicode support
+    if hasattr(sys.stdout, 'buffer'):
+        try:
+            import codecs
+            # Wrap stdout buffer with UTF-8 writer that uses error replacement
+            sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
+        except Exception:
+            pass  # Continue with default if wrapping fails
 
     # Define a simpler format for console output
     if level <= logging.INFO:
@@ -1627,6 +1647,21 @@ def setup_logging(level=logging.DEBUG):
                 from rich.text import Text
                 from rich.panel import Panel
                 from rich.align import Align
+
+                # Handle Unicode in log messages
+                try:
+                    message = record.getMessage()
+                except UnicodeEncodeError:
+                    # Fallback to ASCII representation if Unicode fails
+                    message = str(record.getMessage()).encode('ascii', 'replace').decode('ascii')
+                except Exception:
+                    # Additional fallback for any other encoding issues
+                    try:
+                        message = str(record.msg) % record.args if record.args else str(record.msg)
+                        # Replace problematic Unicode characters with safe alternatives
+                        message = message.encode('ascii', 'replace').decode('ascii')
+                    except Exception:
+                        message = "Unable to format log message due to encoding issues"
 
                 if record.levelno >= logging.WARNING:
                     # Get color based on level
@@ -1741,7 +1776,7 @@ def setup_logging(level=logging.DEBUG):
         for handler in third_party_logger.handlers:
             third_party_logger.removeHandler(handler)
         third_party_logger.addHandler(
-            logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode="w")
+            logging.FileHandler(os.path.join(LOGS_DIR, "glue.log"), mode="w", encoding="utf-8")
         )
         third_party_logger.propagate = False  # Prevent double logging
 
@@ -2090,7 +2125,7 @@ def validate_glue_file(config_file: str, strict: bool = False) -> None:
 
         if not syntax_errors and not semantic_errors:
             console.print(
-                f"[{CLI_CONFIG['theme']['success']}]✓ File is valid![/{CLI_CONFIG['theme']['success']}]"
+                               f"[{CLI_CONFIG['theme']['success']}]✓ File is valid![/{CLI_CONFIG['theme']['success']}]"
             )
 
         if syntax_errors:

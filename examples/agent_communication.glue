@@ -9,38 +9,38 @@ glue app {
 
 // Define models
 model researcher {
-    provider = hyperbolic
+    provider = openrouter
     role = "Researcher who finds information with other models"
     adhesives = [glue, velcro]
     config {
-        model = "meta-llama/Llama-3.3-70B-Instruct"
+        model = "microsoft/mai-ds-r1:free"
     }
 }
 
 model assistant_1 {
-    provider = hyperbolic
+    provider = openrouter
     role = "Assistant who helps organize information and execute tasks"
     adhesives = [glue, velcro]
     config {
-        model = "meta-llama/Llama-3.3-70B-Instruct"
+        model = "microsoft/mai-ds-r1:free"
     }
 }
 
 model assistant_2 {
-    provider = hyperbolic
+    provider = openrouter
     role = "Assistant who helps organize information and execute tasks"
     adhesives = [glue, velcro]
     config {
-        model = "meta-llama/Llama-3.3-70B-Instruct"
+        model = "microsoft/mai-ds-r1:free"
     }
 }
 
 model assistant_3 {
-    provider = hyperbolic
+    provider = openrouter
     role = "Assistant who helps organize information and execute tasks"
     adhesives = [glue, velcro]
     config {
-        model = "meta-llama/Llama-3.3-70B-Instruct"
+        model = "microsoft/mai-ds-r1:free"
     }
 }
 

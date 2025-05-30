@@ -49,8 +49,14 @@ class OpenrouterProvider:
             raise ValueError(f"Please set the environment variable '{OPENROUTER_API_KEY_ENV}' or provide api_key in the model config.")
 
         # Determine model ID to use
-        default_model = "meta-llama/llama-3.1-8b-instruct:free"
-        model_id = getattr(self.model, "model_name", getattr(self.model, "model", default_model))
+        model_id = (
+            getattr(self.model, "model_name", None)
+            or getattr(self.model, "model", None)
+            or getattr(self.model, "model_id", None)
+        )
+        if model_id is None:
+            model_attrs = dir(self.model)
+            raise ValueError(f"model_id must be provided as a string, but got None. Model object type: {type(self.model)}, attributes: {model_attrs}")
 
         # Instantiate the SmolAgents OpenAIServerModel client
         self.client = OpenAIServerModel(
@@ -71,6 +77,21 @@ class OpenrouterProvider:
         Returns:
             The generated response or a dict with tool calls
         """
+        logger.debug(f"OpenrouterProvider raw input messages: {messages}")
+        # --- PATCH: Normalize user message content ---
+        def normalize_message_content(content):
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict):
+                        val = part.get('text') or part.get('content')
+                        if isinstance(val, str) and val.strip():
+                            return val.strip()
+                return ""
+            elif isinstance(content, dict) and "content" in content:
+                return content["content"]
+            elif not isinstance(content, str):
+                return str(content) if content is not None else ""
+            return content
         # Convert messages to the format expected by OpenRouter
         openrouter_messages = []
         for msg in messages:
@@ -78,26 +99,30 @@ class OpenrouterProvider:
             if isinstance(msg, dict):
                 role = msg.get("role", "user")
                 raw_content = msg.get("content", "")
-                # If content is a list of text segments (including cache_control), pass it through unmodified
-                if isinstance(raw_content, list):
-                    content = raw_content
+                if role == "user":
+                    content = normalize_message_content(raw_content)
                 else:
                     content = raw_content
             elif hasattr(msg, "role") and hasattr(msg, "content"):
                 role = msg.role
-                content = msg.content
+                if role == "user":
+                    content = normalize_message_content(msg.content)
+                else:
+                    content = msg.content
             else:
                 # Fallback for string or other types
                 role = "user"
-                content = str(msg)
+                content = normalize_message_content(msg)
 
             openrouter_messages.append({"role": role, "content": content})
 
         # Prepare the API call parameters
-        # Use a valid default model for OpenRouter if none is specified
-        default_model = "meta-llama/llama-3.1-8b-instruct:free"
         # Determine the final model name to use
-        model_name_to_use = getattr(self.model, "model_name", getattr(self.model, "model", default_model))
+        model_name_to_use = (
+            getattr(self.model, "model_name", None)
+            or getattr(self.model, "model", None)
+            or getattr(self.model, "model_id", None)
+        )
         # Base API params
         api_params: Dict[str, Any] = {
             "model": model_name_to_use,
@@ -115,8 +140,9 @@ class OpenrouterProvider:
         if max_toks is not None and "max_tokens" not in api_params:
             api_params["max_tokens"] = max_toks
 
+        logger.debug(f"OpenrouterProvider API params before call: {api_params}")
+
         try:
-            logger.debug(f"OpenrouterProvider INPUT messages: {openrouter_messages}")
             
             # Use underlying OpenAI-compatible client for chat if available
             openai_client = getattr(self.client, "client", None)
@@ -127,6 +153,9 @@ class OpenrouterProvider:
                 logger.debug("OpenrouterProvider using direct generate on OpenAIServerModel")
                 # Remove 'model' arg since OpenAIServerModel.generate uses model_id internally
                 direct_params = {k: v for k, v in api_params.items() if k != "model"}
+                if self.client is None:
+                    logger.error("OpenrouterProvider client is None; cannot call generate.")
+                    return "I'm sorry, but I couldn't generate a response at this time. Please try again."
                 msg_obj = self.client.generate(**direct_params)
                 # Extract string content
                 if hasattr(msg_obj, "content"):
@@ -240,14 +269,15 @@ class OpenrouterProvider:
         for tool_call in tool_calls:
             try:
                 # Execute the tool call
-                result = await tool_executor(tool_call)
-                results.append(result)
+                async for result in tool_executor(tool_call):
+                    results.append(result)
             except Exception as e:
-                logger.error(f"Error executing tool call {tool_call.id}: {e}")
+                tool_call_id = getattr(tool_call, "id", None)
+                logger.error(f"Error executing tool call {tool_call_id}: {e}")
                 # Create an error result
                 results.append(
                     ToolResult(
-                        tool_call_id=tool_call.id,
+                        tool_call_id=tool_call_id,
                         content=f"Error executing tool: {str(e)}",
                     )
                 )

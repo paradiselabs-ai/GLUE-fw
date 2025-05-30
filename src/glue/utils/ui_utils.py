@@ -2,6 +2,7 @@
 UI utility functions that can be used throughout the GLUE framework.
 """
 
+from typing import Optional, Dict, Any
 from rich.console import Console
 from rich.panel import Panel
 from rich.align import Align
@@ -20,7 +21,7 @@ def set_cli_config(config):
     _CLI_CONFIG = config
 
 
-def display_warning(console: Console, message: str, config: dict = None) -> None:
+def display_warning(console: Console, message: str, config: Optional[dict] = None) -> None:
     """Display a warning message with enhanced styling.
 
     Args:
@@ -61,9 +62,7 @@ def display_warning(console: Console, message: str, config: dict = None) -> None
             border_style="yellow",
             box=box_style,
             width=100,
-        )
-
-    # Add some spacing and center the panel
+        )    # Add some spacing and center the panel
     try:
         console.print()  # Empty line before
         console.print(Align.center(warning_panel))
@@ -71,5 +70,15 @@ def display_warning(console: Console, message: str, config: dict = None) -> None
     except UnicodeEncodeError:
         # Fallback to plain text warning on encoding errors
         plain_msg = f"WARNING: {message}"
+        # Replace problematic Unicode characters
+        plain_msg = plain_msg.encode('ascii', 'replace').decode('ascii')
         # Directly print to stdout to avoid rich console encoding
         print(plain_msg)
+    except Exception:
+        # Additional fallback for any other display issues
+        try:
+            # Strip Unicode characters and print basic warning
+            safe_message = message.encode('ascii', 'replace').decode('ascii')
+            print(f"WARNING: {safe_message}")
+        except Exception:
+            print("WARNING: Unable to display warning message due to encoding issues")
