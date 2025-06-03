@@ -21,7 +21,7 @@ from .orchestrator_schemas import (
     FinalResult,
     TaskRecord,
 )
-from .teams import Team
+from .teams import GlueTeam as Team
 from ..utils.json_utils import extract_json
 import asyncio
 from .types import TaskStatus, DEFAULT_MAX_RETRIES, DEFAULT_TIMEOUT

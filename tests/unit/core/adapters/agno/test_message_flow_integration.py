@@ -3,7 +3,7 @@ import pytest
 import asyncio
 from unittest.mock import MagicMock
 
-from glue.core.teams import Team
+from glue.core.teams import GlueTeam as Team
 from glue.core.schemas import TeamConfig
 
 # Dummy AgnoTeam for testing message flow integration

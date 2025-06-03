@@ -43,7 +43,7 @@ from rich.status import Status
 # Import framework modules
 # Use direct imports to avoid circular imports
 from glue.core import GlueApp
-from glue.dsl.parser import GlueParser
+from glue.dsl.parser import StickyScriptParser as GlueParser
 from glue.dsl.lexer import GlueLexer
 from glue.core.adapters.agno.adapter import GlueAgnoAdapter
 

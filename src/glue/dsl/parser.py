@@ -1,873 +1,470 @@
-# glue/dsl/parser.py
-# ==================== Imports ====================
-from typing import Dict, List, Any
-from pathlib import Path
+# src/glue/dsl/parser.py
+
 import logging
+from lark import Lark, Transformer, v_args
 
-# Import the lexer and token types from their respective modules
-from .tokens import TokenType, Token
-from .lexer import GlueLexer
+# ==================== Constants ===================='
+logger = logging.getLogger("glue.dsl.stickyscript")
 
-# Temporarily comment out imports that might not exist yet
-# from ..core.types import ModelConfig, TeamConfig, ToolConfig
-# from ..magnetic.field import FlowType
+STICKY_SCRIPT_GRAMMAR = r"""
+    start: declarations*
 
-# ==================== Constants ====================
-logger = logging.getLogger("glue.dsl")
+    declarations: app_decl | agent_decl | tool_decl | team_decl | flow_decl | glue_app_decl | model_decl
 
+    app_decl: "app" CNAME (_LBRACE app_options? _RBRACE)?
+    glue_app_decl: "glue" "app" (_LBRACE app_options? _RBRACE)?
+    app_options: app_option+
+    app_option: "description" ASSIGNMENT STRING -> app_description
+             | "name" ASSIGNMENT STRING -> app_name
+             | "config" _LBRACE config_options _RBRACE -> app_config
 
-class GlueParser:
-    """Parser for the GLUE Domain Specific Language.
+    config_options: config_option+
+    config_option: CNAME ASSIGNMENT (STRING | CNAME | NUMBER) -> config_item
 
-    This class parses tokens into an Abstract Syntax Tree (AST).
-    """
+    model_decl: "model" CNAME _LBRACE model_options _RBRACE
+    model_options: model_option+
+    model_option: "provider" ASSIGNMENT STRING -> model_provider
+               | "role" ASSIGNMENT STRING -> model_role
+               | "adhesives" ASSIGNMENT _LBRACKET cname_list? _RBRACKET -> model_adhesives
+               | "config" _LBRACE config_options _RBRACE -> model_config
 
-    def __init__(self, tokens: List[Token] = None, schema_version: str = "1.0"):
-        """Initialize a new GlueParser"""
-        self.tokens = tokens or []
-        self.pos = 0
-        self.ast = {
-            "app": {},
-            "teams": [],
-            "models": {},
+    agent_decl: "agent" CNAME _LBRACE agent_options _RBRACE
+    agent_options: agent_option+
+    agent_option: "model" ASSIGNMENT STRING -> agent_model
+                | "provider" ASSIGNMENT STRING -> agent_provider
+                | "instructions" ASSIGNMENT STRING -> agent_instructions
+                | "role" ASSIGNMENT STRING -> agent_role
+                | "adhesives" ASSIGNMENT _LBRACKET cname_list? _RBRACKET -> agent_adhesives
+                | "config" _LBRACE config_options _RBRACE -> agent_config
+
+    tool_decl: "tool" CNAME (_LBRACE tool_options? _RBRACE)?
+    tool_options: tool_option+
+    tool_option: "description" ASSIGNMENT STRING -> tool_description
+               | "provider" ASSIGNMENT CNAME -> tool_provider
+               | "config" _LBRACE config_options _RBRACE -> tool_config
+
+    team_decl: "team" CNAME _LBRACE team_options _RBRACE
+    team_options: team_option+
+    team_option: "lead" ASSIGNMENT CNAME -> team_lead
+               | "members" ASSIGNMENT _LBRACKET cname_list? _RBRACKET -> team_members
+               | "tools" ASSIGNMENT _LBRACKET cname_list? _RBRACKET -> team_tools
+               | "instructions" ASSIGNMENT STRING -> team_instructions
+
+    cname_list: CNAME (COMMA CNAME)*
+
+    flow_decl: "flow" CNAME ARROW CNAME -> basic_flow
+
+    _LBRACE: "{"
+    _RBRACE: "}"
+    _LBRACKET: "["
+    _RBRACKET: "]"
+    COMMA: ","
+    COLON: ":"
+    ASSIGNMENT: ":" | "="
+    ARROW: "->"
+
+    STRING: /\"(?:\\.|[^\"\\])*\"/ | /\'(?:\\.|[^\'\\])*\'/ // Improved STRING to handle escaped quotes
+    NUMBER: /\d+(\.\d+)?/
+
+    %import common.CNAME
+    %import common.WS
+    %ignore WS
+"""
+
+class TreeToDict(Transformer):
+    def __init__(self):
+        super().__init__()
+        # Initialize config in transform method or ensure it's reset for each call
+        # For simplicity here, we'll rely on a new instance per parse in StickyScriptParser
+
+    def _init_config(self):
+        return {
+            "workflow": {"name": "DefaultGlueApp"},
+            "agents": {},
+            "teams": {},
             "tools": {},
-            "flows": [],
-            "magnetize": {},
-            "apply": None,
-        }
-        self.schema_version = schema_version
-        self.logger = logging.getLogger("glue.dsl.parser")
-
-    def parse(self, tokens: List[Token] = None) -> Dict[str, Any]:
-        """Parse tokens into AST"""
-        if tokens is not None:
-            self.tokens = tokens
-            self.pos = 0
-
-        # Reset AST
-        self.ast = {
-            "app": {},
-            "teams": [],
             "models": {},
-            "tools": {},
-            "flows": [],
-            "magnetize": {},
-            "apply": None,
+            "flows": {}
         }
 
-        # Parse traditional GLUE DSL tokens
-        while not self._is_at_end():
-            if self._check(TokenType.KEYWORD):
-                keyword = self._peek().value
-                if keyword == "glue":
-                    self._parse_app()
-                elif keyword == "model":
-                    self._parse_model()
-                elif keyword == "tool":
-                    self._parse_tool()
-                elif keyword == "magnetize":
-                    self._parse_magnetize()
-                elif keyword == "apply":
-                    self._parse_apply()
-                elif keyword == "flow":
-                    self._parse_named_flow()
-                elif keyword == "app":
-                    # Handle 'app' keyword for YAML-style configs
-                    self._advance()  # Skip 'app' keyword
-                    # Check if the next token is '_name' for 'app_name'
-                    if not self._is_at_end() and self._check(TokenType.IDENTIFIER) and self._peek().value == "_name":
-                        self._advance()  # Skip '_name'
-                        if not self._is_at_end() and self._check(TokenType.COLON):
-                            self._advance()  # Skip ':'
-                            # Parse app name
-                            if not self._is_at_end() and self._check(TokenType.IDENTIFIER):
-                                app_name = self._advance().value
-                                self.ast["app"]["name"] = app_name
-                    else:
-                        # Just a standard 'app' token, no special handling needed
-                        pass
-                else:
-                    raise SyntaxError(
-                        f"Unexpected keyword at line {self._peek().line}: {keyword}"
-                    )
-            elif self._check(TokenType.APPLY_GLUE):
-                # Handle 'apply_glue' token
-                self._advance()  # Consume the token
-                self.ast["apply"] = "glue"
-            elif self._check(TokenType.COMMENT):
-                # Skip comments
-                self._advance()
-            else:
-                token = self._peek()
-                raise SyntaxError(
-                    f"Unexpected token at line {token.line}: {token.type}"
-                )
+    def STRING(self, s):
+        # Remove quotes from the string
+        return s[1:-1]
 
-        return self.ast
+    def CNAME(self, token):
+        return token.value
+        
+    def NUMBER(self, token):
+        # Convert to int or float as appropriate
+        value = token.value
+        if '.' in value:
+            return float(value)
+        return int(value)
 
-    def _parse_app(self):
-        """Parse app configuration"""
-        # Expect 'glue' keyword
-        self._consume(TokenType.KEYWORD, "Expected 'glue' keyword")
+    def cname_list(self, items):
+        return list(items)
 
-        # Expect 'app' keyword
-        self._consume(TokenType.KEYWORD, "Expected 'app' keyword")
+    def app_decl(self, items):
+        app_name = items[0]
+        self.config["workflow"]["name"] = app_name
+        return None
 
-        # Expect opening brace
-        self._consume(TokenType.LBRACE, "Expected '{' after 'app'")
+    def glue_app_decl(self, items):
+        # Default app name is already set in _init_config
+        return None
 
-        # Parse app properties
-        app_props = {}
-        self._parse_properties(app_props)
+    def app_description(self, items):
+        description = items[0]
+        self.config["workflow"]["description"] = description
+        return None
+        
+    def app_name(self, items):
+        name = items[0]
+        self.config["workflow"]["name"] = name
+        return None
+        
+    def config_item(self, items):
+        key = items[0]
+        value = items[1]
+        return (key, value)
+        
+    def config_options(self, items):
+        options = {}
+        for item in items:
+            if item is not None and isinstance(item, tuple):
+                key, value = item
+                options[key] = value
+        return options
+        
+    def app_config(self, items):
+        config = items[0] if items else {}
+        self.config["workflow"]["config"] = config
+        return None
 
-        # Store app properties in AST
-        self.ast["app"] = app_props
+    def agent_model(self, items):
+        return ("model", items[0])
 
-        # Expect closing brace
-        self._consume(TokenType.RBRACE, "Expected '}' after app properties")
+    def agent_provider(self, items):
+        return ("provider", items[0])
 
-    def _parse_model(self):
-        """Parse model definition"""
-        # Expect 'model' keyword
-        self._consume(TokenType.KEYWORD, "Expected 'model' keyword")
+    def agent_instructions(self, items):
+        return ("instructions", items[0])
+        
+    def agent_role(self, items):
+        return ("role", items[0])
+        
+    def agent_adhesives(self, items):
+        adhesives = items[1] if len(items) > 1 else []
+        return ("adhesives", adhesives)
+        
+    def agent_config(self, items):
+        return ("config", items[0] if items else {})
+        
+    def model_provider(self, items):
+        return ("provider", items[0])
+        
+    def model_role(self, items):
+        return ("role", items[0])
+        
+    def model_adhesives(self, items):
+        adhesives = items[1] if len(items) > 1 else []
+        return ("adhesives", adhesives)
+        
+    def model_config(self, items):
+        return ("config", items[0] if items else {})
+        
+    def model_options(self, items):
+        options = {}
+        for item in items:
+            if item is not None and isinstance(item, tuple):
+                key, value = item
+                options[key] = value
+        return options
+        
+    def model_decl(self, items):
+        model_name = items[0]
+        model_options = items[1] if len(items) > 1 else {}
+        self.config["models"][model_name] = model_options
+        return None
 
-        # Expect model name
-        name_token = self._consume(TokenType.IDENTIFIER, "Expected model name")
-        model_name = name_token.value
-        model = {}
+    def agent_options(self, items):
+        # Flatten the list of tuples into a dictionary
+        options = {}
+        for item in items:
+            if item is not None and isinstance(item, tuple):
+                key, value = item
+                options[key] = value
+        return options
 
-        # Expect opening brace
-        self._consume(TokenType.LBRACE, "Expected '{' after model name")
+    def agent_decl(self, items):
+        agent_name = items[0]
+        agent_options = items[1] if len(items) > 1 else {}
+        self.config["agents"][agent_name] = agent_options
+        return None
 
-        # Parse model properties
-        self._parse_properties(model)
+    def tool_description(self, items):
+        return ("description", items[0])
+        
+    def tool_provider(self, items):
+        return ("provider", items[0])
+        
+    def tool_config(self, items):
+        return ("config", items[0] if items else {})
 
-        # Expect closing brace
-        self._consume(TokenType.RBRACE, "Expected '}' after model properties")
+    def tool_options(self, items):
+        # Similar to agent_options
+        options = {}
+        for item in items:
+            if item is not None and isinstance(item, tuple):
+                key, value = item
+                options[key] = value
+        return options
 
-        # Add model to AST
-        self.ast["models"][model_name] = model
+    def tool_decl(self, items):
+        tool_name = items[0]
+        tool_options = items[1] if len(items) > 1 else {}
+        self.config["tools"][tool_name] = tool_options
+        return None
 
-    def _parse_tool(self):
-        """Parse tool definition"""
-        # Expect 'tool' keyword
-        self._consume(TokenType.KEYWORD, "Expected 'tool' keyword")
+    def team_lead(self, items):
+        return ("lead", items[0])
 
-        # Expect tool name
-        name_token = self._consume(TokenType.IDENTIFIER, "Expected tool name")
-        tool_name = name_token.value
-        tool = {}
+    def team_members(self, items):
+        members = items[1] if len(items) > 1 else []
+        return ("members", members)
 
-        # Expect opening brace
-        self._consume(TokenType.LBRACE, "Expected '{' after tool name")
+    def team_tools(self, items):
+        tools = items[1] if len(items) > 1 else []
+        return ("tools", tools)
 
-        # Parse tool properties
-        self._parse_properties(tool)
+    def team_instructions(self, items):
+        return ("instructions", items[0])
 
-        # Expect closing brace
-        self._consume(TokenType.RBRACE, "Expected '}' after tool properties")
+    def team_options(self, items):
+        options = {"members": [], "tools": []} # Initialize with defaults
+        for item in items:
+            if item is not None and isinstance(item, tuple):
+                key, value = item
+                options[key] = value
+        return options
 
-        # Add tool to AST
-        self.ast["tools"][tool_name] = tool
+    def team_decl(self, items):
+        team_name = items[0]
+        team_options = items[1] if len(items) > 1 else {}
+        # Ensure defaults if not set
+        if "members" not in team_options:
+            team_options["members"] = []
+        if "tools" not in team_options:
+            team_options["tools"] = []
+        self.config["teams"][team_name] = team_options
+        return None
 
-    def _parse_magnetize(self):
-        """Parse magnetic field configuration"""
-        # Expect 'magnetize' keyword
-        self._consume(TokenType.KEYWORD, "Expected 'magnetize' keyword")
+    # Flow declarations
+    def basic_flow(self, items):
+        # items = [from_CNAME_str, ARROW_token, to_CNAME_str]
+        from_team = items[0]
+        to_team = items[2] 
+        flow_name = f"flow_{self._flow_counter}"
+        self.config["flows"][flow_name] = {
+            "from": from_team,
+            "to": to_team,
+            "type": "basic"
+        }
+        self._flow_counter += 1
+        return items
+        
+    def declarations(self, items):
+        # This rule helps group all top-level declarations.
+        # No specific action needed here as children rules modify self.config.
+        return items
 
-        # Expect opening brace
-        self._consume(TokenType.LBRACE, "Expected '{' after 'magnetize'")
+    def start(self, items):
+        # This is the entry point for the transformation.
+        # items is a list of results from 'declarations*'
+        # The config should be built up by child rules.
+        if not self.config["workflow"].get("name"):
+            self.config["workflow"]["name"] = "DefaultGlueApp"
+        # _current_xxx_name attributes are no longer used.
+        return self.config
 
-        # Parse teams and flow section
-        while not self._check(TokenType.RBRACE) and not self._is_at_end():
-            if self._check(TokenType.KEYWORD):
-                keyword = self._peek().value
-                if keyword == "team":
-                    self._parse_team()
-                elif keyword == "flow":
-                    # Handle flow section inside magnetize block
-                    self._parse_flow()
-                else:
-                    raise SyntaxError(
-                        f"Unexpected keyword at line {self._peek().line}: {keyword}"
-                    )
-            elif self._check(TokenType.IDENTIFIER):
-                # Parse team defined by identifier
-                team_name = self._advance().value
-                team = {}
+    def transform(self, tree):
+        # Reset or initialize state for each transformation
+        self.config = self._init_config()
+        self._flow_counter = 0
+        return super().transform(tree)
 
-                # Expect opening brace
-                self._consume(
-                    TokenType.LBRACE, f"Expected '{{' after team name '{team_name}'"
-                )
 
-                # Parse team properties
-                self._parse_properties(team)
+class StickyScriptParser:
+    def __init__(self):
+        # Initialize Lark parser. Transformer instance is passed on parse.
+        self.parser = Lark(STICKY_SCRIPT_GRAMMAR, parser='lalr', start='start')
+        logger.info("StickyScriptParser initialized with grammar.")
 
-                # Expect closing brace
-                self._consume(
-                    TokenType.RBRACE,
-                    f"Expected '}}' after team '{team_name}' properties",
-                )
-
-                # Add team to magnetize section
-                self.ast["magnetize"][team_name] = team
-            elif self._check(TokenType.COMMENT):
-                # Skip comments
-                self._advance()
-            else:
-                token = self._peek()
-                raise SyntaxError(
-                    f"Unexpected token at line {token.line}: {token.type}"
-                )
-
-        # Expect closing brace
-        self._consume(TokenType.RBRACE, "Expected '}' after magnetize block")
-
-    def _parse_team(self):
-        """Parse team definition within magnetize block"""
-        # Expect team name
-        name_token = self._consume(TokenType.KEYWORD, "Expected 'team' keyword")
-        if name_token.value != "team":
-            raise SyntaxError(
-                f"Expected 'team' keyword at line {name_token.line}, got '{name_token.value}'"
-            )
-        name_token = self._consume(TokenType.IDENTIFIER, "Expected team name")
-        team = {}
-
-        # Expect opening brace
-        self._consume(TokenType.LBRACE, "Expected '{' after team name")
-
-        # Parse team properties
-        self._parse_properties(team)
-
-        # Expect closing brace
-        self._consume(TokenType.RBRACE, "Expected '}' after team properties")
-
-        # Add team to magnetize section
-        self.ast["magnetize"][name_token.value] = team
-
-    def _parse_flow(self):
-        """Parse flow section within magnetize block"""
-        # Expect 'flow' keyword
-        self._consume(TokenType.KEYWORD, "Expected 'flow' keyword")
-
-        # Expect opening brace
-        self._consume(TokenType.LBRACE, "Expected '{' after 'flow'")
-
-        # Parse flow definitions
-        while not self._check(TokenType.RBRACE) and not self._is_at_end():
-            if self._check(TokenType.COMMENT):
-                # Skip comments
-                self._advance()
-                continue
-
-            # Expect source team identifier
-            if not self._check(TokenType.IDENTIFIER):
-                token = self._peek()
-                raise SyntaxError(
-                    f"Expected source team identifier at line {token.line}, got {token.type}"
-                )
-
-            source_token = self._advance()
-            source_team_dsl = source_token.value # This is the first identifier read
-
-            # Expect arrow operator
-            flow_type_str = None
-            actual_source_for_flow_def = None
-            actual_target_for_flow_def = None
-            flow_name = None
-
-            if self._check(TokenType.RIGHTARROW):
-                flow_type_str = "PUSH"
-                self._advance()  # Consume '->'
-                target_token = self._consume(TokenType.IDENTIFIER, f"Expected target team identifier after '->' for source '{source_team_dsl}'")
-                target_team_dsl = target_token.value
-                actual_source_for_flow_def = source_team_dsl
-                actual_target_for_flow_def = target_team_dsl
-                flow_name = f"{actual_source_for_flow_def}_to_{actual_target_for_flow_def}"
-
-            elif self._check(TokenType.LEFTARROW):
-                flow_type_str = "PULL"
-                self._advance()  # Consume '<-'
-                # In 'A <- B', A is source_team_dsl, B is target_team_dsl
-                # For FlowDefinitionConfig: target is A, source is B (or None if B is 'pull')
-                target_token = self._consume(TokenType.IDENTIFIER, f"Expected source team identifier or 'pull' after '<-' for target '{source_team_dsl}'")
-                pull_source_dsl = target_token.value # This is B or 'pull'
-
-                actual_target_for_flow_def = source_team_dsl # Team A is the target of the pull
-                if pull_source_dsl.lower() == "pull":
-                    actual_source_for_flow_def = None
-                    flow_name = f"{actual_target_for_flow_def}_pulls_from_any"
-                else:
-                    actual_source_for_flow_def = pull_source_dsl
-                    flow_name = f"{actual_target_for_flow_def}_pulls_from_{actual_source_for_flow_def}"
-
-            elif self._check(TokenType.BIDIARROW):
-                flow_type_str = "BIDIRECTIONAL"
-                self._advance()  # Consume '<->'
-                target_token = self._consume(TokenType.IDENTIFIER, f"Expected target team identifier after '<->' for source '{source_team_dsl}'")
-                target_team_dsl = target_token.value
-                actual_source_for_flow_def = source_team_dsl
-                actual_target_for_flow_def = target_team_dsl
-                # Sort names to ensure consistent naming for A<->B and B<->A if that's desired, or pick one convention
-                teams = sorted([actual_source_for_flow_def, actual_target_for_flow_def])
-                flow_name = f"{teams[0]}_bidir_{teams[1]}"
-
-            elif self._check(TokenType.REPELARROW):
-                flow_type_str = "REPEL"
-                self._advance()  # Consume '<>'
-                target_token = self._consume(TokenType.IDENTIFIER, f"Expected target team identifier after '<>' for source '{source_team_dsl}'")
-                target_team_dsl = target_token.value
-                actual_source_for_flow_def = source_team_dsl
-                actual_target_for_flow_def = target_team_dsl
-                teams = sorted([actual_source_for_flow_def, actual_target_for_flow_def])
-                flow_name = f"{teams[0]}_repels_{teams[1]}"
-            else:
-                raise SyntaxError(
-                    f"Expected arrow operator at line {self._peek().line}, got {self._peek().type}"
-                )
-
-            # Create flow definition
-            flow = {
-                "name": flow_name,
-                "source": actual_source_for_flow_def,
-                "target": actual_target_for_flow_def,
-                "type": flow_type_str
+    def parse(self, script_text: str):
+        logger.debug(f"Attempting to parse script:\n{script_text}")
+        try:
+            transformer_instance = TreeToDict()
+            tree = self.parser.parse(script_text)
+            # The transformer_instance will build up its internal .config dict
+            # and the 'start' method will return this dict.
+            parsed_config = transformer_instance.transform(tree)
+            
+            logger.debug(f"Successfully parsed. Resulting config: {parsed_config}")
+            return parsed_config
+        except Exception as e:
+            logger.error(f"Error parsing StickyScript: {e}", exc_info=True)
+            # Return a consistent error structure
+            return {
+                "error": str(e),
+                "workflow": {"name": "ErrorParsingApp"},
+                "agents": {}, "teams": {}, "tools": {}, "flows": {}
             }
 
-            # Add flow to AST
-            self.ast["flows"].append(flow)
-
-            # Check for semicolon or comment
-            if self._check(TokenType.SEMICOLON):
-                self._advance()
-            elif self._check(TokenType.COMMENT):
-                self._advance()
-
-        # Expect closing brace
-        self._consume(TokenType.RBRACE, "Expected '}' after flow definitions")
-
-    def _parse_named_flow(self):
-        """Parse named flow definition"""
-        # Expect 'flow' keyword (already consumed by the caller if we adapt parse loop, or check here)
-        # For consistency with _parse_model, _parse_tool, we'd expect 'flow' to be consumed before calling this.
-        # However, if called from the main loop like other top-level keywords, it's fine.
-        # Let's assume it's called from the main parse loop like _parse_model.
-        self._consume(TokenType.KEYWORD, "Expected 'flow' keyword") # Consume 'flow' keyword itself
-
-        # Expect flow name
-        name_token = self._consume(TokenType.IDENTIFIER, "Expected flow name")
-        flow_name = name_token.value
-        flow_definition = {"name": flow_name} # Initialize with name
-
-        # Expect opening brace
-        self._consume(TokenType.LBRACE, f"Expected '{{' after flow name '{flow_name}'")
-
-        # Parse flow properties (source, target, type, config)
-        # We can reuse _parse_properties or have a more specific parsing logic here
-        # For now, let's use _parse_properties for simplicity, assuming flow properties are key-value pairs.
-        self._parse_properties(flow_definition)
-
-        # Expect closing brace
-        self._consume(TokenType.RBRACE, f"Expected '}}' after flow properties for '{flow_name}'")
-
-        # Add named flow to AST's flows list
-        self.ast["flows"].append(flow_definition)
-
-    def _parse_apply(self):
-        """Parse apply statement"""
-        # Expect 'apply' keyword
-        self._consume(TokenType.KEYWORD, "Expected 'apply' keyword")
-
-        # Expect 'glue' keyword
-        self._consume(TokenType.KEYWORD, "Expected 'glue' keyword")
-
-        # No properties for apply glue statement
-        self.ast["apply"] = "glue"
-
-    def _parse_properties(self, target: Dict[str, Any]):
-        """Parse properties into the target dictionary"""
-        while not self._check(TokenType.RBRACE) and not self._is_at_end():
-            if self._check(TokenType.COMMENT):
-                # Skip comments
-                self._advance()
-                continue
-
-            # Expect property name (can be identifier or keyword)
-            if self._check(TokenType.IDENTIFIER):
-                name_token = self._advance()
-            elif self._check(TokenType.KEYWORD):
-                name_token = self._advance()
-            else:
-                raise SyntaxError(
-                    f"Expected property name at line {self._peek().line}, got {self._peek().type}"
-                )
-
-            property_name = name_token.value
-
-            # Special handling for 'tools' property in team definitions
-            if property_name == "tools":
-                self._consume(TokenType.EQUALS, f"Expected '=' after {property_name}")
-                tools = self._parse_value()
-                if not isinstance(tools, list):
-                    raise SyntaxError(
-                        f"Expected list of tools at line {name_token.line}, got {type(tools).__name__}"
-                    )
-                target[property_name] = tools
-                continue
-
-            # Special handling for 'tool' property in team definitions (singular form)
-            if property_name == "tool" and self._check(TokenType.IDENTIFIER):
-                # This is a special case for 'tool s' in the magnetize block
-                if self._peek().value == "s":
-                    self._advance()  # Consume 's'
-                    self._consume(
-                        TokenType.EQUALS, f"Expected '=' after {property_name}s"
-                    )
-                    tools = self._parse_value()
-                    if not isinstance(tools, list):
-                        raise SyntaxError(
-                            f"Expected list of tools at line {name_token.line}, got {type(tools).__name__}"
-                        )
-                    target["tools"] = tools
-                    continue
-
-            # Special handling for 'adhesives' property in model definitions
-            if property_name == "adhesives":
-                self._consume(TokenType.EQUALS, f"Expected '=' after {property_name}")
-                adhesives = self._parse_value()
-                if not isinstance(adhesives, list):
-                    raise SyntaxError(
-                        f"Expected list of adhesives at line {name_token.line}, got {type(adhesives).__name__}"
-                    )
-                target[property_name] = adhesives
-                continue
-
-            # Check for nested object (like config block)
-            if self._check(TokenType.LBRACE):
-                # Parse nested object
-                self._advance()  # Consume '{'
-
-                if property_name not in target:
-                    target[property_name] = {}
-
-                # Create a temporary dictionary for the nested properties
-                nested_properties = {}
-                self._parse_properties(nested_properties)
-
-                # Process any special values in the nested properties
-                for key, value in nested_properties.items():
-                    # Convert string boolean values to actual booleans
-                    if isinstance(value, str):
-                        if value.lower() == "true":
-                            nested_properties[key] = True
-                        elif value.lower() == "false":
-                            nested_properties[key] = False
-
-                # Assign the processed nested properties to the target
-                target[property_name] = nested_properties
-
-                self._consume(
-                    TokenType.RBRACE, f"Expected '}}' after {property_name} properties"
-                )
-            else:
-                # Expect equals sign
-                self._consume(TokenType.EQUALS, f"Expected '=' after {property_name}")
-
-                # Parse value
-                value = self._parse_value()
-
-                # Special handling for string values - remove quotes
-                if (
-                    isinstance(value, str)
-                    and value.startswith('"')
-                    and value.endswith('"')
-                ):
-                    value = value[1:-1]
-
-                # Add property to target
-                target[property_name] = value
-
-    def _parse_value(self) -> Any:
-        """Parse a value (string, number, boolean, array, or identifier)"""
-        if self._check(TokenType.STRING):
-            return self._advance().value
-        elif self._check(TokenType.NUMBER):
-            # Convert to float or int as appropriate
-            value = self._advance().value
-            try:
-                if "." in value:
-                    return float(value)
-                else:
-                    return int(value)
-            except ValueError:
-                return value
-        elif self._check(TokenType.BOOLEAN):
-            # Handle boolean tokens
-            value = self._advance().value
-            if value.lower() == "true":
-                return True
-            elif value.lower() == "false":
-                return False
-            else:
-                return value
-        elif self._check(TokenType.KEYWORD):
-            keyword = self._advance().value
-            # Handle boolean literals
-            if keyword == "true":
-                return True
-            elif keyword == "false":
-                return False
-            else:
-                return keyword
-        elif self._check(TokenType.IDENTIFIER):
-            identifier_token = self._advance()
-            if identifier_token.value == "null":
-                return None
-            return identifier_token.value
-        elif self._check(TokenType.LBRACKET):
-            return self._parse_array()
-        else:
-            raise SyntaxError(
-                f"Expected value at line {self._peek().line}, got {self._peek().type}"
-            )
-
-    def _parse_array(self) -> List[Any]:
-        """Parse an array"""
-        array = []
-
-        # Expect opening bracket
-        self._consume(TokenType.LBRACKET, "Expected '['")
-
-        # Parse array elements
-        while not self._check(TokenType.RBRACKET) and not self._is_at_end():
-            value = self._parse_value()
-            array.append(value)
-
-            if self._check(TokenType.RBRACKET):
-                break
-
-            self._consume(TokenType.COMMA, "Expected ',' between array elements")
-
-        # Expect closing bracket
-        self._consume(TokenType.RBRACKET, "Expected ']' after array")
-        return array
-
-    def _advance(self) -> Token:
-        """Advance to the next token and return the current one"""
-        if not self._is_at_end():
-            self.pos += 1
-        return self.tokens[self.pos - 1]
-
-    def _peek(self) -> Token:
-        """Return the current token without advancing"""
-        if self._is_at_end():
-            return self.tokens[-1]  # Return EOF token
-        return self.tokens[self.pos]
-
-    def _is_at_end(self) -> bool:
-        """Check if we've reached the end of the token stream"""
-        return (
-            self.pos >= len(self.tokens) or self.tokens[self.pos].type == TokenType.EOF
-        )
-
-    def _check(self, type_: TokenType) -> bool:
-        """Check if the current token is of the given type"""
-        if self._is_at_end():
-            return False
-        return self.tokens[self.pos].type == type_
-
-    def _consume(self, type_: TokenType, error_message: str) -> Token:
-        """Consume a token of the expected type or raise an error"""
-        # Special handling for keywords that can be either KEYWORD or IDENTIFIER
-        if type_ == TokenType.KEYWORD and self._check(TokenType.IDENTIFIER):
-            # If we're expecting a keyword but have an identifier, check if it's a keyword value
-            current = self._peek()
-            if current.value in [
-                "app",
-                "model",
-                "tool",
-                "apply",
-                "tools",
-                "glue",
-                "config",
-                "magnetize",
-                "team",
-                "provider",
-                "role",
-                "adhesives",
-                "lead",
-            ]:
-                return self._advance()
-
-        if self._check(type_):
-            return self._advance()
-
-        current = self._peek()
-        raise SyntaxError(f"{error_message} at line {current.line}, got {current.type}")
-
-    def validate(self, config: Dict[str, Any] = None) -> List[str]:
-        """Validate a parsed GLUE configuration.
-
-        Args:
-            config: Parsed GLUE configuration, uses self.ast if None
-
-        Returns:
-            List of validation errors, empty if valid
-        """
-        self.logger.info("Validating GLUE configuration")
-
-        if config is None:
-            config = self.ast
-
-        errors = []
-
-        # Check for required sections
-        if "app" not in config or not config["app"]:
-            errors.append("Missing 'app' section")
-
-        # Validate app section
-        if "app" in config and config["app"]:
-            app_config = config["app"]
-            if "name" not in app_config:
-                errors.append("Missing 'name' in app configuration")
-
-        return errors
-
-    def parse_file(self, file_path: str) -> Dict[str, Any]:
-        """Parse a GLUE DSL file.
-
-        Args:
-            file_path: Path to the GLUE DSL file
-
-        Returns:
-            Parsed configuration as a dictionary
-
-        Raises:
-            FileNotFoundError: If the file does not exist
-            SyntaxError: If the file contains syntax errors
-            ValueError: If the file contains semantic errors
-        """
-        self.logger.info(f"Parsing GLUE file: {file_path}")
-
-        path = Path(file_path)
-        if not path.exists():
-            raise FileNotFoundError(f"File not found: {file_path}")
-
-        if path.suffix != ".glue":
-            raise ValueError("File must have .glue extension")
-
-        with path.open("r") as f:
-            content = f.read()
-
-        return self.parse_string(content)
-
-    def parse_string(self, content: str) -> Dict[str, Any]:
-        """Parse GLUE DSL content from a string.
-
-        Args:
-            content: GLUE DSL content as a string
-
-        Returns:
-            Parsed configuration as a dictionary
-
-        Raises:
-            SyntaxError: If the content contains syntax errors
-            ValueError: If the content contains semantic errors
-        """
-        self.logger.info("Parsing GLUE content from string")
-        
-        # Check if content is YAML format by examining the common YAML patterns
-        # This is more robust than just checking for '---' or 'app_name:'
-        first_10_lines = content.split('\n')[:10]
-        yaml_indicators = ['app_name:', 'engine:', 'teams:', 'description:', 'version:', 'magnetic_field:', 'adhesives:']
-        
-        is_yaml_format = False
-        for line in first_10_lines:
-            stripped = line.strip()
-            # Check for common YAML indicators
-            for indicator in yaml_indicators:
-                if stripped.startswith(indicator):
-                    is_yaml_format = True
-                    break
-            if is_yaml_format:
-                break
-                
-        # Check for YAML structure (key: value pattern)
-        if not is_yaml_format and ':' in content:
-            for line in first_10_lines:
-                stripped = line.strip()
-                # Look for key-value pattern with indentation
-                if ':' in stripped and not stripped.startswith('#') and not stripped.startswith('//') and not stripped.startswith('"'):
-                    is_yaml_format = True
-                    break
-        
-        if is_yaml_format:
-            self.logger.info("Detected YAML format from content, using yaml parser")
-            import yaml
-            try:
-                # Parse directly with YAML
-                config = yaml.safe_load(content)
-                return self._convert_yaml_to_ast(config)
-            except Exception as e:
-                self.logger.error(f"YAML parsing error: {str(e)}")
-                self.logger.debug(f"YAML content causing error: {content[:500]}...")
-                raise
-        
-        # Otherwise use the traditional lexer/parser
-        lexer = GlueLexer()
-        tokens = lexer.tokenize(content)
-        return self.parse(tokens)
-
-    def _convert_yaml_to_ast(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert YAML configuration to our internal AST format.
-        
-        This method bridges the gap between modern YAML configurations 
-        and the internal AST format used by the GLUE framework.
+    def parse_file(self, file_path: str):
+        """Parse a StickyScript file from the given path.
         
         Args:
-            config: The parsed YAML configuration dictionary
+            file_path: Path to the StickyScript file
             
         Returns:
-            AST dictionary in the format expected by the rest of the framework
+            Parsed configuration dictionary
         """
-        self.logger.info("Converting YAML configuration to AST format")
-        
-        # Initialize the AST with default values
-        ast = {
-            "app": {},
-            "teams": [],
-            "models": {},
-            "tools": {},
-            "flows": [],
-            "magnetize": {},
-            "apply": None,
-        }
-        
-        # Extract app information
-        if "app_name" in config:
-            ast["app"]["name"] = config["app_name"]
-        if "description" in config:
-            ast["app"]["description"] = config["description"]
-        if "version" in config:
-            ast["app"]["version"] = config["version"]
-        if "engine" in config:
-            ast["app"]["engine"] = config["engine"]
-        
-        # Process teams
-        if "teams" in config and isinstance(config["teams"], dict):
-            for team_name, team_config in config["teams"].items():
-                team = {"name": team_name}
-                
-                # Add team description
-                if "description" in team_config:
-                    team["description"] = team_config["description"]
-                
-                # Add team lead status
-                if "lead" in team_config:
-                    team["is_lead"] = bool(team_config["lead"])
-                
-                # Process team agents
-                if "agents" in team_config and isinstance(team_config["agents"], list):
-                    team["agents"] = []
-                    for agent_config in team_config["agents"]:
-                        if isinstance(agent_config, dict) and "name" in agent_config:
-                            agent = {"name": agent_config["name"]}
-                            # Add provider and model if present
-                            if "provider" in agent_config:
-                                agent["provider"] = agent_config["provider"]
-                            if "model" in agent_config:
-                                agent["model"] = agent_config["model"]
-                            team["agents"].append(agent)
-                
-                # Process team tools
-                if "tools" in team_config and isinstance(team_config["tools"], list):
-                    team["tools"] = team_config["tools"]
-                
-                ast["teams"].append(team)
-        
-        # Process magnetic field/flows
-        if "magnetize" in config:
-            field_config = config["magnetize"]
-            
-            # Process teams
-            if "teams" in field_config and isinstance(field_config["teams"], dict):
-                for team_name, team_config in field_config["teams"].items():
-                    ast["teams"][team_name] = self._process_team_config(team_config)
-            
-            # Process flows
-            if "flow" in field_config and isinstance(field_config["flow"], dict):
-                # Handle arrow notation in flow section
-                for flow_line, flow_type in field_config["flow"].items():
-                    # Check if flow_line contains arrow notation
-                    if " -> " in flow_line:
-                        parts = flow_line.split(" -> ")
-                        if len(parts) == 2:
-                            source, target = parts
-                            flow = {"source": source.strip(), "target": target.strip(), "type": "PUSH"}
-                            ast["flows"].append(flow)
-                    elif " <- " in flow_line:
-                        parts = flow_line.split(" <- ")
-                        if len(parts) == 2:
-                            target, flow_mode = parts
-                            # Check if there's a mode specified (like "pull")
-                            flow_type = "PULL"
-                            if flow_mode.strip().lower() == "pull":
-                                flow_type = "PULL"
-                            source = None
-                            # Find the source from the other flows
-                            for f in ast["flows"]:
-                                if f["target"] == target.strip():
-                                    source = f["source"]
-                                    break
-                            if source:
-                                flow = {"source": target.strip(), "target": source, "type": flow_type}
-                                ast["flows"].append(flow)
-                    elif " >< " in flow_line:
-                        parts = flow_line.split(" >< ")
-                        if len(parts) == 2:
-                            source, target = parts
-                            flow = {"source": source.strip(), "target": target.strip(), "type": "BIDIRECTIONAL"}
-                            ast["flows"].append(flow)
-                    elif " <> " in flow_line:
-                        parts = flow_line.split(" <> ")
-                        if len(parts) == 2:
-                            source, target = parts
-                            flow = {"source": source.strip(), "target": target.strip(), "type": "REPEL"}
-                            ast["flows"].append(flow)
-            
-            # Also process standard flows format for backward compatibility
-            if "flows" in field_config and isinstance(field_config["flows"], list):
-                for flow_config in field_config["flows"]:
-                    if isinstance(flow_config, dict):
-                        flow = {}
-                        if "source" in flow_config:
-                            flow["source"] = flow_config["source"]
-                        if "target" in flow_config:
-                            flow["target"] = flow_config["target"]
-                        if "type" in flow_config:
-                            flow["type"] = flow_config["type"]
-                            
-                        ast["flows"].append(flow)
-            
-            ast["magnetize"] = field_config
-        
-        # Process adhesives
-        if "adhesives" in config and isinstance(config["adhesives"], list):
-            for adhesive_config in config["adhesives"]:
-                if isinstance(adhesive_config, dict):
-                    tool_name = adhesive_config.get("tool")
-                    adhesive_type = adhesive_config.get("type")
-                    
-                    if tool_name and adhesive_type:
-                        if tool_name not in ast["tools"]:
-                            ast["tools"][tool_name] = {}
-                        
-                        ast["tools"][tool_name]["adhesive"] = adhesive_type
-        
-        self.logger.info(f"Converted YAML config to AST with {len(ast['teams'])} teams")
-        return ast
+        logger.debug(f"Attempting to parse file: {file_path}")
+        try:
+            with open(file_path, 'r') as f:
+                script_text = f.read()
+            return self.parse(script_text)
+        except Exception as e:
+            logger.error(f"Error reading or parsing file {file_path}: {e}", exc_info=True)
+            # Return a consistent error structure
+            return {
+                "error": str(e),
+                "workflow": {"name": "ErrorParsingFile"},
+                "agents": {}, "teams": {}, "tools": {}, "flows": {}
+            }
 
-# For backward compatibility
-GlueDSLParser = GlueParser
+# Example Usage (for testing purposes)
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.DEBUG)
+    parser = StickyScriptParser()
+
+    print("\n--- Testing App Declarations ---")
+    script_app_simple = "app MyApp"
+    print(f"Parsing: {script_app_simple}\nResult: {parser.parse(script_app_simple)}")
+
+    script_app_desc = 'app AnotherApp { description: "A cool app with \\"quotes\\"." }'
+    print(f"\nParsing: {script_app_desc}\nResult: {parser.parse(script_app_desc)}")
+
+    print("\n--- Testing Agent Declarations ---")
+    script_agent = '''
+    agent MyAgent {
+        model: "gpt-4-turbo",
+        provider: "openai",
+        instructions: "You are an advanced AI assistant."
+    }
+    '''
+    print(f"Parsing agent script...\\nResult: {parser.parse(script_agent)}")
+
+    print("\\n--- Testing Tool Declarations ---")
+    script_tool_simple = "tool MySimpleTool"
+    print(f"Parsing: {script_tool_simple}\\nResult: {parser.parse(script_tool_simple)}")
+    
+    script_tool_desc = 'tool MyComplexTool { description: "Performs intricate operations." }'
+    print(f"Parsing: {script_tool_desc}\\nResult: {parser.parse(script_tool_desc)}")
+
+    print("\\n--- Testing Team Declarations ---")
+    script_team = '''
+    agent LeaderBot { model: "claude-3-opus", provider: "anthropic", instructions: "Strategize and lead."}
+    agent WorkerBot1 { model: "gemini-1.5-pro", provider: "google", instructions: "Execute tasks efficiently."}
+    tool UtilityTool
+    
+    team EngineeringTeam {
+        lead: LeaderBot,
+        members: [WorkerBot1],
+        tools: [UtilityTool],
+        instructions: "Build innovative solutions."
+    }
+    '''
+    print(f"Parsing team script...\\nResult: {parser.parse(script_team)}")
+    
+    print("\\n--- Testing Flow Declarations ---")
+    # Need to declare agents and teams first for flows to be meaningful in a full script
+    script_flow_setup = """
+    app MyWorkflow
+    agent AgentX { model: "m", provider: "p", instructions: "i" }
+    agent AgentY { model: "m", provider: "p", instructions: "i" }
+    team TeamAlpha { lead: AgentX }
+    team TeamBeta { lead: AgentY }
+    """
+    script_flow_actual = "flow TeamAlpha -> TeamBeta"
+    
+    # Test parsing them together
+    full_flow_script = script_flow_setup + script_flow_actual
+    print(f"Parsing flow script...\\nResult: {parser.parse(full_flow_script)}")
+
+
+    print("\\n--- Testing Combined Script ---")
+    combined_script = """
+    app MyFullApp {
+        description: "A comprehensive application demonstration."
+    }
+
+    agent Planner {
+        model: "gpt-4o",
+        provider: "openai",
+        instructions: "Formulate detailed plans."
+    }
+
+    agent Coder {
+        model: "claude-3-sonnet",
+        provider: "anthropic",
+        instructions: "Write clean and efficient code."
+    }
+    
+    tool SearchTool {
+        description: "Tool for searching documents."
+    }
+
+    team DevelopmentTeam {
+        lead: Planner,
+        members: [Coder],
+        tools: [SearchTool],
+        instructions: "Develop features as per plan."
+    }
+    
+    flow DevelopmentTeam -> Planner // Example of a feedback loop or different flow
+    """
+    print(f"Parsing combined script...\\nResult: {parser.parse(combined_script)}")
+
+    print("\\n--- Testing Empty Script ---")
+    empty_script = ""
+    print(f"Parsing empty script...\\nResult: {parser.parse(empty_script)}")
+    
+    print("\\n--- Testing Script with only comments (ignored by grammar) ---")
+    # Note: Lark by default doesn't have a concept of line comments like //
+    # unless specified in grammar or via a pre-processing step.
+    # The %ignore WS handles whitespace, but not comments unless defined.
+    # For this test, we'll assume comments are stripped or handled if grammar supports it.
+    # Current grammar does not explicitly support `//` comments.
+    # If `//` comments are needed, grammar should be:
+    # COMMENT: "//" /[^\\n]*/ 
+    # %ignore COMMENT
+    # For now, this test will likely parse as empty or error if comments aren't ignored.
+    comment_script = """
+    // app MyCommentedApp 
+    // This should be ignored
+    """ 
+    print(f"Parsing script with comments (current grammar may not ignore '//')...\\nResult: {parser.parse(comment_script)}")
+
+    script_multiple_agents_teams = """
+    app MultiTest
+    agent A1 {model:"m1", provider:"p1", instructions:"i1"}
+    agent A2 {model:"m2", provider:"p2", instructions:"i2"}
+    tool T1
+    tool T2 {description: "d2"}
+    team Alpha {lead: A1, members: [A2], tools: [T1, T2], instructions: "Alpha team"}
+    team Beta {lead: A2, members: [A1], tools: [T1], instructions: "Beta team"}
+    flow Alpha -> Beta
+    flow Beta -> Alpha
+    """
+    print(f"\\nParsing multiple entities script...\\nResult: {parser.parse(script_multiple_agents_teams)}")

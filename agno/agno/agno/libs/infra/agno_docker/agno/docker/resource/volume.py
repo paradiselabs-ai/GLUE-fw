@@ -1,328 +1,128 @@
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, field_validator, model_validator
-
-
-class Media(BaseModel):
-    id: str
-    original_prompt: Optional[str] = None
-    revised_prompt: Optional[str] = None
+from agno.docker.api_client import DockerApiClient
+from agno.docker.resource.base import DockerResource
+from agno.utils.log import logger
 
 
-class VideoArtifact(Media):
-    url: str  # Remote location for file
-    eta: Optional[str] = None
-    length: Optional[str] = None
+class DockerVolume(DockerResource):
+    resource_type: str = "Volume"
 
+    # driver (str) – Name of the driver used to create the volume
+    driver: Optional[str] = None
+    # driver_opts (dict) – Driver options as a key-value dictionary
+    driver_opts: Optional[Dict[str, Any]] = None
+    # labels (dict) – Labels to set on the volume
+    labels: Optional[Dict[str, Any]] = None
 
-class ImageArtifact(Media):
-    url: Optional[str] = None  # Remote location for file
-    content: Optional[bytes] = None  # Actual image bytes content
-    mime_type: Optional[str] = None
-    alt_text: Optional[str] = None
+    def _create(self, docker_client: DockerApiClient) -> bool:
+        """Creates the Volume on docker
 
-
-class AudioArtifact(Media):
-    url: Optional[str] = None  # Remote location for file
-    base64_audio: Optional[str] = None  # Base64-encoded audio data
-    length: Optional[str] = None
-    mime_type: Optional[str] = None
-
-    @model_validator(mode="before")
-    def validate_exclusive_audio(cls, data: Any):
+        Args:
+            docker_client: The DockerApiClient for the current cluster
         """
-        Ensure that either `url` or `base64_audio` is provided, but not both.
+        from docker import DockerClient
+        from docker.models.volumes import Volume
+
+        logger.debug("Creating: {}".format(self.get_resource_name()))
+        volume_name: Optional[str] = self.name
+        volume_object: Optional[Volume] = None
+
+        try:
+            _api_client: DockerClient = docker_client.api_client
+            volume_object = _api_client.volumes.create(
+                name=volume_name,
+                driver=self.driver,
+                driver_opts=self.driver_opts,
+                labels=self.labels,
+            )
+            if volume_object is not None:
+                logger.debug("Volume Created: {}".format(volume_object.name))
+            else:
+                logger.debug("Volume could not be created")
+            # logger.debug("Volume {}".format(volume_object.attrs))
+        except Exception:
+            raise
+
+        # By this step the volume should be created
+        # Get the data from the volume object
+        logger.debug("Validating volume is created")
+        if volume_object is not None:
+            _id: str = volume_object.id
+            _short_id: str = volume_object.short_id
+            _name: str = volume_object.name
+            _attrs: str = volume_object.attrs
+            if _id:
+                logger.debug("_id: {}".format(_id))
+                self.id = _id
+            if _short_id:
+                logger.debug("_short_id: {}".format(_short_id))
+                self.short_id = _short_id
+            if _name:
+                logger.debug("_name: {}".format(_name))
+            if _attrs:
+                logger.debug("_attrs: {}".format(_attrs))
+                # TODO: use json_to_dict(_attrs)
+                self.attrs = _attrs  # type: ignore
+
+            # TODO: Validate that the volume object is created properly
+            self.active_resource = volume_object
+            return True
+        return False
+
+    def _read(self, docker_client: DockerApiClient) -> Any:
+        """Returns a Volume object if the volume is active on the docker_client"""
+        from docker import DockerClient
+        from docker.models.volumes import Volume
+
+        logger.debug("Reading: {}".format(self.get_resource_name()))
+        volume_name: Optional[str] = self.name
+
+        try:
+            _api_client: DockerClient = docker_client.api_client
+            volume_list: Optional[List[Volume]] = _api_client.volumes.list()
+            # logger.debug("volume_list: {}".format(volume_list))
+            if volume_list is not None:
+                for volume in volume_list:
+                    if volume.name == volume_name:
+                        logger.debug(f"Volume {volume_name} exists")
+                        self.active_resource = volume
+
+                        return volume
+        except Exception:
+            logger.debug(f"Volume {volume_name} not found")
+
+        return None
+
+    def _delete(self, docker_client: DockerApiClient) -> bool:
+        """Deletes the Volume on docker
+
+        Args:
+            docker_client: The DockerApiClient for the current cluster
         """
-        if data.get("url") and data.get("base64_audio"):
-            raise ValueError("Provide either `url` or `base64_audio`, not both.")
-        if not data.get("url") and not data.get("base64_audio"):
-            raise ValueError("Either `url` or `base64_audio` must be provided.")
-        return data
+        from docker.errors import NotFound
+        from docker.models.volumes import Volume
 
+        logger.debug("Deleting: {}".format(self.get_resource_name()))
+        volume_object: Optional[Volume] = self._read(docker_client)
+        # Return True if there is no Volume to delete
+        if volume_object is None:
+            return True
 
-class Video(BaseModel):
-    filepath: Optional[Union[Path, str]] = None  # Absolute local location for video
-    content: Optional[Any] = None  # Actual video bytes content
-    url: Optional[str] = None  # Remote location for video
-    format: Optional[str] = None  # E.g. `mp4`, `mov`, `avi`, `mkv`, `webm`, `flv`, `mpeg`, `mpg`, `wmv`, `three_gp`
+        # Delete Volume
+        try:
+            self.active_resource = None
+            volume_object.remove(force=True)
+        except Exception as e:
+            logger.exception("Error while deleting volume: {}".format(e))
 
-    @model_validator(mode="before")
-    def validate_data(cls, data: Any):
-        """
-        Ensure that exactly one of `filepath`, or `content` or `url` is provided.
-        Also converts content to bytes if it's a string.
-        """
-        # Extract the values from the input data
-        filepath = data.get("filepath")
-        content = data.get("content")
-        url = data.get("url")
+        # Validate that the volume is deleted
+        logger.debug("Validating volume is deleted")
+        try:
+            logger.debug("Reloading volume_object: {}".format(volume_object))
+            volume_object.reload()
+        except NotFound:
+            logger.debug("Got NotFound Exception, Volume is deleted")
+            return True
 
-        # Convert and decompress content to bytes if it's a string
-        if content and isinstance(content, str):
-            import base64
-
-            try:
-                import zlib
-
-                decoded_content = base64.b64decode(content)
-                content = zlib.decompress(decoded_content)
-            except Exception:
-                content = base64.b64decode(content).decode("utf-8")
-        data["content"] = content
-
-        # Count how many fields are set (not None)
-        count = len([field for field in [filepath, content, url] if field is not None])
-
-        if count == 0:
-            raise ValueError("One of `filepath` or `content` or `url` must be provided.")
-        elif count > 1:
-            raise ValueError("Only one of `filepath` or `content` or `url` should be provided.")
-
-        return data
-
-    def to_dict(self) -> Dict[str, Any]:
-        import base64
-        import zlib
-
-        response_dict = {
-            "content": base64.b64encode(
-                zlib.compress(self.content) if isinstance(self.content, bytes) else self.content.encode("utf-8")
-            ).decode("utf-8")
-            if self.content
-            else None,
-            "filepath": self.filepath,
-            "format": self.format,
-        }
-        return {k: v for k, v in response_dict.items() if v is not None}
-
-    @classmethod
-    def from_artifact(cls, artifact: VideoArtifact) -> "Video":
-        return cls(url=artifact.url)
-
-
-class Audio(BaseModel):
-    content: Optional[Any] = None  # Actual audio bytes content
-    filepath: Optional[Union[Path, str]] = None  # Absolute local location for audio
-    url: Optional[str] = None  # Remote location for audio
-    format: Optional[str] = None
-
-    @model_validator(mode="before")
-    def validate_data(cls, data: Any):
-        """
-        Ensure that exactly one of `filepath`, or `content` is provided.
-        Also converts content to bytes if it's a string.
-        """
-        # Extract the values from the input data
-        filepath = data.get("filepath")
-        content = data.get("content")
-        url = data.get("url")
-
-        # Convert and decompress content to bytes if it's a string
-        if content and isinstance(content, str):
-            import base64
-
-            try:
-                import zlib
-
-                decoded_content = base64.b64decode(content)
-                content = zlib.decompress(decoded_content)
-            except Exception:
-                content = base64.b64decode(content).decode("utf-8")
-        data["content"] = content
-
-        # Count how many fields are set (not None)
-        count = len([field for field in [filepath, content, url] if field is not None])
-
-        if count == 0:
-            raise ValueError("One of `filepath` or `content` or `url` must be provided.")
-        elif count > 1:
-            raise ValueError("Only one of `filepath` or `content` or `url` should be provided.")
-
-        return data
-
-    @property
-    def audio_url_content(self) -> Optional[bytes]:
-        import httpx
-
-        if self.url:
-            return httpx.get(self.url).content
-        else:
-            return None
-
-    def to_dict(self) -> Dict[str, Any]:
-        import base64
-        import zlib
-
-        response_dict = {
-            "content": base64.b64encode(
-                zlib.compress(self.content) if isinstance(self.content, bytes) else self.content.encode("utf-8")
-            ).decode("utf-8")
-            if self.content
-            else None,
-            "filepath": self.filepath,
-            "format": self.format,
-        }
-
-        return {k: v for k, v in response_dict.items() if v is not None}
-
-    @classmethod
-    def from_artifact(cls, artifact: AudioArtifact) -> "Audio":
-        return cls(url=artifact.url, content=artifact.base64_audio, format=artifact.mime_type)
-
-
-class AudioResponse(BaseModel):
-    id: Optional[str] = None
-    content: Optional[str] = None  # Base64 encoded
-    expires_at: Optional[int] = None
-    transcript: Optional[str] = None
-
-    mime_type: Optional[str] = None
-    sample_rate: Optional[int] = 24000
-    channels: Optional[int] = 1
-
-    def to_dict(self) -> Dict[str, Any]:
-        import base64
-
-        response_dict = {
-            "id": self.id,
-            "content": base64.b64encode(self.content).decode("utf-8")
-            if isinstance(self.content, bytes)
-            else self.content,
-            "expires_at": self.expires_at,
-            "transcript": self.transcript,
-            "mime_type": self.mime_type,
-            "sample_rate": self.sample_rate,
-            "channels": self.channels,
-        }
-        return {k: v for k, v in response_dict.items() if v is not None}
-
-
-class Image(BaseModel):
-    url: Optional[str] = None  # Remote location for image
-    filepath: Optional[Union[Path, str]] = None  # Absolute local location for image
-    content: Optional[Any] = None  # Actual image bytes content
-    format: Optional[str] = None  # E.g. `png`, `jpeg`, `webp`, `gif`
-    detail: Optional[str] = (
-        None  # low, medium, high or auto (per OpenAI spec https://platform.openai.com/docs/guides/vision?lang=node#low-or-high-fidelity-image-understanding)
-    )
-    id: Optional[str] = None
-
-    @property
-    def image_url_content(self) -> Optional[bytes]:
-        import httpx
-
-        if self.url:
-            return httpx.get(self.url).content
-        else:
-            return None
-
-    @model_validator(mode="before")
-    def validate_data(cls, data: Any):
-        """
-        Ensure that exactly one of `url`, `filepath`, or `content` is provided.
-        Also converts content to bytes if it's a string.
-        """
-        # Extract the values from the input data
-        url = data.get("url")
-        filepath = data.get("filepath")
-        content = data.get("content")
-
-        # Convert and decompress content to bytes if it's a string
-        if content and isinstance(content, str):
-            import base64
-
-            try:
-                import zlib
-
-                decoded_content = base64.b64decode(content)
-                content = zlib.decompress(decoded_content)
-            except Exception:
-                content = base64.b64decode(content).decode("utf-8")
-        data["content"] = content
-
-        # Count how many fields are set (not None)
-        count = len([field for field in [url, filepath, content] if field is not None])
-
-        if count == 0:
-            raise ValueError("One of `url`, `filepath`, or `content` must be provided.")
-        elif count > 1:
-            raise ValueError("Only one of `url`, `filepath`, or `content` should be provided.")
-
-        return data
-
-    def to_dict(self) -> Dict[str, Any]:
-        import base64
-        import zlib
-
-        response_dict = {
-            "content": base64.b64encode(
-                zlib.compress(self.content) if isinstance(self.content, bytes) else self.content.encode("utf-8")
-            ).decode("utf-8")
-            if self.content
-            else None,
-            "filepath": self.filepath,
-            "url": self.url,
-            "detail": self.detail,
-        }
-
-        return {k: v for k, v in response_dict.items() if v is not None}
-
-    @classmethod
-    def from_artifact(cls, artifact: ImageArtifact) -> "Image":
-        return cls(url=artifact.url)
-
-
-class File(BaseModel):
-    url: Optional[str] = None
-    filepath: Optional[Union[Path, str]] = None
-    # Raw bytes content of a file
-    content: Optional[Any] = None
-    mime_type: Optional[str] = None
-    # External file object (e.g. GeminiFile, must be a valid object as expected by the model you are using)
-    external: Optional[Any] = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def check_at_least_one_source(cls, data):
-        """Ensure at least one of url, filepath, or content is provided."""
-        if isinstance(data, dict) and not any(data.get(field) for field in ["url", "filepath", "content", "external"]):
-            raise ValueError("At least one of url, filepath, content or external must be provided")
-        return data
-
-    @field_validator("mime_type")
-    @classmethod
-    def validate_mime_type(cls, v):
-        """Validate that the mime_type is one of the allowed types."""
-        if v is not None and v not in cls.valid_mime_types():
-            raise ValueError(f"Invalid MIME type: {v}. Must be one of: {cls.valid_mime_types()}")
-        return v
-
-    @classmethod
-    def valid_mime_types(cls) -> List[str]:
-        return [
-            "application/pdf",
-            "application/x-javascript",
-            "text/javascript",
-            "application/x-python",
-            "text/x-python",
-            "text/plain",
-            "text/html",
-            "text/css",
-            "text/md",
-            "text/csv",
-            "text/xml",
-            "text/rtf",
-        ]
-
-    @property
-    def file_url_content(self) -> Optional[Tuple[bytes, str]]:
-        import httpx
-
-        if self.url:
-            response = httpx.get(self.url)
-            content = response.content
-            mime_type = response.headers.get("Content-Type", "").split(";")[0]
-            return content, mime_type
-        else:
-            return None
+        return False

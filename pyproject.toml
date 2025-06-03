@@ -30,7 +30,8 @@ dependencies = [
     "pytest-asyncio>=0.21.0",
     "rich>=13.0.0",  # Added rich for agno dependency
     "docstring-parser>=0.15",  # Added docstring-parser for agno
-    "mcp>=0.1.0"  # Added mcp for agno dependency (version assumed, adjust if known)
+    "mcp>=0.1.0",  # Added mcp for agno dependency (version assumed, adjust if known)
+    "lark>=1.1.0"
 ]
 
 [project.optional-dependencies]

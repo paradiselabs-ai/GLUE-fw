@@ -47,12 +47,13 @@ class StubAgnoModule:
         self.workflow = type('workflow', (), {'Workflow': StubWorkflow})
 
 # Add the stub module to sys.modules
-sys.modules['agno'] = StubAgnoModule()
-sys.modules['agno.agent'] = sys.modules['agno'].agent
-sys.modules['agno.team'] = sys.modules['agno'].team
-sys.modules['agno.workflow'] = sys.modules['agno'].workflow
+# sys.modules['agno'] = StubAgnoModule()
+# sys.modules['agno.agent'] = sys.modules['agno'].agent
+# sys.modules['agno.team'] = sys.modules['agno'].team
+# sys.modules['agno.workflow'] = sys.modules['agno'].workflow
 
-from glue.core.adapters.agno.adapter import GlueAgnoAdapter
+from glue.core.adapters.agno.adapter import GlueAgnoAdapter, AgnoFunction
+from glue.core.tools.tool_base import Tool as GlueTool
 
 
 @pytest.fixture
@@ -105,16 +106,26 @@ def test_adapter_setup(minimal_config):
 
 
 @pytest.mark.unit
-def test_adapter_run(minimal_config):
+async def test_adapter_run(minimal_config):
     """Test that the adapter can run an Agno workflow."""
     adapter = GlueAgnoAdapter()
-    result = adapter.run(minimal_config, "Test input")
+    # Ensure setup is called successfully before run, as run depends on a populated self.workflow
+    setup_success = adapter.setup(minimal_config)
+    assert setup_success is True
+    assert adapter.workflow is not None # Verify workflow is created
+
+    result = await adapter.run(config=minimal_config, interactive=False, input_data={'initial_prompt': 'Test run'})
     
-    # Verify result - should be a placeholder since StubWorkflow.run raises NotImplementedError
+    # Assertions for a successful run using the real AgnoWorkflow via the adapter
     assert result is not None
-    assert "status" in result
-    assert result.get("status") == "success"
-    assert result.get("message") == "Agno integration placeholder"
+    assert isinstance(result, dict)
+    assert result.get("status") == "non_interactive_execution_completed"
+    assert "workflow_name" in result
+    assert result["workflow_name"] == minimal_config["workflow"]["name"]
+    assert "result" in result # This would be the direct output from AgnoWorkflow.run
+    assert "execution_log" in result
+    # Further assertions on result['result'] and result['execution_log'] would depend
+    # on the actual behavior of AgnoWorkflow.run() and what it returns.
 
 
 @pytest.mark.unit
@@ -145,13 +156,13 @@ def test_adapter_handles_setup_errors():
 
 
 @pytest.mark.unit
-def test_adapter_handles_run_errors():
+async def test_adapter_handles_run_errors(minimal_config): # Added minimal_config fixture
     """Test that the adapter properly handles run errors."""
     # Test with an empty config that will cause setup to fail
     empty_config = {}
     
     adapter = GlueAgnoAdapter()
-    result = adapter.run(empty_config, "Test input")
+    result = await adapter.run(config=empty_config, interactive=False, input_data={'initial_prompt': 'Test input'})
     assert result is None
     
     # Create a special test case where setup succeeds but run fails
@@ -160,7 +171,7 @@ def test_adapter_handles_run_errors():
         def __init__(self, *args, **kwargs):
             self.name = "ErrorWorkflow"
         
-        def run(self, *args, **kwargs):
+        async def run(self, *args, **kwargs):
             raise Exception("Test error")
     
     # Replace the stub workflow with our error workflow
@@ -168,15 +179,105 @@ def test_adapter_handles_run_errors():
     sys.modules['agno.workflow'].Workflow = ErrorWorkflow
     
     try:
-        # Run with a valid config but the workflow will raise an exception
-        valid_config = {
-            "workflow": {"name": "ErrorTest"},
-            "agents": {"TestAgent": {"provider": "test", "model_name": "test"}},
-            "teams": {"TestTeam": {"lead": "TestAgent", "members": ["TestAgent"]}}
-        }
-        
-        result = adapter.run(valid_config, "Test input")
+        # Run with minimal_config (which is valid), the patched ErrorWorkflow will raise an exception
+        # The 'valid_config' variable was removed as it's no longer used.
+        result = await adapter.run(config=minimal_config, interactive=False, input_data={'initial_prompt': 'Test input for error'})
         assert result is None
     finally:
         # Restore the original stub
         sys.modules['agno.workflow'].Workflow = original_workflow
+
+
+# Define simple placeholder GLUE tools for testing
+class MyAgentSpecificTool(GlueTool):
+    name: str = "MyAgentSpecificTool"
+    description: str = "A tool specifically for an agent."
+    async def _execute(self, query: str):
+        return f"AgentSpecificTool executed with: {query}"
+
+class MyTeamTool(GlueTool):
+    name: str = "MyTeamTool"
+    description: str = "A tool provided by the team."
+    async def _execute(self, command: str):
+        return f"TeamTool executed with: {command}"
+
+@pytest.mark.unit
+async def test_team_tools_are_propagated_to_member_agents(minimal_config):
+    """
+    Test that tools defined at the team level in GLUE config are made available
+    to the AgnoAgents that are members of that team, in addition to their own tools.
+    """
+    adapter = GlueAgnoAdapter()
+
+    # Modify the minimal_config to include specific tools and an agent in a team
+    test_config = {
+        "workflow": {
+            "name": "TeamToolTestApp",
+            "description": "Test app for team tool propagation"
+        },
+        "tools": {
+            "agent_tool_1": {
+                "class": "MyAgentSpecificTool", 
+                "config": {"param": "agent_tool_param"}
+            },
+            "team_tool_1": {
+                "class": "MyTeamTool", 
+                "config": {"param": "team_tool_param"}
+            }
+        },
+        "agents": {
+            "AgentInTeam": {
+                "provider": "gemini", 
+                "model_name": "gemini-1.5-pro",
+                "tools": ["agent_tool_1"] 
+            }
+        },
+        "teams": {
+            "TestTeamWithTools": {
+                "lead": "AgentInTeam",
+                "members": ["AgentInTeam"],
+                "tools": ["team_tool_1"] 
+            }
+        },
+        "flows": {}
+    }
+
+    original_create_glue_tool = adapter._create_glue_tool_instance
+    created_tool_instances = {}
+
+    def mock_create_glue_tool_instance(tool_name: str, tool_data: dict):
+        if tool_name == "agent_tool_1":
+            instance = MyAgentSpecificTool()
+            created_tool_instances[tool_name] = instance
+            return instance
+        elif tool_name == "team_tool_1":
+            instance = MyTeamTool()
+            created_tool_instances[tool_name] = instance
+            return instance
+        return original_create_glue_tool(tool_name, tool_data)
+
+    adapter._create_glue_tool_instance = mock_create_glue_tool_instance
+
+    await adapter.setup(test_config)
+
+    adapter._create_glue_tool_instance = original_create_glue_tool
+
+    assert "AgentInTeam" in adapter.agents, "AgentInTeam was not created by the adapter."
+    agno_agent_in_team = adapter.agents.get("AgentInTeam")
+    assert agno_agent_in_team is not None
+
+    assert hasattr(agno_agent_in_team, 'tools'), "Created AgnoAgent does not have a 'tools' attribute."
+    
+    agent_tools = agno_agent_in_team.tools
+    assert isinstance(agent_tools, list), "AgnoAgent 'tools' attribute is not a list."
+    
+    assert len(agent_tools) == 2, f"Expected 2 tools, got {len(agent_tools)}"
+
+    tool_names_on_agent = set()
+    for tool_func in agent_tools:
+        assert isinstance(tool_func, AgnoFunction), "Tool in agent's list is not an AgnoFunction."
+        tool_names_on_agent.add(tool_func.name) 
+
+    assert "agent_tool_1" in tool_names_on_agent, "Agent's specific tool not found."
+    assert "team_tool_1" in tool_names_on_agent, "Team's tool not found on agent."
+

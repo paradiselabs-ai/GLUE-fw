@@ -1,7 +1,19 @@
 
 # read section1 and section2
 
-## section 1:
+## section 1
+
+! NEVER ASSUME ANYTHING: Do not assume you know Agno's framework structure, GLUE's framework goals or structure, or anything else you feel compelled to assume. ALWAYS analyze the code and directories within the codebase to understand each framework's structure, and keywords, and how they are used, so that we can correctly identify the things we need.
+
+Right now, we are mapping GLUE over the Agno framework (agno/agno/*), and using Agno as the core framework, while fitting GLUE on top. So to the end user, it will just be exactly like GLUE was meant to be, IS meant to be. We are wrapping it over agno for time sake, so we dont have to develop an entirely new framework from scratch, but use Agno as a core that we build GLUE on top of. There are some subtle differences to the framework so we neeed to properly make Agno respond in the correct way, so that it will be indistinguishable from the original GLUE framework. 
+
+For more reference on the GLUE framework progressFiles/ folder has docs that start with the number 0, read those.
+
+For more reference on the agno framework agno/agno/* directories is the entire agno framework, read and analyze through them.
+
+Refer to the content of the mcp knowledge graph tool often, as well as the software planning tool.
+
+remember that the file we are referencing for development is called glue_agno_integration_plan_details.md in the root.
 
 -# Core System Components
 - The main framework logic is in src/glue/core.
@@ -31,26 +43,19 @@
 
 ## section 2
 
-This is a multi-agentic autonomous AI development framework we are building in python and writing a DSL for as well. 
+This is a multi-agentic autonomous AI development framework we are building in python and writing a DSL for as well.
 
 Most information can be found in progressFiles/ and the README.md in the root directory. 
 !ALWAYS FOLLOW Test-Driven Development (TDD)!
 Make sure that you continously follow the Test-Driven Development (TDD) process and write tests for each new feature before implementing it. More about this can 
-be read in CLAUDE.md in the root directory. 
+be read in CLAUDE.md in the root directory.
 
 While following TDD, and keeping the tests passing, there is a 'pass list.md' in progressFiles/ and contains a list of current tests, and if they are 
 passing or not. If a new test is ever created you must add it to the pass list and once its passing, you must mark its status in the pass list as passing. 
 
-Follow the progressFiles/ projectOverview.md -> currentPhase.md -> currentStage.md -> currentTask.md -> taskList.md as the overview is broken down through each file. 
+remember that the file we are referencing for development is called glue_agno_integration_plan_details.md in the root.
 
-when the current task is complete, you changet the currentTask file to the next task, which is in currentStage. 
-
-when all the currentStage tasks have been completed, you mark that stage off in currentPhase, and you change currentStage and currentTask to the next Stage and Task in currentPhase. 
-
-When the entire Phase is complete, you mark it off the projectOverview, and then update the other files as it trickles down, the next Phase -> Stage -> Task
-and you do this continously unless there is a change of plans. 
-
-Keep in mind the goals of the project: 
+Keep in mind the goals of the project:
 
 The vision behind GLUE is to create a framework that can be used to create a wide variety of autonomous AI systems, not only this, but streamline the creation of these systems, and also provide a final, streamlined, standardized solution for agentic systems that standardizes agents, API integrations, MCP servers, and allowing for extremely easy customization and connectivity and communication with other tools, data, agents, and APIs, by including a pre-built GLUE Agent (which is in reality, a GLUE application that is simply pre-built into the GLUE cli and is ran with a different command than the standard "glue run app.glue"). 
 Users can run this pre-built agent in the cli with "glue forge" - and specifically glue forge tool, glue forge mcp, glue forge api, etc for different types of custom additions. 
@@ -64,3 +69,83 @@ allowing advanced users to create their own python components that can be used i
 ---One idea for scaling:
         So if a glue app requires massive amounts of agents and teams, maybe a solution would be to, at a certain point in the number of teams per app, when hitting that number, they are grouped together into a meta-team, and each meta-team is given the same task/user prompt/instructions at the same time. This allows parallel processing of tasks per meta-team, each meta-team acting like one, semi large glue app in itself, however each meta-team will need to eventually combine, compare, and critique each others results. Just like teams have a lead that acts as the communication manager to prevent bottlenecks and frozen API calls where agents were trying to talk at the same time,
 
+
+**Temporary instruction** 
+
+Break this up into multiple tool calls in order to apply the changes needed to each file:
+
+1. Modifications for the if is_test_app: block:
+
+Locate the line (around 321):
+python
+CopyInsert
+if is_test_app:
+Insert try:: Immediately after this line, insert try:.
+Indent the subsequent block: All code from the line class TestWorkflow: (originally line 322) down to and including the return True statement that is part of the test-specific logic (this is the return True that might be inside the if "Adhesive" in app_name: block, or if not, the general return True for the is_test_app path, which should be just before the existing except Exception as e: block around line 407) needs to be indented by an additional 4 spaces. The structure should look like this:
+python
+CopyInsert
+# ... (code before)
+    if is_test_app:
+        try:
+            # All the original content of the 'if is_test_app:' block,
+            # now indented one level further.
+            # For example:
+            class TestWorkflow:
+                # ... (rest of TestWorkflow class, indented) ...
+            
+            self.workflow = TestWorkflow(name=app_name)
+            # ... (all other logic for test app setup, indented) ...
+
+            if "Adhesive" in app_name:
+                # ... (adhesive test setup, indented) ...
+                self.adhesive_system.store_glue_result("TeamA", "TestAgent0", test_result)
+                return True # This return True is now inside the try
+            
+            # If there was another general return True for the is_test_app path,
+            # ensure it's also inside the try and correctly indented.
+            # Based on the last view, the return True for the adhesive test was the primary one.
+            # If there isn't one specific to the "Adhesive" test, the main path should still return True.
+            # The previous code had a `return True` after the adhesive block. This must be inside the try.
+            # Let's assume the structure implies a general success return if no specific test condition fails early.
+            # The last `return True` before the `except` in the `is_test_app` path needs to be inside the `try`.
+
+        except Exception as e: # This existing except block remains at its current indentation
+            logger.error(f"Error during TEST Agno setup for {app_name}: {e}", exc_info=True)
+            return False
+2. Modifications for the else: (real mode processing) block:
+
+Locate the line (around 412):
+python
+CopyInsert
+else: # Real mode processing (non-test) would happen here
+Insert try:: Immediately after this line, insert try:.
+Indent the subsequent block: All code from the line self.workflow = AgnoWorkflow(name=app_name) (originally line 413) down to and including the return True statement that signifies successful setup in real mode (this should be just before the existing except ValidationError as ve: block around line 596) needs to be indented by an additional 4 spaces. The structure should look like this:
+python
+CopyInsert
+# ... (code before, including the 'except' from the 'is_test_app' block)
+    else: # Real mode
+        try:
+            # All the original content of the 'else:' block,
+            # now indented one level further.
+            # For example:
+            self.workflow = AgnoWorkflow(name=app_name)
+            logger.info(f"Initialized AgnoWorkflow for {app_name}")
+
+            # ... (all other logic for real mode setup: global agents, tools, teams, flows, indented) ...
+            
+            logger.info(f"Agno components setup complete for {app_name}.")
+            return True # This return True is now inside the try
+
+        # These existing except blocks remain at their current indentation
+        except ValidationError as ve:
+            logger.error(f"Pydantic ValidationError during Agno setup for {app_name}: {ve}", exc_info=True)
+            return False
+        except ValueError as val_err:
+            # ... and so on for other existing except blocks ...
+            return False
+        except KeyError as ke:
+            # ...
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during Agno setup for {app_name}: {e}", exc_info=True)
+            return False
