@@ -179,9 +179,44 @@ Risks, stated plainly:
 - **DSL adoption is hard.** Mitigation: the JSON IR is a first-class citizen — teams
   allergic to new syntax can write YAML/JSON against the schema and still get the
   validator, graph, and backends. The DSL is the ergonomic layer, not a hostage-taker.
-- **The kernel is small enough to be absorbed** by LangGraph/CrewAI themselves. That is
-  a success condition, not a failure: if "glue/velcro/tape" becomes the vocabulary other
-  frameworks use for memory scoping, the idea won — which is precisely the part of
-  GLUE-fw worth not abandoning.
+- **The kernel is small enough to be copied** by LangGraph/CrewAI after it ships. This
+  is a *post-launch* scenario, not a reason to hesitate — and it's survivable on good
+  terms: the first mover writes the spec and the conformance suite, so absorption means
+  bigger frameworks implementing *your* semantics and citing *your* vocabulary, not
+  convergent reinvention. It only becomes a loss if the spec is vague enough that
+  copies can diverge — which is what §1's spec and conformance suite exist to prevent.
 - **Semantics drift across backends** is the credibility killer; the conformance suite
   exists to prevent it and must ship with Phase 2, not later.
+
+## 7. Adoption: standards are made, not waited for
+
+Nobody adopts vocabulary from a proposal document; they adopt words attached to tools
+they use. The precedent is MCP itself — no industry consensus preceded it; a spec, two
+SDKs, and working demos shipped, and the ecosystem formed around the artifact. The same
+posture applies here: build first, then make the demos do the persuading. Four demos,
+in order of persuasive power:
+
+1. **The isolation demo (the killer).** One app, two builds. Build A: a multi-agent
+   system where a "finance" team's data is protected by instructions in a RULES.md —
+   then a prompt-injected researcher agent exfiltrates it on camera. Build B: the same
+   app with `finance <> research` in `.glue` — the attack has no channel to use and the
+   hook denies the store access, with the denial visible in the trace. This is the
+   "structural, not behavioral" thesis made visceral in ninety seconds, and it targets
+   the fear (agent data leakage) that currently has budget attached to it.
+2. **The line-count demo.** The same three-team research pipeline as ~40 lines of
+   `.glue` next to the equivalent ~300 lines of raw LangGraph Python — then
+   `stickyc build` targeting LangGraph *and* the Agent SDK from the identical file.
+   One file, two runtimes, side by side.
+3. **The scoping demo.** Run the same app three times with a tool binding set to
+   `tape`, `velcro`, `glue`, and show the measurable difference: what's in the store
+   afterward, what re-entered context, and what each run cost in tokens. This is what
+   makes the adhesive words *mean something* — a live demonstration that the vocabulary
+   is wired to behavior, which is exactly what a RULES.md can never show.
+4. **`stickyc graph`.** The team org chart rendered from the file. Shallow, shareable,
+   and the thing that travels on social feeds — every screenshot of it teaches the
+   syntax.
+
+Each demo ships as a runnable repo plus a short recording. The launch sequence is
+ordinary but non-optional: examples gallery in the README, a write-up per demo, a
+Show HN / launch post anchored on demo #1. The vocabulary spreads *because* the tool
+spreads — that is the causality, and it only runs in one direction.
